@@ -1,0 +1,73 @@
+# ─── Build output ────────────────────────────────────────────────────────────
+build/
+out/
+_deps/
+
+# ─── CMake generated ─────────────────────────────────────────────────────────
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+install_manifest.txt
+
+# ─── vcpkg ───────────────────────────────────────────────────────────────────
+vcpkg_installed/
+
+# ─── Compiled objects ────────────────────────────────────────────────────────
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.so
+*.exe
+*.pdb
+*.ilk
+*.exp
+
+# ─── IDE and editor ──────────────────────────────────────────────────────────
+.vs/
+.vscode/settings.json
+.idea/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.swp
+*.swo
+
+# ─── OS artefacts ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+venv/
+env/
+.venv/
+dist/
+*.whl
+
+# ─── Generated documentation ─────────────────────────────────────────────────
+Docs/api/html/
+Docs/api/latex/
+Docs/_build/
+
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+.env
+*.pem
+*.key
+*.p12
+*.pfx
+*_secret*
+*_token*
+*_password*

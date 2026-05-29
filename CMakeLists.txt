@@ -1,0 +1,77 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(ImFrame
+    VERSION 0.1.0
+    DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
+    LANGUAGES CXX
+)
+
+# ─── C++ standard ─────────────────────────────────────────────────────────────
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Emit a compile_commands.json for IDE tooling and clang-tidy.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ─── Options ──────────────────────────────────────────────────────────────────
+option(IMF_BUILD_TESTS "Build the ImFrame test suite" ON)
+
+# IMF_DEV_TOOLS defaults ON in Debug, OFF in Release/RelWithDebInfo/MinSizeRel.
+if(NOT DEFINED IMF_DEV_TOOLS)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR NOT CMAKE_BUILD_TYPE)
+        set(IMF_DEV_TOOLS ON CACHE BOOL "Enable developer tooling")
+    else()
+        set(IMF_DEV_TOOLS OFF CACHE BOOL "Enable developer tooling")
+    endif()
+endif()
+
+# ─── Compiler warnings (interface target so sub-targets can link it) ──────────
+add_library(imframe_warnings INTERFACE)
+if(MSVC)
+    target_compile_options(imframe_warnings INTERFACE
+        /W4
+        /WX
+        /wd4251     # DLL-interface warning — not applicable to a static lib
+        /utf-8
+    )
+else()
+    target_compile_options(imframe_warnings INTERFACE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror
+        -Wshadow
+        -Wnon-virtual-dtor
+        -Wold-style-cast
+        -Wcast-align
+        -Wunused
+        -Woverloaded-virtual
+        -Wno-unknown-pragmas
+    )
+endif()
+
+# ─── ImFrame static library ───────────────────────────────────────────────────
+add_library(ImFrame STATIC
+    src/Placeholder.cpp
+)
+
+target_include_directories(ImFrame
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+target_link_libraries(ImFrame PRIVATE imframe_warnings)
+target_compile_features(ImFrame PUBLIC cxx_std_23)
+
+# vcpkg-provided dependencies are found and linked from Phase 1 onwards.
+# find_package() calls are added here as each phase introduces them.
+
+# ─── Subdirectories ───────────────────────────────────────────────────────────
+if(IMF_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(Tests)
+endif()
+
+add_subdirectory(Examples/DemoApp)

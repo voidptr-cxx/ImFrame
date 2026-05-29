@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: ["develop", "feature/**", "fix/**", "chore/**", "docs/**"]
+  pull_request:
+    branches: ["develop", "main"]
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }} / ${{ matrix.compiler }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc-13
+            cxx: g++-13
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang-17
+            cxx: clang++-17
+          - os: windows-latest
+            compiler: msvc
+            cc: ""
+            cxx: ""
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "c0948694cceff995e5cf90b751e0c5a95d613458"
+
+      - name: Configure (non-MSVC)
+        if: matrix.compiler != 'msvc'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DIMF_BUILD_TESTS=ON
+
+      - name: Configure (MSVC)
+        if: matrix.compiler == 'msvc'
+        run: |
+          cmake -B build `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DIMF_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: API leak check
+        shell: bash
+        run: bash scripts/check_api_leaks.sh
+
+      - name: clang-format check
+        if: matrix.compiler == 'clang' && matrix.os == 'ubuntu-latest'
+        run: |
+          find include src Examples -name '*.hpp' -o -name '*.cpp' \
+            | xargs clang-format-17 --dry-run --Werror

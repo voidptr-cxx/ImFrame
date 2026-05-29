@@ -1,0 +1,37 @@
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+ReferenceAlignment: Left
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex:           '^<'
+    Priority:        1
+    SortPriority:    1
+  - Regex:           '^<(imgui|GLFW|glad|ft2build|KHR)'
+    Priority:        2
+    SortPriority:    2
+  - Regex:           '^"ImFrame/'
+    Priority:        3
+    SortPriority:    3
+AlwaysBreakTemplateDeclarations: Yes
+SpaceBeforeParens: ControlStatements
+SpacesInAngles: Never
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
+AlignConsecutiveAssignments:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignConsecutiveDeclarations:
+  Enabled:          false
+AlignTrailingComments:
+  Kind:             Always
+  OverEmptyLines:   1
+...

@@ -1,0 +1,36 @@
+{
+  "name": "imframe",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": [
+        "docking-experimental",
+        "freetype",
+        "glfw-binding",
+        "opengl3-binding"
+      ]
+    },
+    "glfw3",
+    "glad",
+    "freetype"
+  ],
+  "features": {
+    "vulkan-backend": {
+      "description": "Vulkan rendering backend (Phase 20)",
+      "dependencies": []
+    },
+    "metal-backend": {
+      "description": "Metal rendering backend (Phase 21)",
+      "dependencies": []
+    },
+    "dx12-backend": {
+      "description": "DirectX 12 rendering backend (Phase 22)",
+      "dependencies": []
+    },
+    "webgpu-backend": {
+      "description": "WebGPU rendering backend (Phase 23)",
+      "dependencies": []
+    }
+  }
+}
