@@ -59,6 +59,15 @@ enum class Error {
 
     /// A file could not be written.
     FileWriteFailed,
+
+    /// A directory could not be created (permissions, invalid path, etc.).
+    DirectoryCreateFailed,
+
+    /// A directory could not be deleted.
+    DirectoryDeleteFailed,
+
+    /// FileWatcher could not begin monitoring a path.
+    WatchFailed,
 };
 
 } // namespace ImFrame::Core

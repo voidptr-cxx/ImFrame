@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -33,6 +33,9 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
+# Threads is required by FileWatcher (std::thread internally).
+find_package(Threads REQUIRED)
+
 # ─── Compiler warnings (interface target so sub-targets can link it) ──────────
 add_library(imframe_warnings INTERFACE)
 if(MSVC)
@@ -61,6 +64,12 @@ endif()
 # ─── ImFrame core static library ──────────────────────────────────────────────
 add_library(ImFrame STATIC
     src/Placeholder.cpp
+
+    # ── Phase 3: Filesystem utilities ─────────────────────────────────────────
+    src/Utility/Path.cpp
+    src/Utility/File.cpp
+    src/Utility/Directory.cpp
+    src/Utility/FileWatcher.cpp
 )
 
 target_include_directories(ImFrame
@@ -69,7 +78,18 @@ target_include_directories(ImFrame
         $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(ImFrame PRIVATE imframe_warnings)
+target_link_libraries(ImFrame
+    PRIVATE
+        imframe_warnings
+        Threads::Threads
+)
+
+# macOS: Shell integration framework required for SHGetKnownFolderPath equivalent
+# (kqueue needs no extra framework; Path::FromUserHome uses getenv)
+if(WIN32)
+    target_link_libraries(ImFrame PRIVATE shell32)   # SHGetKnownFolderPath
+endif()
+
 target_compile_features(ImFrame PUBLIC cxx_std_23)
 
 # ─── Backends ─────────────────────────────────────────────────────────────────

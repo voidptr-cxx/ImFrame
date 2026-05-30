@@ -23,3 +23,32 @@ if(IMF_BACKEND_GLFW_OPENGL3)
         PROPERTIES LABELS unit
     )
 endif()
+
+# ─── Utility tests ────────────────────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Utility_File
+    Utility/File_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_File
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_File PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_File PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Utility_Dir
+    Utility/Directory_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Dir
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Dir PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Dir PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Utility_Watch
+    Utility/FileWatcher_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Watch
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Watch PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Watch PROPERTIES LABELS unit)
