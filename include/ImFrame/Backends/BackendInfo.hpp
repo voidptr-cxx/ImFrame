@@ -64,9 +64,11 @@ struct WindowConfig {
     bool Viewports = false;
 };
 
+} // namespace ImFrame
+
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace Internal {
+namespace ImFrame::Internal {
 
 /**
  * @class    IBackend
@@ -167,5 +169,4 @@ public:
     virtual void* NativeHandle() const = 0;
 };
 
-} // namespace Internal
-} // namespace ImFrame
+} // namespace ImFrame::Internal

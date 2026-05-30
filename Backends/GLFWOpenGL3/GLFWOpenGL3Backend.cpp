@@ -31,8 +31,7 @@
 #include <cstdio>   // fprintf, stderr
 #include <string>   // std::string (to convert std::string_view title for GLFW)
 
-namespace ImFrame {
-namespace Internal {
+namespace ImFrame::Internal {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -263,5 +262,4 @@ void* GLFWOpenGL3Backend::NativeHandle() const
     return _window;
 }
 
-} // namespace Internal
-} // namespace ImFrame
+} // namespace ImFrame::Internal

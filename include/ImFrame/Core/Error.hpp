@@ -21,8 +21,7 @@
 #include <cassert>
 #include <expected>
 
-namespace ImFrame {
-namespace Core {
+namespace ImFrame::Core {
 
 /**
  * @enum     Error
@@ -62,7 +61,9 @@ enum class Error {
     FileWriteFailed,
 };
 
-} // namespace Core
+} // namespace ImFrame::Core
+
+namespace ImFrame {
 
 // ─── Re-export to root namespace ──────────────────────────────────────────────
 // Both ImFrame::Core::Error and ImFrame::Error are valid.

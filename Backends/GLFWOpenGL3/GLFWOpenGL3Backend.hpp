@@ -21,8 +21,7 @@
 // Forward-declare the GLFW window type so this header does not expose GLFW.
 struct GLFWwindow;
 
-namespace ImFrame {
-namespace Internal {
+namespace ImFrame::Internal {
 
 /**
  * @class    GLFWOpenGL3Backend
@@ -123,5 +122,4 @@ private:
     bool        _initialised      = false;   ///< Guards against double-init/shutdown.
 };
 
-} // namespace Internal
-} // namespace ImFrame
+} // namespace ImFrame::Internal
