@@ -94,7 +94,7 @@ struct FileWatcher::Impl {
     std::atomic<WatchHandle>                      _nextHandle{1};
 
     // ── Background thread ─────────────────────────────────────────────────────
-    std::thread                                   _thread;
+    std::jthread                                  _thread;
     std::atomic<bool>                             _running{false};
 
     // ── Platform stop / wake mechanism ────────────────────────────────────────
@@ -152,7 +152,7 @@ FileWatcher::Impl::~Impl() { Stop(); }
 void FileWatcher::Impl::Start()
 {
     _running = true;
-    _thread  = std::thread{[this] { ThreadFunc(); }};
+    _thread  = std::jthread{[this](std::stop_token /*st*/) { ThreadFunc(); }};
 }
 
 // ─── Internal helper: issue overlapped RDCW for one entry (must hold lock) ────
@@ -220,10 +220,10 @@ void FileWatcher::Impl::Stop()
 {
     if (!_running.exchange(false)) return;
 
-    // Signal and wait for the thread — the thread uses WFMO with a 100ms
-    // timeout, so it will wake within 100ms and see _running == false.
+    // Signal the thread — it uses WFMO with a 100ms timeout so it will
+    // wake within 100ms and see _running == false. std::jthread joins
+    // automatically when _thread is destructed after Stop() returns.
     if (_stopEvent != INVALID_HANDLE_VALUE) SetEvent(_stopEvent);
-    if (_thread.joinable()) _thread.join();
 
     std::lock_guard lock{_watchesMtx};
     for (auto& [h, e] : _watches) {
@@ -381,14 +381,15 @@ FileWatcher::Impl::~Impl() { Stop(); }
 void FileWatcher::Impl::Start()
 {
     _running = true;
-    _thread  = std::thread{[this] { ThreadFunc(); }};
+    _thread  = std::jthread{[this](std::stop_token /*st*/) { ThreadFunc(); }};
 }
 
 void FileWatcher::Impl::Stop()
 {
     if (!_running.exchange(false)) return;
+    // Write one byte to wake the kqueue kevent() call. std::jthread joins
+    // automatically when _thread is destructed after Stop() returns.
     if (_stopPipe[1] >= 0) { char c = 1; (void)write(_stopPipe[1], &c, 1); }
-    if (_thread.joinable()) _thread.join();
 
     std::lock_guard lock{_watchesMtx};
     for (auto& [h, e] : _watches) {
@@ -516,14 +517,15 @@ FileWatcher::Impl::~Impl() { Stop(); }
 void FileWatcher::Impl::Start()
 {
     _running = true;
-    _thread  = std::thread{[this] { ThreadFunc(); }};
+    _thread  = std::jthread{[this](std::stop_token /*st*/) { ThreadFunc(); }};
 }
 
 void FileWatcher::Impl::Stop()
 {
     if (!_running.exchange(false)) return;
+    // Write one byte to wake the select() call. std::jthread joins
+    // automatically when _thread is destructed after Stop() returns.
     if (_stopPipe[1] >= 0) { char c = 1; (void)write(_stopPipe[1], &c, 1); }
-    if (_thread.joinable()) _thread.join();
 
     // Remove all inotify watches.
     if (_inotifyFd >= 0) {
