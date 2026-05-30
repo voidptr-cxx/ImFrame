@@ -3,6 +3,9 @@ build/
 out/
 _deps/
 
+# ─── Dear ImGui runtime state ─────────────────────────────────────────────────
+imgui.ini
+
 # ─── CMake generated ─────────────────────────────────────────────────────────
 CMakeCache.txt
 CMakeFiles/
