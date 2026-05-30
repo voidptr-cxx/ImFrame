@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -33,7 +33,7 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
-# Threads is required by FileWatcher (std::thread internally).
+# Threads is required by Thread, ThreadPool, BackgroundWorker, FileWatcher (std::jthread).
 find_package(Threads REQUIRED)
 
 # ─── Compiler warnings (interface target so sub-targets can link it) ──────────
@@ -70,6 +70,11 @@ add_library(ImFrame STATIC
     src/Utility/File.cpp
     src/Utility/Directory.cpp
     src/Utility/FileWatcher.cpp
+
+    # ── Phase 4: Concurrency utilities ────────────────────────────────────────
+    src/Utility/Thread.cpp
+    src/Utility/ThreadPool.cpp
+    src/Utility/BackgroundWorker.cpp
 )
 
 target_include_directories(ImFrame

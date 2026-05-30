@@ -52,3 +52,32 @@ target_link_libraries(ImFrame_Tests_Utility_Watch
 )
 target_compile_features(ImFrame_Tests_Utility_Watch PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Utility_Watch PROPERTIES LABELS unit)
+
+# ─── Phase 4: Concurrency tests ───────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Utility_Thread
+    Utility/Thread_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Thread
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Thread PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Thread PROPERTIES LABELS "unit;tsan")
+
+add_executable(ImFrame_Tests_Utility_Pool
+    Utility/ThreadPool_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Pool
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Pool PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Pool PROPERTIES LABELS "unit;tsan")
+
+add_executable(ImFrame_Tests_Utility_Worker
+    Utility/BackgroundWorker_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Worker
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Worker PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Worker PROPERTIES LABELS "unit;tsan")
