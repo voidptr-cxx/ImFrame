@@ -38,7 +38,14 @@ jobs:
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: "c0948694cceff995e5cf90b751e0c5a95d613458"
+          vcpkgGitCommitId: "6fad4fa784ab2506e35144a7c3d64738976445ea"
+
+      # ── Linux: headless OpenGL via Mesa software renderer ────────────────────
+      - name: Install display and OpenGL dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb libgl1-mesa-swrast libglx-mesa0
 
       - name: Configure (non-MSVC)
         if: matrix.compiler != 'msvc'
@@ -49,19 +56,30 @@ jobs:
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
-            -DIMF_BUILD_TESTS=ON
+            -DIMF_BUILD_TESTS=ON \
+            -DIMF_BACKEND_GLFW_OPENGL3=ON
 
       - name: Configure (MSVC)
         if: matrix.compiler == 'msvc'
         run: |
           cmake -B build `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DIMF_BUILD_TESTS=ON
+            -DIMF_BUILD_TESTS=ON `
+            -DIMF_BACKEND_GLFW_OPENGL3=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
-      - name: Test
+      # ── Test (Linux — headless via Xvfb + Mesa SW) ───────────────────────────
+      - name: Test (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run --auto-servernum ctest --test-dir build -C Release --output-on-failure
+
+      # ── Test (macOS / Windows — native OpenGL) ───────────────────────────────
+      - name: Test (macOS / Windows)
+        if: matrix.os != 'ubuntu-latest'
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: API leak check
@@ -71,5 +89,5 @@ jobs:
       - name: clang-format check
         if: matrix.compiler == 'clang' && matrix.os == 'ubuntu-latest'
         run: |
-          find include src Examples -name '*.hpp' -o -name '*.cpp' \
+          find include src Backends Examples -name '*.hpp' -o -name '*.cpp' \
             | xargs clang-format-17 --dry-run --Werror

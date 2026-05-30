@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -15,7 +15,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ─── Options ──────────────────────────────────────────────────────────────────
-option(IMF_BUILD_TESTS "Build the ImFrame test suite" ON)
+option(IMF_BUILD_TESTS            "Build the ImFrame test suite"           ON)
+option(IMF_BACKEND_GLFW_OPENGL3   "Build the GLFW + OpenGL3 backend"       ON)
 
 # IMF_DEV_TOOLS defaults ON in Debug, OFF in Release/RelWithDebInfo/MinSizeRel.
 if(NOT DEFINED IMF_DEV_TOOLS)
@@ -25,6 +26,12 @@ if(NOT DEFINED IMF_DEV_TOOLS)
         set(IMF_DEV_TOOLS OFF CACHE BOOL "Enable developer tooling")
     endif()
 endif()
+
+# ─── vcpkg dependencies ───────────────────────────────────────────────────────
+find_package(imgui     CONFIG REQUIRED)
+find_package(glfw3     CONFIG REQUIRED)
+find_package(glad      CONFIG REQUIRED)
+find_package(freetype  CONFIG REQUIRED)
 
 # ─── Compiler warnings (interface target so sub-targets can link it) ──────────
 add_library(imframe_warnings INTERFACE)
@@ -51,7 +58,7 @@ else()
     )
 endif()
 
-# ─── ImFrame static library ───────────────────────────────────────────────────
+# ─── ImFrame core static library ──────────────────────────────────────────────
 add_library(ImFrame STATIC
     src/Placeholder.cpp
 )
@@ -65,10 +72,12 @@ target_include_directories(ImFrame
 target_link_libraries(ImFrame PRIVATE imframe_warnings)
 target_compile_features(ImFrame PUBLIC cxx_std_23)
 
-# vcpkg-provided dependencies are found and linked from Phase 1 onwards.
-# find_package() calls are added here as each phase introduces them.
+# ─── Backends ─────────────────────────────────────────────────────────────────
+if(IMF_BACKEND_GLFW_OPENGL3)
+    add_subdirectory(Backends/GLFWOpenGL3)
+endif()
 
-# ─── Subdirectories ───────────────────────────────────────────────────────────
+# ─── Tests and Examples ───────────────────────────────────────────────────────
 if(IMF_BUILD_TESTS)
     enable_testing()
     add_subdirectory(Tests)
