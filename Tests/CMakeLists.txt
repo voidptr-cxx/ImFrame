@@ -81,3 +81,32 @@ target_link_libraries(ImFrame_Tests_Utility_Worker
 )
 target_compile_features(ImFrame_Tests_Utility_Worker PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Utility_Worker PROPERTIES LABELS "unit;tsan")
+
+# ─── Phase 5: Event system tests ──────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Utility_Delegate
+    Utility/Delegate_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Delegate
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Delegate PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Delegate PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Utility_Signal
+    Utility/Signal_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Signal
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Signal PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Signal PROPERTIES LABELS "unit;tsan")
+
+add_executable(ImFrame_Tests_Utility_EventBus
+    Utility/EventBus_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_EventBus
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_EventBus PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_EventBus PROPERTIES LABELS "unit;tsan")
