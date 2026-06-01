@@ -110,3 +110,32 @@ target_link_libraries(ImFrame_Tests_Utility_EventBus
 )
 target_compile_features(ImFrame_Tests_Utility_EventBus PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Utility_EventBus PROPERTIES LABELS "unit;tsan")
+
+# ─── Phase 6: Supporting utility tests ───────────────────────────────────────
+
+add_executable(ImFrame_Tests_Utility_Timer
+    Utility/Timer_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Timer
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Timer PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Timer PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Utility_Logger
+    Utility/Logger_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Logger
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Logger PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Logger PROPERTIES LABELS "unit;tsan")
+
+add_executable(ImFrame_Tests_Utility_Config
+    Utility/Config_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Utility_Config
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Utility_Config PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Utility_Config PROPERTIES LABELS unit)

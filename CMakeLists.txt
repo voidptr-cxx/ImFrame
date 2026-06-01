@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.5.0
+    VERSION 0.6.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -79,6 +79,14 @@ add_library(ImFrame STATIC
     # ── Phase 5: Event system utilities ───────────────────────────────────────
     src/Utility/Signal.cpp
     src/Utility/EventBus.cpp
+
+    # ── Phase 6: Supporting utilities ─────────────────────────────────────────
+    src/Utility/Timer.cpp
+    src/Utility/Logger.cpp
+    src/Utility/Sinks/ConsoleSink.cpp
+    src/Utility/Sinks/FileSink.cpp
+    src/Utility/Sinks/UiSink.cpp
+    src/Utility/Config.cpp
 )
 
 target_include_directories(ImFrame

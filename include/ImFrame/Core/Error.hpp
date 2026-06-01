@@ -68,6 +68,9 @@ enum class Error {
 
     /// FileWatcher could not begin monitoring a path.
     WatchFailed,
+
+    /// A configuration file could not be parsed (invalid TOML syntax or unsupported construct).
+    ConfigParseFailed,
 };
 
 } // namespace ImFrame::Core
