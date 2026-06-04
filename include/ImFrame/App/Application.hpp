@@ -43,7 +43,7 @@
 #include <vector>
 
 // Phase 8 provides the full Theme definition; forward-declare here.
-namespace ImFrame::Theme { class Theme; }
+namespace ImFrame::Theme { struct Theme; }
 
 namespace ImFrame::App {
 

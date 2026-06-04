@@ -17,6 +17,7 @@
  */
 
 #include "ImFrame/App/Application.hpp"
+#include "ImFrame/Theme/Theme.hpp"
 #include "HeadlessBackend.hpp"
 
 #include <imgui.h>
@@ -128,8 +129,10 @@ bool Application::RunOneFrame() {
     _backend->BeginFrame();
 
     // Theme application — dirty flag prevents redundant Apply() calls.
-    // Phase 8 fills in the Theme::Apply() call here.
-    _themeDirty = false;
+    if (_themeDirty && _pendingTheme) {
+        _pendingTheme->Apply();
+        _themeDirty = false;
+    }
 
     _dockSpace.Begin();
     if (_onUi) {

@@ -159,3 +159,23 @@ target_link_libraries(ImFrame_Tests_App_DockSpace
 )
 target_compile_features(ImFrame_Tests_App_DockSpace PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_App_DockSpace PROPERTIES LABELS unit)
+
+# ─── Phase 8: Theme tests ─────────────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Theme_ColorToken
+    Theme/ColorToken_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Theme_ColorToken
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Theme_ColorToken PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Theme_ColorToken PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Theme_Theme
+    Theme/Theme_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Theme_Theme
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Theme_Theme PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Theme_Theme PROPERTIES LABELS unit)
