@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.6.0
+    VERSION 0.8.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -87,6 +87,11 @@ add_library(ImFrame STATIC
     src/Utility/Sinks/FileSink.cpp
     src/Utility/Sinks/UiSink.cpp
     src/Utility/Config.cpp
+
+    # ── Phase 7: Application layer ─────────────────────────────────────────────
+    src/App/Application.cpp
+    src/App/WindowManager.cpp
+    src/App/DockSpace.cpp
 )
 
 target_include_directories(ImFrame
@@ -99,6 +104,7 @@ target_link_libraries(ImFrame
     PRIVATE
         imframe_warnings
         Threads::Threads
+        imgui::imgui        # App layer (Phase 7+) calls ImGui directly
 )
 
 # macOS: Shell integration framework required for SHGetKnownFolderPath equivalent

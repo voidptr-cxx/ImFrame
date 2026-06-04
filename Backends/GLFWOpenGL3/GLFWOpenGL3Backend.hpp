@@ -116,6 +116,11 @@ public:
      */
     void* NativeHandle() const override;
 
+    /**
+     * @brief    Cancel the pending close request by resetting glfwWindowShouldClose.
+     */
+    void CancelClose() noexcept override;
+
 private:
     GLFWwindow* _window           = nullptr; ///< Owned GLFW window.
     bool        _viewportsEnabled = false;   ///< Whether multi-viewport is active.

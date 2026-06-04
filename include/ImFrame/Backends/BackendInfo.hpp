@@ -167,6 +167,17 @@ public:
      *           after a successful `Init()`.
      */
     virtual void* NativeHandle() const = 0;
+
+    /**
+     * @brief    Cancel a pending close request.
+     *
+     * Called by `Application` when the `OnClose` callback returns `false`
+     * (the "unsaved changes" veto pattern). Resets the backend's close flag
+     * so that the render loop continues on the next `Poll()` call.
+     *
+     * Has no effect if no close request is currently pending.
+     */
+    virtual void CancelClose() noexcept = 0;
 };
 
 } // namespace ImFrame::Internal

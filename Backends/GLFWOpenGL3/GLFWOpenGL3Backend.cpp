@@ -262,4 +262,13 @@ void* GLFWOpenGL3Backend::NativeHandle() const
     return _window;
 }
 
+// ─── IBackend::CancelClose() ──────────────────────────────────────────────────
+
+void GLFWOpenGL3Backend::CancelClose() noexcept
+{
+    if (_initialised) {
+        glfwSetWindowShouldClose(_window, GLFW_FALSE);
+    }
+}
+
 } // namespace ImFrame::Internal

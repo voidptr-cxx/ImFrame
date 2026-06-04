@@ -139,3 +139,23 @@ target_link_libraries(ImFrame_Tests_Utility_Config
 )
 target_compile_features(ImFrame_Tests_Utility_Config PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Utility_Config PROPERTIES LABELS unit)
+
+# ─── Phase 7: App tests ───────────────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_App_Application
+    App/Application_test.cpp
+)
+target_link_libraries(ImFrame_Tests_App_Application
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_App_Application PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_App_Application PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_App_DockSpace
+    App/DockSpace_test.cpp
+)
+target_link_libraries(ImFrame_Tests_App_DockSpace
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_App_DockSpace PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_App_DockSpace PROPERTIES LABELS unit)
