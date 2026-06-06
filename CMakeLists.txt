@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.9.0
+    VERSION 0.9.5
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -95,6 +95,9 @@ add_library(ImFrame STATIC
 
     # ── Phase 8: Theme engine ──────────────────────────────────────────────────
     src/Theme/Theme.cpp
+
+    # ── Phase 9: Icon font integration ────────────────────────────────────────
+    src/Icons/IconFont.cpp
 )
 
 target_include_directories(ImFrame

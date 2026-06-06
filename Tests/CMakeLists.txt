@@ -179,3 +179,25 @@ target_link_libraries(ImFrame_Tests_Theme_Theme
 )
 target_compile_features(ImFrame_Tests_Theme_Theme PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Theme_Theme PROPERTIES LABELS unit)
+
+# ─── Phase 9: Icon font tests ─────────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Icons_IconFont
+    Icons/IconFont_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Icons_IconFont
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Icons_IconFont PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Icons_IconFont PROPERTIES LABELS unit)
+
+# Copy the vendored FA6 solid font next to the test binary so FindSolidFont()
+# resolves "Assets/Fonts/fa-solid-900.ttf" relative to the working directory.
+add_custom_command(TARGET ImFrame_Tests_Icons_IconFont POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:ImFrame_Tests_Icons_IconFont>/Assets/Fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+        "$<TARGET_FILE_DIR:ImFrame_Tests_Icons_IconFont>/Assets/Fonts/fa-solid-900.ttf"
+    COMMENT "Copying FA6 solid font to test output directory"
+)

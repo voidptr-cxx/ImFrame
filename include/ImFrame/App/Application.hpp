@@ -65,9 +65,11 @@ namespace ImFrame::App {
  * @endcode
  */
 struct FontConfig {
-    Utility::Path path;          ///< Path to a .ttf / .otf file. Empty = skip (use ImGui default).
-    float         size      = 16.0f; ///< Logical size in pixels.
-    bool          dpiScaled = false; ///< If true, `size` is multiplied by `DpiScale()` at load time.
+    Utility::Path path;                ///< Path to a .ttf / .otf file. Empty = skip (use ImGui default).
+    float         size         = 16.0f; ///< Logical size in pixels.
+    bool          dpiScaled    = false; ///< If true, `size` is multiplied by `DpiScale()` at load time.
+    bool          isIconFont   = false; ///< If true, font is merged with the FA6 glyph range (Phase 9).
+    float         glyphOffsetY = 2.0f;  ///< Vertical glyph shift for icon fonts (FA6 needs ≈ 2 px).
 };
 
 // ─── Application ──────────────────────────────────────────────────────────────
