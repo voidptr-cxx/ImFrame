@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -110,6 +110,12 @@ add_library(ImFrame STATIC
     src/Widgets/Spacer.cpp
     src/Widgets/Text.cpp
     src/Widgets/WidgetImpl.cpp
+
+    # ── Phase 11: Layout containers ───────────────────────────────────────────
+    src/Layout/ChildScope.cpp
+    src/Layout/Panel.cpp
+    src/Layout/ScrollArea.cpp
+    src/Layout/LayoutImpl.cpp
 )
 
 target_include_directories(ImFrame

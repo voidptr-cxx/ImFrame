@@ -77,6 +77,7 @@
 #include "ImFrame/Widgets/PropertyGrid.hpp"
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
+#include "ImFrame/Layout/ChildScope.hpp"
 #include "ImFrame/Layout/Panel.hpp"
 #include "ImFrame/Layout/HStack.hpp"
 #include "ImFrame/Layout/VStack.hpp"
