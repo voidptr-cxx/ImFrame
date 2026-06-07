@@ -230,3 +230,24 @@ foreach(_widget
         PROPERTIES LABELS unit
     )
 endforeach()
+
+# ─── Phase 11: Layout container tests ────────────────────────────────────────
+
+foreach(_layout
+    Panel
+    HStack
+    VStack
+    Grid
+    ScrollArea
+)
+    add_executable("ImFrame_Tests_Layout_${_layout}"
+        "Layout/${_layout}_test.cpp"
+    )
+    target_link_libraries("ImFrame_Tests_Layout_${_layout}"
+        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+    )
+    target_compile_features("ImFrame_Tests_Layout_${_layout}" PRIVATE cxx_std_23)
+    catch_discover_tests("ImFrame_Tests_Layout_${_layout}"
+        PROPERTIES LABELS unit
+    )
+endforeach()
