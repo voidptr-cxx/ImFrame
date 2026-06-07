@@ -17,6 +17,7 @@
  */
 
 #include "ImFrame/App/Application.hpp"
+#include "ImFrame/Icons/IconFont.hpp"
 #include "ImFrame/Theme/Theme.hpp"
 #include "HeadlessBackend.hpp"
 
@@ -82,8 +83,17 @@ VoidResult Application::Run() {
 
     // ── Font loading ──────────────────────────────────────────────────────────
     for (const auto& fc : _pendingFonts) {
-        if (!fc.path.Native().empty()) {
-            const float actualSize = fc.dpiScaled ? fc.size * dpi : fc.size;
+        if (fc.path.Native().empty()) {
+            continue;
+        }
+        const float actualSize = fc.dpiScaled ? fc.size * dpi : fc.size;
+        if (fc.isIconFont) {
+            // Result intentionally unused — font pointer is managed by the atlas.
+            (void)Icons::IconFont::Load(ImGui::GetIO().Fonts,
+                { .path          = fc.path,
+                  .sizePixels    = actualSize,
+                  .glyphOffsetY  = fc.glyphOffsetY });
+        } else {
             ImGui::GetIO().Fonts->AddFontFromFileTTF(fc.path.ToString().c_str(), actualSize);
         }
     }
