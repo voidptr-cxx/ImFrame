@@ -201,3 +201,32 @@ add_custom_command(TARGET ImFrame_Tests_Icons_IconFont POST_BUILD
         "$<TARGET_FILE_DIR:ImFrame_Tests_Icons_IconFont>/Assets/Fonts/fa-solid-900.ttf"
     COMMENT "Copying FA6 solid font to test output directory"
 )
+
+# ─── Phase 10: Widget tests ───────────────────────────────────────────────────
+# One executable per widget for fast parallel CI and clear failure attribution.
+
+foreach(_widget
+    Button
+    Checkbox
+    Radio
+    TextInput
+    Slider
+    Combo
+    ColorEdit
+    Image
+    ProgressBar
+    Separator
+    Spacer
+    Text
+)
+    add_executable("ImFrame_Tests_Widgets_${_widget}"
+        "Widgets/${_widget}_test.cpp"
+    )
+    target_link_libraries("ImFrame_Tests_Widgets_${_widget}"
+        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+    )
+    target_compile_features("ImFrame_Tests_Widgets_${_widget}" PRIVATE cxx_std_23)
+    catch_discover_tests("ImFrame_Tests_Widgets_${_widget}"
+        PROPERTIES LABELS unit
+    )
+endforeach()
