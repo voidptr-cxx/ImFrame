@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 0.9.5
+    VERSION 1.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -98,6 +98,18 @@ add_library(ImFrame STATIC
 
     # ── Phase 9: Icon font integration ────────────────────────────────────────
     src/Icons/IconFont.cpp
+
+    # ── Phase 10: Core widget set ──────────────────────────────────────────────
+    src/Widgets/Button.cpp
+    src/Widgets/Checkbox.cpp
+    src/Widgets/Radio.cpp
+    src/Widgets/ColorEdit.cpp
+    src/Widgets/Image.cpp
+    src/Widgets/ProgressBar.cpp
+    src/Widgets/Separator.cpp
+    src/Widgets/Spacer.cpp
+    src/Widgets/Text.cpp
+    src/Widgets/WidgetImpl.cpp
 )
 
 target_include_directories(ImFrame
