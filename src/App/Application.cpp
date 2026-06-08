@@ -18,6 +18,7 @@
 
 #include "ImFrame/App/Application.hpp"
 #include "ImFrame/Icons/IconFont.hpp"
+#include "ImFrame/Overlay/Toast.hpp"
 #include "ImFrame/Theme/Theme.hpp"
 #include "HeadlessBackend.hpp"
 
@@ -148,6 +149,7 @@ bool Application::RunOneFrame() {
     if (_onUi) {
         _onUi();
     }
+    Overlay::ToastManager::Instance().Render(_deltaTime);
     _dockSpace.End();
 
     _backend->EndFrame();
