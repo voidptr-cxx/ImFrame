@@ -251,3 +251,23 @@ foreach(_layout
         PROPERTIES LABELS unit
     )
 endforeach()
+
+# ─── Phase 12: Animation tests ────────────────────────────────────────────────
+# Pure arithmetic — no ImGui context required.
+
+foreach(_anim
+    Tween
+    AnimatedValue
+    Sequence
+)
+    add_executable("ImFrame_Tests_Anim_${_anim}"
+        "Anim/${_anim}_test.cpp"
+    )
+    target_link_libraries("ImFrame_Tests_Anim_${_anim}"
+        PRIVATE ImFrame Catch2::Catch2WithMain
+    )
+    target_compile_features("ImFrame_Tests_Anim_${_anim}" PRIVATE cxx_std_23)
+    catch_discover_tests("ImFrame_Tests_Anim_${_anim}"
+        PROPERTIES LABELS unit
+    )
+endforeach()
