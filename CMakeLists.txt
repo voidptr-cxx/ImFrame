@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.2.0
+    VERSION 1.3.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -116,6 +116,11 @@ add_library(ImFrame STATIC
     src/Layout/Panel.cpp
     src/Layout/ScrollArea.cpp
     src/Layout/LayoutImpl.cpp
+
+    # ── Phase 13: Overlay system ──────────────────────────────────────────────
+    src/Overlay/Toast.cpp
+    src/Overlay/Modal.cpp
+    src/Overlay/ContextMenu.cpp
 )
 
 target_include_directories(ImFrame

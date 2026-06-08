@@ -271,3 +271,23 @@ foreach(_anim
         PROPERTIES LABELS unit
     )
 endforeach()
+
+# ─── Phase 13: Overlay tests ──────────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Overlay_Toast
+    Overlay/Toast_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Overlay_Toast
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Overlay_Toast PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Overlay_Toast PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Overlay_Modal
+    Overlay/Modal_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Overlay_Modal
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Overlay_Modal PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Overlay_Modal PROPERTIES LABELS unit)
