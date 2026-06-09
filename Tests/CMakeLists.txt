@@ -291,3 +291,23 @@ target_link_libraries(ImFrame_Tests_Overlay_Modal
 )
 target_compile_features(ImFrame_Tests_Overlay_Modal PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Overlay_Modal PROPERTIES LABELS unit)
+
+# ─── Phase 14: Table and PropertyGrid tests ───────────────────────────────────
+
+add_executable(ImFrame_Tests_Widgets_Table
+    Widgets/Table_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Widgets_Table
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Widgets_Table PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Widgets_Table PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Widgets_PropertyGrid
+    Widgets/PropertyGrid_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Widgets_PropertyGrid
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Widgets_PropertyGrid PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Widgets_PropertyGrid PROPERTIES LABELS unit)
