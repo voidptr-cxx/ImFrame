@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.3.0
+    VERSION 1.4.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -121,6 +121,10 @@ add_library(ImFrame STATIC
     src/Overlay/Toast.cpp
     src/Overlay/Modal.cpp
     src/Overlay/ContextMenu.cpp
+
+    # ── Phase 14: Table and PropertyGrid ──────────────────────────────────────
+    src/Widgets/Table.cpp
+    src/Widgets/PropertyGrid.cpp
 )
 
 target_include_directories(ImFrame
