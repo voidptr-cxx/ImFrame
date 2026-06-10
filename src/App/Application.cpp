@@ -20,6 +20,7 @@
 #include "ImFrame/Icons/IconFont.hpp"
 #include "ImFrame/Overlay/Toast.hpp"
 #include "ImFrame/Theme/Theme.hpp"
+#include "ImFrame/Widgets/PlotContext.hpp"
 #include "HeadlessBackend.hpp"
 
 #include <imgui.h>
@@ -76,6 +77,9 @@ VoidResult Application::Run() {
         return result;
     }
 
+    // ImPlot context must be created after the ImGui context.
+    _plotContext.Init();
+
     // ── DPI style scaling (once at startup) ──────────────────────────────────
     const float dpi = _backend->DpiScale();
     if (dpi != 1.0f) {
@@ -107,6 +111,8 @@ VoidResult Application::Run() {
 
     // ── Teardown ──────────────────────────────────────────────────────────────
     _windowManager.Clear();
+    // ImPlot context must be destroyed before the ImGui context.
+    _plotContext.Shutdown();
     _backend->Shutdown();
 
     return {};
@@ -143,6 +149,11 @@ bool Application::RunOneFrame() {
     if (_themeDirty && _pendingTheme) {
         _pendingTheme->Apply();
         _themeDirty = false;
+    }
+
+    // ImPlot style is re-applied every frame to stay in sync with the active theme.
+    if (_pendingTheme) {
+        _plotContext.ApplyTheme(*_pendingTheme);
     }
 
     _dockSpace.Begin();
