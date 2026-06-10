@@ -37,6 +37,7 @@
 #include "ImFrame/Utility/Delegate.hpp"
 #include "ImFrame/Utility/Path.hpp"
 #include "ImFrame/Utility/Timer.hpp"
+#include "ImFrame/Widgets/PlotContext.hpp"
 
 #include <chrono>
 #include <memory>
@@ -265,6 +266,7 @@ private:
     Utility::Timer                          _timer;
     DockSpace                               _dockSpace;
     WindowManager                           _windowManager;
+    Widgets::PlotContext                    _plotContext;
     Utility::Delegate<void()>               _onUi;
     Utility::Delegate<void(float)>          _onUpdate;
     Utility::Delegate<bool()>               _onClose;

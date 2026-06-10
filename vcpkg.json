@@ -14,7 +14,8 @@
     "glfw3",
     "glad",
     "freetype",
-    "catch2"
+    "catch2",
+    "implot"
   ],
   "features": {
     "vulkan-backend": {

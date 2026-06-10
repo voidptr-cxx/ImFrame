@@ -311,3 +311,15 @@ target_link_libraries(ImFrame_Tests_Widgets_PropertyGrid
 )
 target_compile_features(ImFrame_Tests_Widgets_PropertyGrid PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Widgets_PropertyGrid PROPERTIES LABELS unit)
+
+# ─── Phase 15: Plot widget tests ──────────────────────────────────────────────
+
+add_executable(ImFrame_Tests_Widgets_LinePlot
+    Widgets/LinePlot_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Widgets_LinePlot
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Widgets_LinePlot PRIVATE cxx_std_23)
+# TIMEOUT=30 guards against ImPlot hangs in headless context.
+catch_discover_tests(ImFrame_Tests_Widgets_LinePlot PROPERTIES LABELS unit TIMEOUT 30)

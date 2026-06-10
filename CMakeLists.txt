@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.4.0
+    VERSION 1.5.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -29,6 +29,7 @@ endif()
 
 # ─── vcpkg dependencies ───────────────────────────────────────────────────────
 find_package(imgui     CONFIG REQUIRED)
+find_package(implot    CONFIG REQUIRED)
 find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
@@ -125,6 +126,9 @@ add_library(ImFrame STATIC
     # ── Phase 14: Table and PropertyGrid ──────────────────────────────────────
     src/Widgets/Table.cpp
     src/Widgets/PropertyGrid.cpp
+
+    # ── Phase 15: Plot integration ────────────────────────────────────────────
+    src/Widgets/PlotContext.cpp
 )
 
 target_include_directories(ImFrame
@@ -138,6 +142,7 @@ target_link_libraries(ImFrame
         imframe_warnings
         Threads::Threads
         imgui::imgui        # App layer (Phase 7+) calls ImGui directly
+        implot::implot      # Phase 15+ plot widgets
 )
 
 # macOS: Shell integration framework required for SHGetKnownFolderPath equivalent
