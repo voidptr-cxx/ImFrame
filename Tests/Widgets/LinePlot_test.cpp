@@ -84,7 +84,7 @@ TEST_CASE("LinePlot with theme applied does not crash", "[unit]") {
     REQUIRE(application.Run().has_value());
 }
 
-TEST_CASE("LinePlot Show clears series — second frame renders empty plot", "[unit]") {
+TEST_CASE("LinePlot Show clears series after each frame", "[unit]") {
     auto app = std::make_unique<TestHeadlessBackend>(2);
     Application application(std::move(app));
 
