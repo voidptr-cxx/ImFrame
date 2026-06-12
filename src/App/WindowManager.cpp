@@ -1,14 +1,15 @@
 /**
  * @file     WindowManager.cpp
- * @brief    Panel registry and visibility-bound menu rendering
+ * @brief    Panel registry, visibility-bound menu rendering, and layout menu
  *
  * @internal
  * Implements WindowManager: entry registration, menu rendering via ImGui::BeginMenu,
- * and clear-on-shutdown.
+ * RenderLayoutMenu (Layout submenu with saved layouts, inline save-as input, and
+ * reset-to-default), and clear-on-shutdown.
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  0.8.0
+ * @version  1.6.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -16,6 +17,7 @@
  */
 
 #include "ImFrame/App/Window.hpp"
+#include "ImFrame/App/DockSpace.hpp"
 
 #include <imgui.h>
 
@@ -36,6 +38,38 @@ void WindowManager::RenderMenu(std::string_view menuTitle) {
         for (auto& entry : _entries) {
             ImGui::MenuItem(entry.name.c_str(), nullptr, entry.visible);
         }
+        ImGui::EndMenu();
+    }
+}
+
+void WindowManager::RenderLayoutMenu(DockSpace& dockSpace) {
+    if (ImGui::BeginMenu("Layout")) {
+        // One item per saved layout.
+        for (const auto& name : dockSpace.ListLayouts()) {
+            if (ImGui::MenuItem(name.c_str())) {
+                dockSpace.LoadLayout(name);
+            }
+        }
+
+        if (!dockSpace.ListLayouts().empty()) {
+            ImGui::Separator();
+        }
+
+        // Inline save-as: InputText + Save button side by side.
+        ImGui::SetNextItemWidth(140.0f);
+        const bool submitted = ImGui::InputText("##SaveName", _saveLayoutBuf, sizeof(_saveLayoutBuf),
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if ((ImGui::Button("Save") || submitted) && _saveLayoutBuf[0] != '\0') {
+            dockSpace.SaveLayout(_saveLayoutBuf);
+            _saveLayoutBuf[0] = '\0';
+        }
+
+        ImGui::Separator();
+        if (ImGui::MenuItem("Reset to Default")) {
+            dockSpace.ResetLayout();
+        }
+
         ImGui::EndMenu();
     }
 }

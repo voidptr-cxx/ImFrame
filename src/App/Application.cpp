@@ -9,7 +9,7 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  0.8.0
+ * @version  1.6.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -104,6 +104,9 @@ VoidResult Application::Run() {
     }
     _pendingFonts.clear();
 
+    // Wire the layout Config into DockSpace so SaveLayout/LoadLayout/ResetLayout work.
+    _dockSpace.SetConfig(&_layoutConfig);
+
     // ── Render loop ───────────────────────────────────────────────────────────
     _lastFrameTime = std::chrono::steady_clock::now();
 
@@ -182,6 +185,10 @@ float Application::DpiScale() const noexcept {
 
 WindowManager& Application::GetWindowManager() noexcept {
     return _windowManager;
+}
+
+DockSpace& Application::GetDockSpace() noexcept {
+    return _dockSpace;
 }
 
 // ─── Static factories ─────────────────────────────────────────────────────────

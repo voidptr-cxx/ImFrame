@@ -5,8 +5,9 @@
  * Provides two facilities used by application code to manage UI panels:
  *
  * - `WindowManager` — a registry of named panels with `bool*` visibility flags.
- *   Panels register themselves at startup. `RenderMenu()` emits a checked menu
- *   item for each registered panel so the user can show/hide them from a menu bar.
+ *   `RenderMenu()` emits a checked menu item per panel for show/hide control.
+ *   `RenderLayoutMenu()` adds a "Layout" submenu backed by `DockSpace` for
+ *   saving, loading, and resetting named dockspace layouts.
  *
  * - `WindowScope` / `BeginWindow()` — an RAII scope guard that wraps
  *   `ImGui::Begin()` / `ImGui::End()`. Construct it with an `if` statement to
@@ -14,7 +15,7 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  0.8.0
+ * @version  1.6.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -28,6 +29,8 @@
 #include <vector>
 
 namespace ImFrame::App {
+
+class DockSpace; // forward declaration for RenderLayoutMenu parameter
 
 // ─── WindowManager ────────────────────────────────────────────────────────────
 
@@ -87,6 +90,21 @@ public:
     void RenderMenu(std::string_view menuTitle);
 
     /**
+     * @brief    Render a `"Layout"` submenu for saving, loading, and resetting
+     *           named dockspace layouts.
+     *
+     * Call this from inside `ImGui::BeginMenuBar()` / `ImGui::EndMenuBar()`.
+     * The submenu contains:
+     * - One `MenuItem` per layout saved via `DockSpace::SaveLayout()`.
+     * - An inline InputText + Save button for saving the current layout under
+     *   a new name.
+     * - A `"Reset to Default"` item that calls `DockSpace::ResetLayout()`.
+     *
+     * @param[in]  dockSpace  The dockspace whose layout is managed.
+     */
+    void RenderLayoutMenu(DockSpace& dockSpace);
+
+    /**
      * @brief    Remove all registered panels.
      *
      * Called automatically by `Application` during shutdown. The `bool*` pointers
@@ -101,6 +119,7 @@ private:
     };
 
     std::vector<Entry> _entries;
+    char _saveLayoutBuf[128] = {}; ///< InputText buffer for the "save as" field.
 };
 
 // ─── WindowScope ──────────────────────────────────────────────────────────────
