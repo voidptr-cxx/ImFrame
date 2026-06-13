@@ -22,7 +22,7 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  0.8.0
+ * @version  1.6.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -34,6 +34,7 @@
 #include "ImFrame/App/DockSpace.hpp"
 #include "ImFrame/App/Window.hpp"
 #include "ImFrame/Backends/BackendInfo.hpp"
+#include "ImFrame/Utility/Config.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
 #include "ImFrame/Utility/Path.hpp"
 #include "ImFrame/Utility/Timer.hpp"
@@ -244,6 +245,17 @@ public:
      */
     [[nodiscard]] WindowManager& GetWindowManager() noexcept;
 
+    /**
+     * @brief    Returns the dockspace manager.
+     *
+     * Provides access to `SaveLayout()`, `LoadLayout()`, `ResetLayout()`, and
+     * `ListLayouts()`. All layout methods must be called on the render thread
+     * inside an active ImGui frame (i.e. from an `OnUi` callback).
+     *
+     * @return   Reference to the application-owned `DockSpace`.
+     */
+    [[nodiscard]] DockSpace& GetDockSpace() noexcept;
+
     // ─── Static factories ─────────────────────────────────────────────────────
 
     /**
@@ -264,6 +276,7 @@ private:
     std::unique_ptr<Internal::IBackend>     _backend;
     WindowConfig                            _config;
     Utility::Timer                          _timer;
+    Utility::Config                         _layoutConfig;
     DockSpace                               _dockSpace;
     WindowManager                           _windowManager;
     Widgets::PlotContext                    _plotContext;
