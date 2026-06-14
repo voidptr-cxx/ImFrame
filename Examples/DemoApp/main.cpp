@@ -23,6 +23,7 @@
  */
 
 #include "ImFrame/ImFrame.hpp"
+#include "ImFrame/Icons/Icons.hpp"
 #include "GLFWOpenGL3Backend.hpp"
 
 #include <imgui.h>
@@ -41,6 +42,7 @@ using namespace ImFrame::Widgets;
 using namespace ImFrame::Layout;
 using namespace ImFrame::Overlay;
 using namespace ImFrame::Anim;
+using namespace ImFrame::Icons;
 
 // ─── Synthetic table data ─────────────────────────────────────────────────────
 
@@ -151,6 +153,73 @@ static void DrawMenuBar(App::Application& app, DemoState& state) {
     ImGui::EndMainMenuBar();
 }
 
+static void DrawIconsPanel() {
+    ImGui::Begin("Icons & Fonts");
+
+    ImGui::SeparatorText("FontAwesome 6 Free — glyph reference");
+    ImGui::TextWrapped("The FA6 icon font is merged into the default typeface via "
+                       "Application::WithFont({ .isIconFont = true }). "
+                       "Any FA6 glyph constant from ImFrame::Icons::Fa can be passed "
+                       "directly to ImGui::Text or Button::Icon.");
+
+    ImGui::Spacing();
+
+    struct IconEntry { const char* glyph; const char* name; };
+    static constexpr std::array<IconEntry, 24> kIcons{{
+        { Fa::House,             "House"          },
+        { Fa::Gear,              "Gear"           },
+        { Fa::MagnifyingGlass,   "Search"         },
+        { Fa::Bell,              "Bell"           },
+        { Fa::CircleCheck,       "CircleCheck"    },
+        { Fa::CircleXmark,       "CircleXmark"    },
+        { Fa::CircleExclamation, "Alert"          },
+        { Fa::CircleInfo,        "Info"           },
+        { Fa::Heart,             "Heart"          },
+        { Fa::Bookmark,          "Bookmark"       },
+        { Fa::Eye,               "Eye"            },
+        { Fa::Copy,              "Copy"           },
+        { Fa::FloppyDisk,        "Save"           },
+        { Fa::Download,          "Download"       },
+        { Fa::File,              "File"           },
+        { Fa::Flag,              "Flag"           },
+        { Fa::Globe,             "Globe"          },
+        { Fa::Key,               "Key"            },
+        { Fa::Lock,              "Lock"           },
+        { Fa::Laptop,            "Laptop"         },
+        { Fa::Link,              "Link"           },
+        { Fa::Microphone,        "Microphone"     },
+        { Fa::Moon,              "Moon"           },
+        { Fa::Music,             "Music"          },
+    }};
+
+    if (ImGui::BeginTable("##icon_grid", 4, ImGuiTableFlags_SizingFixedFit)) {
+        for (const auto& e : kIcons) {
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(e.glyph);
+            ImGui::SameLine(24.0f);
+            ImGui::TextUnformatted(e.name);
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::SeparatorText("Button::Icon() fluent API");
+    Button("Save")    .Icon(Fa::FloppyDisk).Width(110.0f).Show();
+    ImGui::SameLine();
+    Button("Download").Icon(Fa::Download)  .Width(110.0f).Show();
+    ImGui::SameLine();
+    Button("Search")  .Icon(Fa::MagnifyingGlass).Width(110.0f).Show();
+    ImGui::SameLine();
+    Button("Settings").Icon(Fa::Gear)      .Width(110.0f).Show();
+
+    ImGui::SeparatorText("Inline icon + text (ImGui::Text)");
+    ImGui::Text("%s  Home panel", Fa::House);
+    ImGui::Text("%s  Locked resource", Fa::Lock);
+    ImGui::Text("%s  New notification", Fa::Bell);
+    ImGui::Text("%s  Global scope", Fa::Globe);
+
+    ImGui::End();
+}
+
 static void DrawWidgetsPanel(DemoState& state) {
     ImGui::Begin("Widgets");
 
@@ -186,16 +255,16 @@ static void DrawWidgetsPanel(DemoState& state) {
     ProgressBar(state.sliderVal).Size({-1.0f, 0.0f}).Show();
 
     ImGui::SeparatorText("Toasts");
-    Button("Info").OnClick([]  { ToastInfo("Info",    "This is informational."); }).Show();
+    Button("Info")   .Icon(Fa::CircleInfo)       .OnClick([] { ToastInfo("Info",    "This is informational."); }).Show();
     ImGui::SameLine();
-    Button("Success").OnClick([]{ ToastSuccess("Done","Operation succeeded.");   }).Show();
+    Button("Success").Icon(Fa::CircleCheck)       .OnClick([] { ToastSuccess("Done","Operation succeeded.");   }).Show();
     ImGui::SameLine();
-    Button("Warn").OnClick([]  { ToastWarning("Warn", "Something looks off.");  }).Show();
+    Button("Warn")   .Icon(Fa::CircleExclamation).OnClick([] { ToastWarning("Warn", "Something looks off.");  }).Show();
     ImGui::SameLine();
-    Button("Error").OnClick([] { ToastError("Error",  "Something went wrong!"); }).Show();
+    Button("Error")  .Icon(Fa::CircleXmark)      .OnClick([] { ToastError("Error",  "Something went wrong!"); }).Show();
 
     ImGui::SeparatorText("Modal");
-    Button("Open Modal").Width(120.0f).OnClick([&state] { state.confirmModal.Open(); }).Show();
+    Button("Open Modal").Icon(Fa::CircleExclamation).Width(140.0f).OnClick([&state] { state.confirmModal.Open(); }).Show();
 
     if (auto scope = state.confirmModal.Begin()) {
         Text("Are you sure you want to proceed?").Wrapped().Show();
@@ -329,7 +398,9 @@ int main()
         }
     );
 
-    app.WithTheme(Themes::Dracula)
+    app.WithFont({ .path = "C:/Windows/Fonts/segoeui.ttf", .size = 16.0f })
+       .WithFont({ .path = "Assets/Fonts/fa-solid-900.ttf", .size = 14.0f, .isIconFont = true })
+       .WithTheme(Themes::Dracula)
        .WithMenuBar(false)  // menu rendered via ImGui::BeginMainMenuBar() in OnUi
        .OnUpdate([&state](float dt) {
            state.fadeBar.Update(dt);
@@ -339,6 +410,7 @@ int main()
            DrawMenuBar(app, state);
            DrawWidgetsPanel(state);
            DrawLayoutPanel(state);
+           DrawIconsPanel();
            DrawAnimPanel(state);
            DrawTablePanel(state);
            DrawPlotPanel(state);
