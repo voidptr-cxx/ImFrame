@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.6.0
+    VERSION 1.7.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -130,6 +130,16 @@ add_library(ImFrame STATIC
     # ── Phase 15: Plot integration ────────────────────────────────────────────
     src/Widgets/PlotContext.cpp
 )
+
+# ── Phase 17: Developer tooling (conditional) ─────────────────────────────────
+if(IMF_DEV_TOOLS)
+    target_sources(ImFrame PRIVATE
+        src/DevTools/LogViewer.cpp
+        src/DevTools/PerfOverlay.cpp
+        src/DevTools/ThemeHotReload.cpp
+    )
+    target_compile_definitions(ImFrame PUBLIC IMF_DEV_TOOLS)
+endif()
 
 target_include_directories(ImFrame
     PUBLIC

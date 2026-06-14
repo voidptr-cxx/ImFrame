@@ -100,6 +100,13 @@
 #include "ImFrame/Overlay/Modal.hpp"
 #include "ImFrame/Overlay/ContextMenu.hpp"
 
+// ─── Developer Tooling (Debug builds only) ────────────────────────────────────
+#if defined(IMF_DEV_TOOLS)
+#include "ImFrame/DevTools/LogViewer.hpp"
+#include "ImFrame/DevTools/PerfOverlay.hpp"
+#include "ImFrame/DevTools/ThemeHotReload.hpp"
+#endif
+
 // ─── Rendering ────────────────────────────────────────────────────────────────
 #include "ImFrame/Rendering/RenderContext.hpp"
 #include "ImFrame/Rendering/Viewport.hpp"

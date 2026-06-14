@@ -323,3 +323,27 @@ target_link_libraries(ImFrame_Tests_Widgets_LinePlot
 target_compile_features(ImFrame_Tests_Widgets_LinePlot PRIVATE cxx_std_23)
 # TIMEOUT=30 guards against ImPlot hangs in headless context.
 catch_discover_tests(ImFrame_Tests_Widgets_LinePlot PROPERTIES LABELS unit TIMEOUT 30)
+
+# ─── Phase 17: DevTools tests (compiled only when IMF_DEV_TOOLS=ON) ──────────
+
+if(IMF_DEV_TOOLS)
+    add_executable(ImFrame_Tests_DevTools_LogViewer
+        DevTools/LogViewer_test.cpp
+    )
+    target_link_libraries(ImFrame_Tests_DevTools_LogViewer
+        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_DevTools_LogViewer PRIVATE cxx_std_23)
+    target_compile_definitions(ImFrame_Tests_DevTools_LogViewer PRIVATE IMF_DEV_TOOLS)
+    catch_discover_tests(ImFrame_Tests_DevTools_LogViewer PROPERTIES LABELS unit)
+
+    add_executable(ImFrame_Tests_DevTools_ThemeHotReload
+        DevTools/ThemeHotReload_test.cpp
+    )
+    target_link_libraries(ImFrame_Tests_DevTools_ThemeHotReload
+        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_DevTools_ThemeHotReload PRIVATE cxx_std_23)
+    target_compile_definitions(ImFrame_Tests_DevTools_ThemeHotReload PRIVATE IMF_DEV_TOOLS)
+    catch_discover_tests(ImFrame_Tests_DevTools_ThemeHotReload PROPERTIES LABELS unit TIMEOUT 10)
+endif()
