@@ -119,14 +119,23 @@ std::string ParseToml(const std::string& text,
 }
 
 std::string ValueToToml(const ConfigValue& v) {
+    // MSVC C4702: all variant alternatives in the if constexpr chain are
+    // exhaustive but MSVC still warns about the dead fallthrough return.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable: 4702)
+#endif
     return std::visit([](const auto& val) -> std::string {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, bool>)        return val ? "true" : "false";
         if constexpr (std::is_same_v<T, int64_t>)     return std::to_string(val);
         if constexpr (std::is_same_v<T, double>)      return std::to_string(val);
         if constexpr (std::is_same_v<T, std::string>) return '"' + val + '"';
-        return "";
+        return {};
     }, v);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 }
 
 std::string SerialiseToml(const std::unordered_map<std::string, ConfigValue>& data) {

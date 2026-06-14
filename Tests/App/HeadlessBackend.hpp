@@ -66,6 +66,7 @@ public:
         io.DisplaySize      = ImVec2(static_cast<float>(config.Width),
                                      static_cast<float>(config.Height));
         io.DeltaTime        = 1.0f / 60.0f;
+        io.IniFilename      = nullptr; // Disable ini persistence in tests.
 
         // Build a minimal font atlas so ImGui::NewFrame() does not assert.
         io.Fonts->AddFontDefault();

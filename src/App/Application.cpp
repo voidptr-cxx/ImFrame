@@ -9,7 +9,7 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  1.6.0
+ * @version  1.7.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -24,6 +24,10 @@
 #include "HeadlessBackend.hpp"
 
 #include <imgui.h>
+
+#if defined(IMF_DEV_TOOLS)
+#include "ImFrame/Theme/Themes/Dracula.hpp"
+#endif
 
 namespace ImFrame::App {
 
@@ -107,6 +111,19 @@ VoidResult Application::Run() {
     // Wire the layout Config into DockSpace so SaveLayout/LoadLayout/ResetLayout work.
     _dockSpace.SetConfig(&_layoutConfig);
 
+#if defined(IMF_DEV_TOOLS)
+    // ── DevTools setup ────────────────────────────────────────────────────────
+    _uiSink = std::make_shared<Utility::UiSink>(1000);
+    Utility::Logger::Instance().AddSink(_uiSink);
+    _logViewer.emplace(_uiSink);
+    _logViewer->Register(_windowManager);
+
+    // ThemeHotReload watches Assets/Themes/ relative to the working directory.
+    // SetBaseTheme uses the active theme if one was set, else Dracula as default.
+    _themeHotReload.SetBaseTheme(_pendingTheme ? *_pendingTheme : ImFrame::Themes::Dracula);
+    _themeHotReload.Watch(Utility::Path{"Assets/Themes"});
+#endif
+
     // ── Render loop ───────────────────────────────────────────────────────────
     _lastFrameTime = std::chrono::steady_clock::now();
 
@@ -116,6 +133,11 @@ VoidResult Application::Run() {
     _windowManager.Clear();
     // ImPlot context must be destroyed before the ImGui context.
     _plotContext.Shutdown();
+#if defined(IMF_DEV_TOOLS)
+    if (_uiSink) {
+        Utility::Logger::Instance().RemoveSink(_uiSink);
+    }
+#endif
     _backend->Shutdown();
 
     return {};
@@ -145,6 +167,16 @@ bool Application::RunOneFrame() {
         _onUpdate(_deltaTime);
     }
 
+#if defined(IMF_DEV_TOOLS)
+    _themeHotReload.Poll();
+    if (auto reloaded = _themeHotReload.TakePending()) {
+        _hotTheme     = std::move(reloaded);
+        _pendingTheme = &*_hotTheme;
+        _themeDirty   = true;
+        _themeHotReload.SetBaseTheme(*_hotTheme);
+    }
+#endif
+
     // ── ImGui frame ───────────────────────────────────────────────────────────
     _backend->BeginFrame();
 
@@ -164,6 +196,10 @@ bool Application::RunOneFrame() {
         _onUi();
     }
     Overlay::ToastManager::Instance().Render(_deltaTime);
+#if defined(IMF_DEV_TOOLS)
+    if (_logViewer) { _logViewer->Render(); }
+    _perfOverlay.Render(_deltaTime);
+#endif
     _dockSpace.End();
 
     _backend->EndFrame();

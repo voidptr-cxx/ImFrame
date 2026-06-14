@@ -22,7 +22,7 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  1.6.0
+ * @version  1.7.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -36,12 +36,20 @@
 #include "ImFrame/Backends/BackendInfo.hpp"
 #include "ImFrame/Utility/Config.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
+#include "ImFrame/Utility/Logger.hpp"
 #include "ImFrame/Utility/Path.hpp"
 #include "ImFrame/Utility/Timer.hpp"
 #include "ImFrame/Widgets/PlotContext.hpp"
 
+#if defined(IMF_DEV_TOOLS)
+#include "ImFrame/DevTools/LogViewer.hpp"
+#include "ImFrame/DevTools/PerfOverlay.hpp"
+#include "ImFrame/DevTools/ThemeHotReload.hpp"
+#endif
+
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <vector>
 
 // Phase 8 provides the full Theme definition; forward-declare here.
@@ -288,6 +296,14 @@ private:
     bool                                    _themeDirty   = false;
     float                                   _deltaTime    = 0.0f;
     std::chrono::steady_clock::time_point   _lastFrameTime{};
+
+#if defined(IMF_DEV_TOOLS)
+    std::shared_ptr<Utility::UiSink>           _uiSink;
+    std::optional<DevTools::LogViewer>         _logViewer;
+    DevTools::PerfOverlay                      _perfOverlay;
+    DevTools::ThemeHotReload                   _themeHotReload;
+    std::optional<ImFrame::Theme::Theme>       _hotTheme;
+#endif
 };
 
 } // namespace ImFrame::App
