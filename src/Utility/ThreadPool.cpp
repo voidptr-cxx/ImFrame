@@ -166,7 +166,7 @@ ThreadPool::ThreadPool(std::size_t workerCount, std::string namePrefix)
     }
 }
 
-ThreadPool::~ThreadPool() {
+ThreadPool::~ThreadPool() noexcept {
     Shutdown();
 }
 

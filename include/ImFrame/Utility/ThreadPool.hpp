@@ -78,7 +78,7 @@ public:
     /**
      * @brief  Destructor. Calls Shutdown() if not already called
      */
-    ~ThreadPool();
+    ~ThreadPool() noexcept;
 
     ThreadPool(const ThreadPool&)            = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;

@@ -78,7 +78,7 @@ public:
     /**
      * @brief  Destructor — unsubscribes the handler if still active
      */
-    ~SubscriptionToken();
+    ~SubscriptionToken() noexcept;
 
     SubscriptionToken(const SubscriptionToken&) = delete;
     SubscriptionToken& operator=(const SubscriptionToken&) = delete;
@@ -163,7 +163,7 @@ public:
     /**
      * @brief  Destructor — waits for any in-flight async dispatches to complete
      */
-    ~EventBus();
+    ~EventBus() noexcept;
 
     EventBus(const EventBus&) = delete;
     EventBus& operator=(const EventBus&) = delete;

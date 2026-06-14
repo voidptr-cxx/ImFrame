@@ -52,9 +52,9 @@ public:
      */
     explicit ScrollArea(std::string_view id) noexcept : _id(id) {}
 
-    ScrollArea& Size(Widgets::Vec2 size)             { _size = size;              return *this; }
-    ScrollArea& HorizontalBar(bool enabled = true)   { _hBar = enabled;           return *this; }
-    ScrollArea& VerticalBar(bool enabled = true)     { _vBar = enabled;           return *this; }
+    ScrollArea& Size(Widgets::Vec2 size) noexcept             { _size = size;              return *this; }
+    ScrollArea& HorizontalBar(bool enabled = true) noexcept   { _hBar = enabled;           return *this; }
+    ScrollArea& VerticalBar(bool enabled = true) noexcept     { _vBar = enabled;           return *this; }
 
     /**
      * @brief    Open the scrollable child window and return an RAII scope.

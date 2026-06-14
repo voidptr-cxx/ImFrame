@@ -73,7 +73,7 @@ public:
     /**
      * @brief  Destructor — automatically disconnects the slot if still connected
      */
-    ~Connection();
+    ~Connection() noexcept;
 
     Connection(const Connection&) = delete;
     Connection& operator=(const Connection&) = delete;

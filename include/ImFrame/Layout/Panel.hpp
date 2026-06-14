@@ -50,22 +50,22 @@ public:
      */
     explicit Panel(std::string_view id) noexcept : _id(id) {}
 
-    Panel& Size(Widgets::Vec2 size)        { _size = size;        return *this; }
-    Panel& Border(bool border = true)      { _border = border;    return *this; }
+    Panel& Size(Widgets::Vec2 size) noexcept        { _size = size;        return *this; }
+    Panel& Border(bool border = true) noexcept      { _border = border;    return *this; }
 
     /**
      * @brief    Override the child window's inner padding.
      * @param[in]  padding  Padding in pixels pushed via `ImGuiStyleVar_WindowPadding`.
      * @return   `*this` for chaining.
      */
-    Panel& Padding(Widgets::Vec2 padding)  { _padding = padding;  _hasPadding = true; return *this; }
+    Panel& Padding(Widgets::Vec2 padding) noexcept  { _padding = padding;  _hasPadding = true; return *this; }
 
     /**
      * @brief    Set the child window's background colour.
      * @param[in]  color  RGBA colour pushed via `ImGuiCol_ChildBg`.
      * @return   `*this` for chaining.
      */
-    Panel& Background(Widgets::Vec4 color) { _bg = color;         _hasBg = true;      return *this; }
+    Panel& Background(Widgets::Vec4 color) noexcept { _bg = color;         _hasBg = true;      return *this; }
 
     /**
      * @brief    Open the child window and return an RAII scope.

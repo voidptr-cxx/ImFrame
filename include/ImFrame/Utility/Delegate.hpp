@@ -150,7 +150,7 @@ public:
     /**
      * @brief  Destructor — calls the stored callable's destructor if needed
      */
-    ~Delegate() { Reset(); }
+    ~Delegate() noexcept { Reset(); }
 
     /**
      * @brief    Constructs a delegate targeting a free function

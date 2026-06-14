@@ -121,7 +121,7 @@ public:
     /**
      * @brief  Destructor. Stops the background thread and releases all watches.
      */
-    ~FileWatcher();
+    ~FileWatcher() noexcept;
 
     FileWatcher(const FileWatcher&)            = delete;
     FileWatcher& operator=(const FileWatcher&) = delete;
@@ -165,7 +165,7 @@ public:
      *
      * @throws   Nothing (exceptions from `handler` propagate unchanged).
      */
-    uint32_t Poll(const std::function<void(const FileEvent&)>& handler);
+    [[nodiscard]] uint32_t Poll(const std::function<void(const FileEvent&)>& handler);
 
 private:
     struct Impl;

@@ -125,7 +125,7 @@ public:
     explicit Application(std::unique_ptr<Internal::IBackend> backend,
                          WindowConfig config = {});
 
-    ~Application();
+    ~Application() noexcept;
 
     Application(const Application&)            = delete;
     Application& operator=(const Application&) = delete;
@@ -226,7 +226,7 @@ public:
      *
      * @return   `true` to continue; `false` to exit the render loop.
      */
-    bool RunOneFrame();
+    [[nodiscard]] bool RunOneFrame();
 
     // ─── Per-frame queries ────────────────────────────────────────────────────
 

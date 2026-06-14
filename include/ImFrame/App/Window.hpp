@@ -161,7 +161,7 @@ public:
     explicit WindowScope(std::string_view title, bool* visible = nullptr, int flags = 0);
 
     /// @brief  Calls `ImGui::End()` unless this scope was moved from.
-    ~WindowScope();
+    ~WindowScope() noexcept;
 
     WindowScope(const WindowScope&)            = delete;
     WindowScope& operator=(const WindowScope&) = delete;

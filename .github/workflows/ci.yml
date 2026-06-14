@@ -91,3 +91,159 @@ jobs:
         run: |
           find include src Backends Examples -name '*.hpp' -o -name '*.cpp' \
             | xargs clang-format-17 --dry-run --Werror
+
+  # ── Sanitizer jobs (ASan / TSan / UBSan) ─────────────────────────────────────
+  sanitize:
+    name: Sanitize (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: asan
+            label: AddressSanitizer
+            cxx_flags: "-fsanitize=address -fno-omit-frame-pointer"
+            env_opts: "ASAN_OPTIONS=detect_leaks=0"
+          - sanitizer: tsan
+            label: ThreadSanitizer
+            cxx_flags: "-fsanitize=thread"
+            env_opts: "TSAN_OPTIONS=halt_on_error=1"
+          - sanitizer: ubsan
+            label: UBSan
+            cxx_flags: "-fsanitize=undefined -fno-sanitize-recover=all"
+            env_opts: "UBSAN_OPTIONS=print_stacktrace=1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "6fad4fa784ab2506e35144a7c3d64738976445ea"
+
+      - name: Install display and OpenGL dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb libgl1-mesa-swrast libglx-mesa0
+
+      - name: Configure
+        env:
+          CC: clang-17
+          CXX: clang++-17
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_C_FLAGS="${{ matrix.cxx_flags }}" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DIMF_BUILD_TESTS=ON \
+            -DIMF_BACKEND_GLFW_OPENGL3=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          export ${{ matrix.env_opts }}
+          xvfb-run --auto-servernum ctest --test-dir build --output-on-failure
+
+  # ── Coverage job (gcov, 80% line threshold) ───────────────────────────────────
+  coverage:
+    name: Coverage (gcov ≥ 80%)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "6fad4fa784ab2506e35144a7c3d64738976445ea"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb libgl1-mesa-swrast libglx-mesa0 lcov
+
+      - name: Configure
+        env:
+          CC: gcc-13
+          CXX: g++-13
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+            -DCMAKE_C_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DIMF_BUILD_TESTS=ON \
+            -DIMF_BACKEND_GLFW_OPENGL3=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: xvfb-run --auto-servernum ctest --test-dir build --output-on-failure
+
+      - name: Collect coverage
+        run: |
+          lcov --capture --directory build --output-file coverage.info \
+            --gcov-tool gcov-13
+          lcov --remove coverage.info \
+            '/usr/*' \
+            '*/vcpkg_installed/*' \
+            '*/Tests/*' \
+            '*/Examples/*' \
+            --output-file coverage_filtered.info
+          lcov --summary coverage_filtered.info
+
+      - name: Enforce ≥ 80% line coverage
+        run: |
+          COVERAGE=$(lcov --summary coverage_filtered.info 2>&1 \
+            | grep 'lines' | grep -oE '[0-9]+\.[0-9]+%' | head -1 | tr -d '%')
+          echo "Line coverage: ${COVERAGE}%"
+          awk -v cov="$COVERAGE" 'BEGIN {
+            if (cov + 0 < 80.0) {
+              print "FAIL: coverage " cov "% is below the 80% threshold"
+              exit 1
+            }
+            print "PASS: coverage " cov "% meets the 80% threshold"
+          }'
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage_filtered.info
+
+  # ── Doxygen — build docs and publish to GitHub Pages on main ─────────────────
+  docs:
+    name: Doxygen
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y doxygen graphviz
+
+      - name: Build docs
+        run: doxygen docs/Doxyfile
+
+      - name: Deploy to GitHub Pages
+        if: github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/html

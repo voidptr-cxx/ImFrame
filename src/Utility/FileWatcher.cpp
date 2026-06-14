@@ -644,7 +644,7 @@ FileWatcher::FileWatcher()
     _impl->Start();
 }
 
-FileWatcher::~FileWatcher() = default;
+FileWatcher::~FileWatcher() noexcept = default;
 
 FileWatcher::FileWatcher(FileWatcher&&) noexcept = default;
 FileWatcher& FileWatcher::operator=(FileWatcher&&) noexcept = default;

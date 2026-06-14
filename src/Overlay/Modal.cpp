@@ -31,7 +31,7 @@ namespace ImFrame::Overlay {
 
 // ─── PopupScope ───────────────────────────────────────────────────────────────
 
-PopupScope::~PopupScope() {
+PopupScope::~PopupScope() noexcept {
     if (_active && _open) {
         ImGui::EndPopup();
     }

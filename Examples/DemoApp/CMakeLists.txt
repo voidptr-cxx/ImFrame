@@ -6,6 +6,7 @@ target_link_libraries(DemoApp
     PRIVATE
         ImFrame
         ImFrame_GLFWOpenGL3
+        imgui::imgui        # DemoApp uses ImGui directly for menus and table cell renderers
         imframe_warnings
 )
 

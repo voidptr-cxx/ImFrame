@@ -22,7 +22,7 @@
 
 namespace ImFrame::Layout {
 
-ChildScope::~ChildScope() {
+ChildScope::~ChildScope() noexcept {
     if (_active) {
         ImGui::EndChild();
     }

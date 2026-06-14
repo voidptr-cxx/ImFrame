@@ -81,7 +81,7 @@ public:
      * @note   Blocks until all previously queued tasks have completed.
      *         New tasks must not be posted after the destructor begins.
      */
-    ~BackgroundWorker();
+    ~BackgroundWorker() noexcept;
 
     BackgroundWorker(const BackgroundWorker&)            = delete;
     BackgroundWorker& operator=(const BackgroundWorker&) = delete;

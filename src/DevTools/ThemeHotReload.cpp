@@ -138,7 +138,7 @@ void ApplyColorMap(Theme::ThemeBuilder& builder, const ColorMap& map)
 // ─── Construction ─────────────────────────────────────────────────────────────
 
 ThemeHotReload::ThemeHotReload() = default;
-ThemeHotReload::~ThemeHotReload()
+ThemeHotReload::~ThemeHotReload() noexcept
 {
     if (_watchHandle != Utility::InvalidWatchHandle) {
         _watcher.Unwatch(_watchHandle);
@@ -168,7 +168,7 @@ void ThemeHotReload::Watch(const Utility::Path& dir)
 
 void ThemeHotReload::Poll()
 {
-    _watcher.Poll([this](const Utility::FileEvent& event) {
+    (void)_watcher.Poll([this](const Utility::FileEvent& event) {
         if (event.Type != Utility::FileChangeType::Modified &&
             event.Type != Utility::FileChangeType::Created) {
             return;

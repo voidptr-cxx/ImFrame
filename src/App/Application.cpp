@@ -38,7 +38,7 @@ Application::Application(std::unique_ptr<Internal::IBackend> backend, WindowConf
     , _config(config)
 {}
 
-Application::~Application() = default;
+Application::~Application() noexcept = default;
 
 // ─── Fluent builder ───────────────────────────────────────────────────────────
 

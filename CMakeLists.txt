@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(ImFrame
-    VERSION 1.7.0
+    VERSION 1.8.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )

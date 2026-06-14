@@ -184,7 +184,7 @@ struct Config::Impl {
 Config::Config()
     : _impl{std::make_unique<Impl>()} {}
 
-Config::~Config() {
+Config::~Config() noexcept {
     if (_impl) {
         if (_impl->watchHandle != InvalidWatchHandle) {
             _impl->watcher.Unwatch(_impl->watchHandle);
@@ -288,7 +288,7 @@ void Config::WatchPath(const Path& path) {
 void Config::PollWatcher() {
     if (_impl->watchHandle == InvalidWatchHandle) return;
 
-    _impl->watcher.Poll([this](const FileEvent& e) {
+    (void)_impl->watcher.Poll([this](const FileEvent& e) {
         if (e.Type != FileChangeType::Modified) return;
         if (e.ChangedPath.Native().filename() != _impl->watchedPath.Native().filename()) return;
 

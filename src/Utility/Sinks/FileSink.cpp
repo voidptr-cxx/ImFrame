@@ -75,7 +75,7 @@ FileSink::FileSink(const Path& path, std::size_t rotateAtBytes)
     _impl->Open();
 }
 
-FileSink::~FileSink() {
+FileSink::~FileSink() noexcept {
     if (_impl && _impl->file) {
         std::fflush(_impl->file);
         std::fclose(_impl->file);
