@@ -48,7 +48,7 @@ public:
     explicit ChildScope(bool visible) noexcept : _visible(visible) {}
 
     /// Calls `ImGui::EndChild()` if this scope is still active.
-    ~ChildScope();
+    ~ChildScope() noexcept;
 
     ChildScope(const ChildScope&)            = delete;
     ChildScope& operator=(const ChildScope&) = delete;

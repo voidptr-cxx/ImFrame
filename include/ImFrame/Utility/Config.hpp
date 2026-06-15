@@ -96,7 +96,7 @@ public:
     /**
      * @brief  Destructor — drains any pending background saves before destruction
      */
-    ~Config();
+    ~Config() noexcept;
 
     Config(const Config&) = delete;
     Config& operator=(const Config&) = delete;

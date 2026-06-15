@@ -51,7 +51,7 @@ struct Logger::Impl {
 Logger::Logger()
     : _impl{std::make_shared<Impl>()} {}
 
-Logger::~Logger() = default;
+Logger::~Logger() noexcept = default;
 
 Logger& Logger::Instance() {
     static Logger singleton;

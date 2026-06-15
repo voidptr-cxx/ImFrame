@@ -1,0 +1,63 @@
+# Doxyfile — ImFrame public API documentation
+# Generated for Phase 18; update PROJECT_NUMBER when the library version bumps.
+
+PROJECT_NAME           = "ImFrame"
+PROJECT_BRIEF          = "Immediate-mode UI framework wrapping Dear ImGui"
+PROJECT_NUMBER         = 1.8.0
+OUTPUT_DIRECTORY       = docs
+
+# ── Input ─────────────────────────────────────────────────────────────────────
+# Document only the public API headers; src/ and Backends/ are internal.
+INPUT                  = include/ImFrame
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp
+EXCLUDE_PATTERNS       = */Internal/* */Tree/* */Rendering/*
+
+# ── Output ────────────────────────────────────────────────────────────────────
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+HTML_TIMESTAMP         = NO
+
+# ── Extraction ────────────────────────────────────────────────────────────────
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+INTERNAL_DOCS          = NO
+SHOW_INCLUDE_FILES     = YES
+
+# ── Preprocessing ─────────────────────────────────────────────────────────────
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = IMF_DEV_TOOLS=1 \
+                         DOXYGEN_RUNNING=1
+
+# ── Graphs ────────────────────────────────────────────────────────────────────
+HAVE_DOT               = YES
+CLASS_DIAGRAMS         = YES
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = NO
+INCLUDE_GRAPH          = NO
+INCLUDED_BY_GRAPH      = NO
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+
+# ── Warnings ──────────────────────────────────────────────────────────────────
+WARN_IF_UNDOCUMENTED   = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+
+# ── Source browsing ───────────────────────────────────────────────────────────
+SOURCE_BROWSER         = NO
+INLINE_SOURCES         = NO
+
+# ── Index ─────────────────────────────────────────────────────────────────────
+ALPHABETICAL_INDEX     = YES
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+
+# ── Search ────────────────────────────────────────────────────────────────────
+SEARCHENGINE           = YES
+SERVER_BASED_SEARCH    = NO

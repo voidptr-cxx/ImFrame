@@ -35,7 +35,7 @@ BackgroundWorker::BackgroundWorker(std::string name)
 // _name is stored in Thread::_name; expose it via Name() by delegating to _thread.
 {}
 
-BackgroundWorker::~BackgroundWorker() {
+BackgroundWorker::~BackgroundWorker() noexcept {
     // Drain first: ensure every queued task completes before we signal stop.
     Drain();
     _thread.RequestStop();

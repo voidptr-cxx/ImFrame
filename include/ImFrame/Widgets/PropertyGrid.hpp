@@ -60,7 +60,7 @@ namespace ImFrame::Widgets {
  */
 class PropertyGridScope {
 public:
-    ~PropertyGridScope();
+    ~PropertyGridScope() noexcept;
 
     PropertyGridScope(PropertyGridScope&&) noexcept;
     PropertyGridScope& operator=(PropertyGridScope&&) = delete;

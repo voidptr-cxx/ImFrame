@@ -68,7 +68,7 @@ public:
     /**
      * @brief  Destructor — cancels the timer if still active
      */
-    ~TimerHandle();
+    ~TimerHandle() noexcept;
 
     TimerHandle(const TimerHandle&) = delete;
     TimerHandle& operator=(const TimerHandle&) = delete;

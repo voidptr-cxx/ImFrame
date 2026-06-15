@@ -170,7 +170,7 @@ public:
     /**
      * @brief  Destructor — flushes and closes the file
      */
-    ~FileSink();
+    ~FileSink() noexcept;
 
     void Write(const LogEntry& entry) override;
     void Flush() override;
@@ -277,7 +277,7 @@ public:
     /**
      * @brief  Destructor — does NOT drain the worker; call Shutdown() first
      */
-    ~Logger();
+    ~Logger() noexcept;
 
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;

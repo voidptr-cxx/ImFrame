@@ -60,7 +60,7 @@ public:
     explicit PopupScope(bool open) noexcept : _open(open) {}
 
     /// Calls `ImGui::EndPopupModal()` if this scope is active and the popup was open
-    ~PopupScope();
+    ~PopupScope() noexcept;
 
     PopupScope(const PopupScope&)            = delete;
     PopupScope& operator=(const PopupScope&) = delete;

@@ -87,7 +87,7 @@ WindowScope::WindowScope(std::string_view title, bool* visible, int flags) {
     _valid = true;
 }
 
-WindowScope::~WindowScope() {
+WindowScope::~WindowScope() noexcept {
     if (_valid) {
         ImGui::End();
     }

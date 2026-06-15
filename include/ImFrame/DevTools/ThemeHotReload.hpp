@@ -69,7 +69,7 @@ namespace ImFrame::DevTools {
 class ThemeHotReload {
 public:
     ThemeHotReload();
-    ~ThemeHotReload();
+    ~ThemeHotReload() noexcept;
 
     ThemeHotReload(const ThemeHotReload&)            = delete;
     ThemeHotReload& operator=(const ThemeHotReload&) = delete;

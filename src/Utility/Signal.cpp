@@ -22,7 +22,7 @@ namespace ImFrame::Utility {
 Connection::Connection(std::function<void()> disconnectFn)
     : _disconnectFn{std::move(disconnectFn)} {}
 
-Connection::~Connection() {
+Connection::~Connection() noexcept {
     Disconnect();
 }
 

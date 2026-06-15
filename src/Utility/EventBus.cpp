@@ -123,7 +123,7 @@ struct EventBus::Impl {
 SubscriptionToken::SubscriptionToken(std::function<void()> unsubscribeFn)
     : _unsubscribeFn{std::move(unsubscribeFn)} {}
 
-SubscriptionToken::~SubscriptionToken() {
+SubscriptionToken::~SubscriptionToken() noexcept {
     Unsubscribe();
 }
 
@@ -157,7 +157,7 @@ bool SubscriptionToken::IsSubscribed() const noexcept {
 EventBus::EventBus()
     : _impl{std::make_shared<Impl>()} {}
 
-EventBus::~EventBus() = default;
+EventBus::~EventBus() noexcept = default;
 
 EventBus& EventBus::Instance() {
     static EventBus singleton;

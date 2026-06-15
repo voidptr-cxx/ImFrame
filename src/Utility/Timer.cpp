@@ -32,7 +32,7 @@ namespace ImFrame::Utility {
 TimerHandle::TimerHandle(Timer* timer, std::uint64_t id) noexcept
     : _timer{timer}, _id{id} {}
 
-TimerHandle::~TimerHandle() {
+TimerHandle::~TimerHandle() noexcept {
     Cancel();
 }
 

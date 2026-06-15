@@ -69,7 +69,7 @@ PropertyGridScope::PropertyGridScope(PropertyGridScope&& other) noexcept
     other._open = false;
 }
 
-PropertyGridScope::~PropertyGridScope() {
+PropertyGridScope::~PropertyGridScope() noexcept {
     if (_open) ImGui::EndTable();
 }
 
