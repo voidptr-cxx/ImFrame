@@ -4,12 +4,12 @@
  *
  * @internal
  * Implements the Application class: backend lifecycle (Init/Shutdown), font
- * loading, DPI scaling, and the RunOneFrame() sequence. All ImGui calls are
- * confined to this file — they must not appear in Application.hpp.
+ * loading, DPI scaling, input draining, and the RunOneFrame() sequence.
+ * All ImGui calls are confined to this file — they must not appear in Application.hpp.
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-03
- * @version  1.7.0
+ * @version  1.9.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -21,7 +21,10 @@
 #include "ImFrame/Overlay/Toast.hpp"
 #include "ImFrame/Theme/Theme.hpp"
 #include "ImFrame/Widgets/PlotContext.hpp"
-#include "HeadlessBackend.hpp"
+
+// HeadlessBackend lives in Backends/Headless/ and is compiled into ImFrame.
+// ${CMAKE_SOURCE_DIR} is a PRIVATE include dir for ImFrame, so this path resolves.
+#include "Backends/Headless/HeadlessBackend.hpp"
 
 #include <imgui.h>
 
@@ -81,11 +84,10 @@ VoidResult Application::Run() {
         return result;
     }
 
-    // ImPlot context must be created after the ImGui context.
     _plotContext.Init();
 
     // ── DPI style scaling (once at startup) ──────────────────────────────────
-    const float dpi = _backend->DpiScale();
+    const float dpi = _backend->WindowDpiScale();
     if (dpi != 1.0f) {
         ImGui::GetStyle().ScaleAllSizes(dpi);
     }
@@ -97,41 +99,32 @@ VoidResult Application::Run() {
         }
         const float actualSize = fc.dpiScaled ? fc.size * dpi : fc.size;
         if (fc.isIconFont) {
-            // Result intentionally unused — font pointer is managed by the atlas.
             (void)Icons::IconFont::Load(ImGui::GetIO().Fonts,
-                { .path          = fc.path,
-                  .sizePixels    = actualSize,
-                  .glyphOffsetY  = fc.glyphOffsetY });
+                { .path         = fc.path,
+                  .sizePixels   = actualSize,
+                  .glyphOffsetY = fc.glyphOffsetY });
         } else {
             ImGui::GetIO().Fonts->AddFontFromFileTTF(fc.path.ToString().c_str(), actualSize);
         }
     }
     _pendingFonts.clear();
 
-    // Wire the layout Config into DockSpace so SaveLayout/LoadLayout/ResetLayout work.
     _dockSpace.SetConfig(&_layoutConfig);
 
 #if defined(IMF_DEV_TOOLS)
-    // ── DevTools setup ────────────────────────────────────────────────────────
     _uiSink = std::make_shared<Utility::UiSink>(1000);
     Utility::Logger::Instance().AddSink(_uiSink);
     _logViewer.emplace(_uiSink);
     _logViewer->Register(_windowManager);
-
-    // ThemeHotReload watches Assets/Themes/ relative to the working directory.
-    // SetBaseTheme uses the active theme if one was set, else Dracula as default.
     _themeHotReload.SetBaseTheme(_pendingTheme ? *_pendingTheme : ImFrame::Themes::Dracula);
     _themeHotReload.Watch(Utility::Path{"Assets/Themes"});
 #endif
 
     // ── Render loop ───────────────────────────────────────────────────────────
-    _lastFrameTime = std::chrono::steady_clock::now();
-
     while (RunOneFrame()) {}
 
     // ── Teardown ──────────────────────────────────────────────────────────────
     _windowManager.Clear();
-    // ImPlot context must be destroyed before the ImGui context.
     _plotContext.Shutdown();
 #if defined(IMF_DEV_TOOLS)
     if (_uiSink) {
@@ -146,9 +139,12 @@ VoidResult Application::Run() {
 // ─── RunOneFrame ──────────────────────────────────────────────────────────────
 
 bool Application::RunOneFrame() {
-    // ── Poll for OS events ────────────────────────────────────────────────────
-    if (!_backend->Poll()) {
-        // Close was requested — check for veto.
+    // ── Poll for OS events and per-frame metadata ─────────────────────────────
+    auto info = _backend->Poll();
+    _deltaTime              = info.DeltaTime;
+    _displayRefreshInterval = info.DisplayRefreshInterval;
+
+    if (info.ShouldClose) {
         if (_onClose && !_onClose()) {
             _backend->CancelClose();
             return true; // Vetoed: continue the loop.
@@ -156,10 +152,15 @@ bool Application::RunOneFrame() {
         return false; // Allowed: exit the loop.
     }
 
-    // ── Delta time ────────────────────────────────────────────────────────────
-    const auto now = std::chrono::steady_clock::now();
-    _deltaTime     = std::chrono::duration<float>(now - _lastFrameTime).count();
-    _lastFrameTime = now;
+    // ── Drain input events ────────────────────────────────────────────────────
+    // Events are already forwarded to ImGui by the GLFW callback chaining
+    // in the backend. Here we process application-level events (window lifecycle).
+    auto events = _backend->DrainInputEvents();
+    for (const auto& ev : events) {
+        // Phase 19: window-close events for secondary windows are received here.
+        // Full EventBus dispatch deferred to Phase 27+.
+        (void)ev;
+    }
 
     // ── Per-frame subsystem tick ──────────────────────────────────────────────
     _timer.Tick(_deltaTime);
@@ -180,13 +181,11 @@ bool Application::RunOneFrame() {
     // ── ImGui frame ───────────────────────────────────────────────────────────
     _backend->BeginFrame();
 
-    // Theme application — dirty flag prevents redundant Apply() calls.
     if (_themeDirty && _pendingTheme) {
         _pendingTheme->Apply();
         _themeDirty = false;
     }
 
-    // ImPlot style is re-applied every frame to stay in sync with the active theme.
     if (_pendingTheme) {
         _plotContext.ApplyTheme(*_pendingTheme);
     }
@@ -214,7 +213,11 @@ float Application::DeltaTime() const noexcept {
 }
 
 float Application::DpiScale() const noexcept {
-    return _backend ? _backend->DpiScale() : 1.0f;
+    return _backend ? _backend->WindowDpiScale() : 1.0f;
+}
+
+float Application::DisplayRefreshInterval() const noexcept {
+    return _displayRefreshInterval;
 }
 
 // ─── Subsystem access ─────────────────────────────────────────────────────────
@@ -225,6 +228,33 @@ WindowManager& Application::GetWindowManager() noexcept {
 
 DockSpace& Application::GetDockSpace() noexcept {
     return _dockSpace;
+}
+
+// ─── Multi-window API ─────────────────────────────────────────────────────────
+
+WindowHandle Application::CreateSecondaryWindow(WindowConfig config) {
+    return _backend ? _backend->CreateWindow(config) : PrimaryWindow;
+}
+
+void Application::DestroySecondaryWindow(WindowHandle handle) {
+    if (_backend) {
+        _backend->DestroyWindow(handle);
+    }
+}
+
+// ─── Headless-specific API ────────────────────────────────────────────────────
+
+void Application::InjectInputEvent(InputEvent event) {
+    if (auto* hb = dynamic_cast<Internal::HeadlessBackend*>(_backend.get())) {
+        hb->InjectInputEvent(std::move(event));
+    }
+}
+
+std::vector<std::byte> Application::ReadHeadlessPixels() const {
+    if (auto* hb = dynamic_cast<Internal::HeadlessBackend*>(_backend.get())) {
+        return hb->ReadPixels();
+    }
+    return {};
 }
 
 // ─── Static factories ─────────────────────────────────────────────────────────

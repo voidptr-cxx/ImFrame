@@ -392,7 +392,7 @@ int main()
             .Title     = "ImFrame Demo",
             .Width     = 1440,
             .Height    = 900,
-            .VSync     = true,
+            .VSync     = VSyncMode::On,
             .Docking   = true,
             .Viewports = false,
         }
