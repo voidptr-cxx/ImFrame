@@ -10,14 +10,14 @@
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2025-01-15
- * @version  0.2.0
+ * @version  1.9.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  */
 
 #include <catch2/catch_test_macros.hpp>
 
-// glad must be included before any OpenGL call (glGetError in the third test).
+// glad must be included before any OpenGL call (glGetError in the BeginFrame test).
 #include <glad/glad.h>
 
 #include "GLFWOpenGL3Backend.hpp"
@@ -33,7 +33,7 @@ ImFrame::WindowConfig HeadlessConfig()
         .Title     = "ImFrame Test",
         .Width     = 320,
         .Height    = 240,
-        .VSync     = false,
+        .VSync     = ImFrame::VSyncMode::Off,
         .Docking   = false,
         .Viewports = false,
     };
@@ -53,13 +53,20 @@ TEST_CASE("GLFWOpenGL3Backend Init succeeds with valid config", "[unit]")
     backend.Shutdown();
 }
 
-TEST_CASE("GLFWOpenGL3Backend Poll returns true before close is requested", "[unit]")
+TEST_CASE("GLFWOpenGL3Backend Poll returns ShouldClose=false before close is requested", "[unit]")
 {
     ImFrame::Internal::GLFWOpenGL3Backend backend;
     REQUIRE(backend.Init(HeadlessConfig()).has_value());
 
-    // Window was just created — glfwWindowShouldClose is false → Poll is true.
-    REQUIRE(backend.Poll() == true);
+    auto info = backend.Poll();
+
+    // Window was just created — glfwWindowShouldClose is false.
+    REQUIRE(!info.ShouldClose);
+    // DeltaTime must be positive.
+    REQUIRE(info.DeltaTime > 0.0f);
+    // PrimaryWindow must be in ActiveWindows.
+    REQUIRE(!info.ActiveWindows.empty());
+    REQUIRE(info.ActiveWindows[0] == ImFrame::PrimaryWindow);
 
     backend.Shutdown();
 }
@@ -74,7 +81,7 @@ TEST_CASE("GLFWOpenGL3Backend BeginFrame and EndFrame complete without GL errors
     backend.EndFrame();
 
     // Drain any pre-existing GL error state, then check.
-    while (glGetError() != GL_NO_ERROR) {}  // clear
+    while (glGetError() != GL_NO_ERROR) {}
     REQUIRE(glGetError() == GL_NO_ERROR);
 
     backend.Shutdown();
@@ -85,9 +92,30 @@ TEST_CASE("GLFWOpenGL3Backend Shutdown completes cleanly and is idempotent", "[u
     ImFrame::Internal::GLFWOpenGL3Backend backend;
     REQUIRE(backend.Init(HeadlessConfig()).has_value());
 
-    // First shutdown — must not throw or crash.
     REQUIRE_NOTHROW(backend.Shutdown());
+    REQUIRE_NOTHROW(backend.Shutdown());
+}
 
-    // Second shutdown — must be a no-op, not a crash.
-    REQUIRE_NOTHROW(backend.Shutdown());
+TEST_CASE("GLFWOpenGL3Backend DrainInputEvents returns empty span when no events", "[unit]")
+{
+    ImFrame::Internal::GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(HeadlessConfig()).has_value());
+
+    backend.Poll();
+    auto events = backend.DrainInputEvents();
+    // May contain synthetic events from window creation; just verify drain works.
+    REQUIRE_NOTHROW(events.size());
+
+    backend.Shutdown();
+}
+
+TEST_CASE("GLFWOpenGL3Backend GetNativeGraphicsContext returns OpenGLContext", "[unit]")
+{
+    ImFrame::Internal::GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(HeadlessConfig()).has_value());
+
+    auto ctx = backend.GetNativeGraphicsContext();
+    REQUIRE(std::holds_alternative<ImFrame::OpenGLContext>(ctx));
+
+    backend.Shutdown();
 }

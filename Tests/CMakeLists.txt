@@ -24,6 +24,50 @@ if(IMF_BACKEND_GLFW_OPENGL3)
     )
 endif()
 
+# ─── Phase 19: InputEvent / Headless / MultiWindow tests ─────────────────────
+# These three targets use HeadlessBackend (compiled into ImFrame core).
+# ${CMAKE_SOURCE_DIR} is added as PRIVATE include so the test TUs can reach
+# "Backends/Headless/HeadlessBackend.hpp" directly.
+
+add_executable(ImFrame_Tests_Backends_InputEvent
+    Backends/InputEvent_test.cpp
+)
+target_include_directories(ImFrame_Tests_Backends_InputEvent PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Backends_InputEvent
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Backends_InputEvent PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Backends_InputEvent PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Backends_InputEvent PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Backends_Headless
+    Backends/HeadlessBackend_test.cpp
+)
+target_include_directories(ImFrame_Tests_Backends_Headless PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Backends_Headless
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Backends_Headless PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Backends_Headless PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Backends_MultiWindow
+    Backends/MultiWindow_test.cpp
+)
+target_include_directories(ImFrame_Tests_Backends_MultiWindow PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Backends_MultiWindow
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Backends_MultiWindow PRIVATE cxx_std_23)
+catch_discover_tests(ImFrame_Tests_Backends_MultiWindow PROPERTIES LABELS unit)
+
 # ─── Utility tests ────────────────────────────────────────────────────────────
 
 add_executable(ImFrame_Tests_Utility_File
