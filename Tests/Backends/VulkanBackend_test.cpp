@@ -138,6 +138,77 @@ TEST_CASE("SDL3VulkanBackend survives ten consecutive resize-driven swap chain r
     backend.Shutdown();
 }
 
+// ─── ReadPixels ─────────────────────────────────────────────────────────────────
+
+TEST_CASE("SDL3VulkanBackend ReadPixels returns RGBA8 buffer of correct size", "[vulkan]")
+{
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(TestWindowConfig()).has_value());
+
+    backend.Poll();
+    backend.BeginFrame();
+    ImGui::Begin("ReadPixels");
+    ImGui::End();
+    backend.EndFrame();
+
+    auto pixels = backend.ReadPixels();
+    WindowExtent extent = backend.WindowSize();
+    REQUIRE(extent.Width > 0);
+    REQUIRE(extent.Height > 0);
+    REQUIRE(pixels.size() == static_cast<std::size_t>(extent.Width) * extent.Height * 4);
+
+    backend.Shutdown();
+}
+
+TEST_CASE("SDL3VulkanBackend ReadPixels captures real rendered content, not a zero buffer", "[vulkan]")
+{
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(TestWindowConfig()).has_value());
+
+    backend.Poll();
+    backend.BeginFrame();
+    ImGui::Begin("ReadPixels");
+    ImGui::End();
+    backend.EndFrame();
+
+    auto pixels = backend.ReadPixels();
+    REQUIRE(!pixels.empty());
+
+    // The configured clear color is non-black (0.06, 0.06, 0.06) — at least
+    // one byte in the buffer must be non-zero if the copy captured the
+    // actual swap chain image rather than e.g. an uninitialised buffer.
+    bool anyNonZero = false;
+    for (auto b : pixels) {
+        if (b != std::byte{0}) { anyNonZero = true; break; }
+    }
+    REQUIRE(anyNonZero);
+
+    // Alpha channel (every 4th byte) should be fully opaque.
+    REQUIRE(pixels[3] == std::byte{255});
+
+    backend.Shutdown();
+}
+
+TEST_CASE("SDL3VulkanBackend ReadPixels is callable across multiple frames", "[vulkan]")
+{
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(TestWindowConfig()).has_value());
+
+    for (int i = 0; i < 3; ++i) {
+        backend.Poll();
+        backend.BeginFrame();
+        ImGui::Begin("ReadPixels");
+        ImGui::Text("Frame %d", i);
+        ImGui::End();
+        backend.EndFrame();
+
+        auto pixels = backend.ReadPixels();
+        REQUIRE(!pixels.empty());
+    }
+
+    backend.Shutdown();
+}
+
 // ─── Secondary windows ──────────────────────────────────────────────────────────
 
 TEST_CASE("SDL3VulkanBackend secondary window creation and destruction leaves the primary window functional", "[vulkan]")

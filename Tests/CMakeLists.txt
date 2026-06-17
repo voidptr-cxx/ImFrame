@@ -404,6 +404,22 @@ if(IMF_BACKEND_SDL3_VULKAN)
     target_compile_features(ImFrame_Tests_Backends_VulkanBackend PRIVATE cxx_std_23)
     # TIMEOUT guards against hangs if no Vulkan-capable GPU/driver is present in CI.
     catch_discover_tests(ImFrame_Tests_Backends_VulkanBackend PROPERTIES LABELS vulkan TIMEOUT 60)
+
+    add_executable(ImFrame_Tests_Backends_VulkanConformance
+        Backends/VulkanConformance_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_VulkanConformance PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_VulkanConformance
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3Vulkan
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_VulkanConformance PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_VulkanConformance PROPERTIES LABELS vulkan TIMEOUT 60)
 endif()
 
 # ─── Phase 17: DevTools tests (compiled only when IMF_DEV_TOOLS=ON) ──────────

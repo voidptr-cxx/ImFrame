@@ -147,6 +147,12 @@ VoidResult SwapChain::Create(const SwapChainDesc& desc)
     ci.imageExtent      = ext;
     ci.imageArrayLayers = 1;
     ci.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    // TRANSFER_SRC enables ReadPixels() to copy the presented image to a
+    // staging buffer; nearly universally supported, but checked defensively.
+    supportsReadback = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (supportsReadback) {
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    }
     ci.preTransform     = caps.currentTransform;
     ci.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     ci.presentMode      = present;
@@ -231,9 +237,10 @@ void SwapChain::Destroy(VkDevice device)
         handle = VK_NULL_HANDLE;
     }
 
-    format     = VK_FORMAT_UNDEFINED;
-    colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-    extent     = {};
+    format           = VK_FORMAT_UNDEFINED;
+    colorSpace       = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    extent           = {};
+    supportsReadback = false;
 }
 
 } // namespace ImFrame::Internal

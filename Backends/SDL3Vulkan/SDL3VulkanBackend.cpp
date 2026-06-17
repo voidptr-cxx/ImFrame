@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace ImFrame::Internal {
@@ -847,18 +848,66 @@ void SDL3VulkanBackend::EndFrame(WindowHandle handle)
 
     vkCmdEndRendering(frame.commandBuffer);
 
-    // Transition swap chain image: COLOR_ATTACHMENT_OPTIMAL → PRESENT_SRC_KHR.
+    VkImage image = wd.swapChain.images[wd.imageIndex];
+
+    // ReadPixels() support: copy the rendered image to a CPU-visible staging
+    // buffer NOW, while the application still owns it. Touching a presentable
+    // image after vkQueuePresentKHR (and before re-acquiring it) is a Vulkan
+    // spec violation, so this cannot happen lazily inside ReadPixels() itself.
+    // Primary window only, and only when the surface supports TRANSFER_SRC.
+    bool capturedForReadback = false;
+    if (handle == PrimaryWindow && wd.swapChain.supportsReadback &&
+        EnsureReadbackBuffer(wd.swapChain.extent)) {
+        VkImageMemoryBarrier2 toTransferSrc{};
+        toTransferSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        toTransferSrc.srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        toTransferSrc.srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        toTransferSrc.dstStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toTransferSrc.dstAccessMask       = VK_ACCESS_2_TRANSFER_READ_BIT;
+        toTransferSrc.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toTransferSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransferSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.image               = image;
+        toTransferSrc.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+        VkDependencyInfo depToTransfer{};
+        depToTransfer.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        depToTransfer.imageMemoryBarrierCount = 1;
+        depToTransfer.pImageMemoryBarriers    = &toTransferSrc;
+        vkCmdPipelineBarrier2(frame.commandBuffer, &depToTransfer);
+
+        VkBufferImageCopy copyRegion{};
+        copyRegion.bufferOffset      = 0;
+        copyRegion.bufferRowLength   = 0; // tightly packed
+        copyRegion.bufferImageHeight = 0;
+        copyRegion.imageSubresource  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copyRegion.imageOffset       = { 0, 0, 0 };
+        copyRegion.imageExtent       = { wd.swapChain.extent.width, wd.swapChain.extent.height, 1 };
+        vkCmdCopyImageToBuffer(frame.commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                _readbackBuffer, 1, &copyRegion);
+
+        capturedForReadback = true;
+    }
+
+    // Transition swap chain image to PRESENT_SRC_KHR.
     VkImageMemoryBarrier2 toPresent{};
     toPresent.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    toPresent.srcStageMask        = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    toPresent.srcAccessMask       = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    if (capturedForReadback) {
+        toPresent.srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        toPresent.srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        toPresent.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    } else {
+        toPresent.srcStageMask  = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        toPresent.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        toPresent.oldLayout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
     toPresent.dstStageMask        = VK_PIPELINE_STAGE_2_NONE;
     toPresent.dstAccessMask       = VK_ACCESS_2_NONE;
-    toPresent.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     toPresent.newLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     toPresent.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    toPresent.image               = wd.swapChain.images[wd.imageIndex];
+    toPresent.image               = image;
     toPresent.subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
     VkDependencyInfo dep{};
@@ -1031,6 +1080,9 @@ void SDL3VulkanBackend::Shutdown()
     if (_primary.surface   != VK_NULL_HANDLE) vkDestroySurfaceKHR(_instance, _primary.surface, nullptr);
     _primary.surface = VK_NULL_HANDLE;
     if (_primary.sdlWindow) { SDL_DestroyWindow(_primary.sdlWindow); _primary.sdlWindow = nullptr; }
+
+    // ReadPixels staging buffer.
+    DestroyReadbackBuffer();
 
     // Viewport command pool and descriptor pool.
     if (_viewportCmdPool   != VK_NULL_HANDLE) vkDestroyCommandPool(_device, _viewportCmdPool, nullptr);
@@ -1226,6 +1278,89 @@ NativeGraphicsContext SDL3VulkanBackend::GetNativeGraphicsContext() const
         .DescriptorPool      = _descriptorPool,
         .SwapchainImageFormat = static_cast<uint32_t>(_primary.swapChain.format),
     };
+}
+
+// ─── ReadPixels ───────────────────────────────────────────────────────────────
+
+std::vector<std::byte> SDL3VulkanBackend::ReadPixels() const
+{
+    if (!_initialised || _device == VK_NULL_HANDLE) return {};
+    if (_readbackBuffer == VK_NULL_HANDLE || _readbackMapped == nullptr) return {};
+    if (_readbackExtent.width == 0 || _readbackExtent.height == 0) return {};
+
+    const VkFormat format = _primary.swapChain.format;
+    const bool isBgra = (format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM);
+    const bool isRgba = (format == VK_FORMAT_R8G8B8A8_SRGB || format == VK_FORMAT_R8G8B8A8_UNORM);
+    if (!isBgra && !isRgba) return {}; // HDR (16-bit float) formats not yet supported
+
+    // EndFrame() already recorded the copy into _readbackBuffer before
+    // presenting; wait for that submission to finish before reading the
+    // mapped memory. Debug/test utility, not a hot-path call.
+    vkQueueWaitIdle(_graphicsQueue);
+
+    const std::size_t byteCount =
+        static_cast<std::size_t>(_readbackExtent.width) * _readbackExtent.height * 4;
+    std::vector<std::byte> pixels(byteCount);
+    std::memcpy(pixels.data(), _readbackMapped, byteCount);
+
+    if (isBgra) {
+        // Swap chain stores BGRA — swizzle to RGBA8 to match the documented contract.
+        for (std::size_t i = 0; i + 2 < pixels.size(); i += 4) {
+            std::swap(pixels[i], pixels[i + 2]);
+        }
+    }
+
+    return pixels;
+}
+
+// ─── EnsureReadbackBuffer ─────────────────────────────────────────────────────
+
+VoidResult SDL3VulkanBackend::EnsureReadbackBuffer(VkExtent2D extent)
+{
+    if (_readbackBuffer != VK_NULL_HANDLE &&
+        _readbackExtent.width == extent.width && _readbackExtent.height == extent.height) {
+        return {};
+    }
+
+    DestroyReadbackBuffer();
+
+    VkDeviceSize bufferSize = static_cast<VkDeviceSize>(extent.width) * extent.height * 4;
+
+    VkBufferCreateInfo bufCi{};
+    bufCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufCi.size        = bufferSize;
+    bufCi.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCi.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+    VmaAllocationInfo allocInfo{};
+    if (vmaCreateBuffer(_vmaAllocator, &bufCi, &allocCi, &_readbackBuffer, &_readbackAllocation, &allocInfo)
+        != VK_SUCCESS) {
+        _readbackBuffer     = VK_NULL_HANDLE;
+        _readbackAllocation = VK_NULL_HANDLE;
+        return std::unexpected(Error::GraphicsInitFailed);
+    }
+
+    _readbackMapped = allocInfo.pMappedData;
+    _readbackExtent = extent;
+    NameObject(VK_OBJECT_TYPE_BUFFER, reinterpret_cast<uint64_t>(_readbackBuffer), "ImFrame_ReadbackBuffer");
+    return {};
+}
+
+// ─── DestroyReadbackBuffer ────────────────────────────────────────────────────
+
+void SDL3VulkanBackend::DestroyReadbackBuffer()
+{
+    if (_readbackBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_vmaAllocator, _readbackBuffer, _readbackAllocation);
+    }
+    _readbackBuffer     = VK_NULL_HANDLE;
+    _readbackAllocation = VK_NULL_HANDLE;
+    _readbackMapped     = nullptr;
+    _readbackExtent     = {};
 }
 
 // ─── NameObject ───────────────────────────────────────────────────────────────

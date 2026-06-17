@@ -74,6 +74,7 @@ struct SwapChain {
     std::vector<VkImage>     images;     ///< Swap chain images (not owned — destroyed with the swap chain).
     std::vector<VkImageView> imageViews; ///< Per-image colour attachment view (owned).
     uint32_t                 imageCount = 0;
+    bool                     supportsReadback = false; ///< True if images were created with TRANSFER_SRC_BIT.
 
     /**
      * @brief   Create the swap chain and its per-image views.

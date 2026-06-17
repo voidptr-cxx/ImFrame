@@ -31,6 +31,7 @@
 #include "ImFrame/Backends/BackendInfo.hpp"
 
 #include <SDL3/SDL.h>
+#include <cstddef>
 #include <unordered_map>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -179,6 +180,22 @@ public:
      */
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
+    /**
+     * @brief    Reads back the primary window's just-presented swap chain image.
+     *
+     * Callable between `EndFrame()` and the next `BeginFrame()` — matches
+     * `HeadlessBackend::ReadPixels()`'s contract exactly. Blocks until the GPU
+     * finishes all outstanding work on the graphics queue (this is a debug/test
+     * utility, not a hot-path call).
+     *
+     * @return   RGBA8 pixel data, tightly packed, top-to-bottom. Empty if not
+     *           initialised, the window is minimized, or the surface does not
+     *           support `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`. HDR swap chains
+     *           (16-bit float formats) are not currently supported and also
+     *           return empty.
+     */
+    [[nodiscard]] std::vector<std::byte> ReadPixels() const;
+
 private:
     // ─── Per-window resources ─────────────────────────────────────────────────
 
@@ -206,6 +223,10 @@ private:
     VoidResult CreateSwapChainFor(WindowData& wd);
     VoidResult AllocateFrameResources(WindowData& wd);
     VoidResult InitImGui(const WindowConfig& config);
+
+    // ─── ReadPixels staging buffer ────────────────────────────────────────────
+    VoidResult EnsureReadbackBuffer(VkExtent2D extent);
+    void       DestroyReadbackBuffer();
 
     // ─── Frame helpers ────────────────────────────────────────────────────────
     bool  AcquireNextImage(WindowData& wd);
@@ -241,6 +262,17 @@ private:
     // ─── Extension function pointers ──────────────────────────────────────────
     PFN_vkSetDebugUtilsObjectNameEXT    _pfnSetObjectName       = nullptr;
     PFN_vkDestroyDebugUtilsMessengerEXT _pfnDestroyDebugMsgr    = nullptr;
+
+    // ─── ReadPixels staging buffer (primary window only) ──────────────────────
+    // Populated inside EndFrame() — while the primary window's swap chain image
+    // is still owned by the application, before vkQueuePresentKHR releases it
+    // back to the presentation engine. Touching a presentable image after
+    // present (and before re-acquiring it) is a Vulkan spec violation, so the
+    // copy cannot happen lazily inside ReadPixels() itself.
+    VkBuffer      _readbackBuffer     = VK_NULL_HANDLE;
+    VmaAllocation _readbackAllocation = VK_NULL_HANDLE;
+    void*         _readbackMapped     = nullptr;
+    VkExtent2D    _readbackExtent     = {};
 
     // ─── Per-window state ─────────────────────────────────────────────────────
     WindowData  _primary;
