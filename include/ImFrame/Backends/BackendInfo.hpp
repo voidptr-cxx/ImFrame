@@ -87,6 +87,14 @@ struct WindowConfig {
     /// Enable ImGui multi-viewport. Allows windows to be dragged outside the
     /// main OS window. Requires OS compositor support.
     bool Viewports = false;
+
+    /// Request a HDR swap chain when the monitor supports it.
+    /// Falls back to SDR silently on unsupported hardware or drivers.
+    bool HDROutput = false;
+
+    /// Number of frames that may be in flight simultaneously.
+    /// Affects swap chain image count (always >= FramesInFlight + 1).
+    int FramesInFlight = 2;
 };
 
 // ─── WindowExtent ─────────────────────────────────────────────────────────────
@@ -121,8 +129,9 @@ struct VulkanContext {
     void*         Device               = nullptr; ///< VkDevice
     std::uint32_t GraphicsQueueFamily  = 0;
     void*         GraphicsQueue        = nullptr; ///< VkQueue
-    void*         CommandPool          = nullptr; ///< VkCommandPool allocated for Viewport use
-    void*         RenderPass           = nullptr; ///< VkRenderPass of the swap chain
+    void*         ViewportCommandPool  = nullptr; ///< VkCommandPool for Phase 24 Viewport use (RESET_COMMAND_BUFFER_BIT)
+    void*         DescriptorPool       = nullptr; ///< VkDescriptorPool shared across windows and frames
+    std::uint32_t SwapchainImageFormat = 0;       ///< VkFormat of the primary swap chain — used by Phase 24 Viewport
 };
 
 /**

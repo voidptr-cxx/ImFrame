@@ -19,8 +19,27 @@
   ],
   "features": {
     "vulkan-backend": {
-      "description": "Vulkan rendering backend (Phase 20)",
-      "dependencies": []
+      "description": "Vulkan rendering backend via SDL3 (Phase 20)",
+      "dependencies": [
+        {
+          "name": "sdl3",
+          "features": [
+            "vulkan"
+          ]
+        },
+        "vulkan-memory-allocator",
+        {
+          "name": "vulkan",
+          "platform": "!osx"
+        },
+        {
+          "name": "imgui",
+          "features": [
+            "sdl3-binding",
+            "vulkan-binding"
+          ]
+        }
+      ]
     },
     "metal-backend": {
       "description": "Metal rendering backend (Phase 21)",

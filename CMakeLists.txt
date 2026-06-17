@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.25)
 
+# IMF_BACKEND_SDL3_VULKAN must be read before project() so the corresponding
+# vcpkg manifest feature can be requested before the toolchain file resolves
+# dependencies (during the first project() call).
+option(IMF_BACKEND_SDL3_VULKAN "Build the SDL3 + Vulkan 1.3 backend" OFF)
+if(IMF_BACKEND_SDL3_VULKAN)
+    list(APPEND VCPKG_MANIFEST_FEATURES "vulkan-backend")
+endif()
+
 project(ImFrame
-    VERSION 1.9.0
+    VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
     LANGUAGES CXX
 )
@@ -33,6 +41,12 @@ find_package(implot    CONFIG REQUIRED)
 find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
+
+if(IMF_BACKEND_SDL3_VULKAN)
+    find_package(SDL3             CONFIG REQUIRED)
+    find_package(Vulkan           REQUIRED)
+    find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+endif()
 
 # Threads is required by Thread, ThreadPool, BackgroundWorker, FileWatcher (std::jthread).
 find_package(Threads REQUIRED)
@@ -171,6 +185,10 @@ target_compile_features(ImFrame PUBLIC cxx_std_23)
 # ─── Backends ─────────────────────────────────────────────────────────────────
 if(IMF_BACKEND_GLFW_OPENGL3)
     add_subdirectory(Backends/GLFWOpenGL3)
+endif()
+
+if(IMF_BACKEND_SDL3_VULKAN)
+    add_subdirectory(Backends/SDL3Vulkan)
 endif()
 
 # ─── Tests and Examples ───────────────────────────────────────────────────────
