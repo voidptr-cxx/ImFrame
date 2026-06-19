@@ -42,8 +42,21 @@
       ]
     },
     "metal-backend": {
-      "description": "Metal rendering backend (Phase 21)",
-      "dependencies": []
+      "description": "Metal rendering backend via SDL3 (Phase 21)",
+      "dependencies": [
+        {
+          "name": "sdl3",
+          "platform": "osx"
+        },
+        {
+          "name": "imgui",
+          "features": [
+            "sdl3-binding",
+            "metal-binding"
+          ],
+          "platform": "osx"
+        }
+      ]
     },
     "dx12-backend": {
       "description": "DirectX 12 rendering backend (Phase 22)",
