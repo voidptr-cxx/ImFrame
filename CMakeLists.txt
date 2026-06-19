@@ -8,6 +8,16 @@ if(IMF_BACKEND_SDL3_VULKAN)
     list(APPEND VCPKG_MANIFEST_FEATURES "vulkan-backend")
 endif()
 
+# IMF_BUILD_METAL_BACKEND must be read before project() for the same reason —
+# see the IMF_BACKEND_SDL3_VULKAN block above and DECISIONS.md 2026-06-17.
+# Apple-only at build time: Backends/SDL3Metal's own CMakeLists.txt is added
+# only under `if(APPLE)` below, so enabling this option on a non-Apple host
+# requests the vcpkg feature but never compiles any Objective-C++ source.
+option(IMF_BUILD_METAL_BACKEND "Build the SDL3 + Metal backend (macOS; iOS scaffold only)" OFF)
+if(IMF_BUILD_METAL_BACKEND)
+    list(APPEND VCPKG_MANIFEST_FEATURES "metal-backend")
+endif()
+
 project(ImFrame
     VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
@@ -42,9 +52,12 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
+if(IMF_BACKEND_SDL3_VULKAN OR IMF_BUILD_METAL_BACKEND)
+    find_package(SDL3 CONFIG REQUIRED)
+endif()
+
 if(IMF_BACKEND_SDL3_VULKAN)
-    find_package(SDL3             CONFIG REQUIRED)
-    find_package(Vulkan           REQUIRED)
+    find_package(Vulkan                REQUIRED)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 endif()
 
@@ -190,6 +203,21 @@ endif()
 if(IMF_BACKEND_SDL3_VULKAN)
     add_subdirectory(Backends/SDL3Vulkan)
 endif()
+
+if(IMF_BUILD_METAL_BACKEND AND NOT APPLE)
+    # No silent no-op: a platform limitation must be an explicit, visible
+    # signal (see .claude/skills/imframe-cross-platform-checklist), not a
+    # quietly-skipped add_subdirectory().
+    message(WARNING "IMF_BUILD_METAL_BACKEND=ON has no effect on this platform — "
+                     "the Metal backend is Apple-only. Backends/SDL3Metal will not be built.")
+elseif(APPLE AND IMF_BUILD_METAL_BACKEND)
+    add_subdirectory(Backends/SDL3Metal)
+endif()
+
+# iOSMetal's own CMakeLists.txt is a structural no-op (immediate return())
+# unless CMAKE_SYSTEM_NAME is "iOS" — always added so the scaffold exists
+# whenever an iOS toolchain is actually used, independent of IMF_BUILD_METAL_BACKEND.
+add_subdirectory(Backends/iOSMetal)
 
 # ─── Tests and Examples ───────────────────────────────────────────────────────
 if(IMF_BUILD_TESTS)

@@ -136,12 +136,14 @@ struct VulkanContext {
 
 /**
  * @struct MetalContext
- * @brief  Metal device and command queue handles for Phase 21 Viewport use
+ * @brief  Metal device and command queue handles for Phase 24 Viewport use
  * @since  1.9.0
  */
 struct MetalContext {
-    void* Device       = nullptr; ///< MTLDevice*
-    void* CommandQueue = nullptr; ///< MTLCommandQueue*
+    void*         Device         = nullptr; ///< MTLDevice*
+    void*         CommandQueue   = nullptr; ///< MTLCommandQueue*
+    std::uint32_t PixelFormat    = 0;       ///< MTLPixelFormat of the primary window's layer
+    int           FramesInFlight = 2;       ///< Configured frame-in-flight count
 };
 
 /**
