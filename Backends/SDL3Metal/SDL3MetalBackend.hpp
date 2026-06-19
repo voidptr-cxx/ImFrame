@@ -270,6 +270,13 @@ private:
 
     // ─── State ────────────────────────────────────────────────────────────────
     bool _initialised    = false;
+    /// True once InitSDL() has called SDL_Init() successfully. Tracked
+    /// separately from _initialised/_device so Shutdown() still runs full
+    /// cleanup (and calls SDL_Quit()) when Init() fails partway through —
+    /// e.g. SDL_CreateWindow() or CreateDevice() failing after InitSDL()
+    /// already succeeded, where both _initialised and _device would
+    /// otherwise be falsy/nil.
+    bool _sdlInitialised = false;
     bool _shouldClose    = false;
     int  _framesInFlight = 2;
     WindowHandle _nextHandle = 1;

@@ -104,6 +104,7 @@ VoidResult SDL3MetalBackend::InitSDL(const WindowConfig& /*config*/)
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         return std::unexpected(Error::WindowCreationFailed);
     }
+    _sdlInitialised = true;
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
     return {};
 }
@@ -456,7 +457,12 @@ void SDL3MetalBackend::HandleResize(WindowData& wd)
 
 void SDL3MetalBackend::Shutdown()
 {
-    if (!_initialised && _device == nil) return;
+    // Guards on _sdlInitialised, not (_initialised || _device != nil) — Init()
+    // calls Shutdown() on every failure path from SDL_CreateWindow() onward,
+    // including when SDL_CreateWindow() or CreateDevice() itself fails, at
+    // which point _initialised is still false and _device is still nil even
+    // though SDL_Init() already succeeded and needs a matching SDL_Quit().
+    if (!_sdlInitialised) return;
 
     // Destroy secondary windows.
     for (auto& [_, wd] : _secondaryWindows) {
@@ -499,9 +505,10 @@ void SDL3MetalBackend::Shutdown()
 
     SDL_Quit();
 
-    _initialised   = false;
-    _shouldClose   = false;
-    _lastPerfCount = 0;
+    _initialised    = false;
+    _sdlInitialised = false;
+    _shouldClose    = false;
+    _lastPerfCount  = 0;
     _inputQueue.clear();
     _drainBuffer.clear();
 }
