@@ -422,6 +422,78 @@ if(IMF_BACKEND_SDL3_VULKAN)
     catch_discover_tests(ImFrame_Tests_Backends_VulkanConformance PROPERTIES LABELS vulkan TIMEOUT 60)
 endif()
 
+# ─── Phase 22: SDL3 DX12 backend tests ───────────────────────────────────────
+# DX12Input_test: pure InputTranslation unit tests — no GPU required.
+# DX12Backend_test / DX12Conformance_test: full backend integration — requires
+# a D3D12-capable GPU (or WARP). DX12Leak_test: debug-only, registers its own
+# ID3D12InfoQueue1 callback to assert no D3D12 errors during a full cycle.
+
+if(IMF_BUILD_DX12_BACKEND)
+    add_executable(ImFrame_Tests_Backends_DX12Input
+        Backends/DX12Input_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_DX12Input PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_DX12Input
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3Vulkan # InputTranslation.hpp/.cpp is reused directly from Phase 20
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_DX12Input PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_DX12Input PROPERTIES LABELS unit)
+
+    add_executable(ImFrame_Tests_Backends_DX12Backend
+        Backends/DX12Backend_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_DX12Backend PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_DX12Backend
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3DX12
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_DX12Backend PRIVATE cxx_std_23)
+    # TIMEOUT guards against hangs if no D3D12-capable GPU/driver is present in CI.
+    catch_discover_tests(ImFrame_Tests_Backends_DX12Backend PROPERTIES LABELS dx12 TIMEOUT 60)
+
+    add_executable(ImFrame_Tests_Backends_DX12Conformance
+        Backends/DX12Conformance_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_DX12Conformance PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_DX12Conformance
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3DX12
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_DX12Conformance PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_DX12Conformance PROPERTIES LABELS dx12 TIMEOUT 60)
+
+    add_executable(ImFrame_Tests_Backends_DX12Leak
+        Backends/DX12Leak_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_DX12Leak PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_DX12Leak
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3DX12
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_DX12Leak PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_DX12Leak PROPERTIES LABELS dx12 TIMEOUT 60)
+endif()
+
 # ─── Phase 17: DevTools tests (compiled only when IMF_DEV_TOOLS=ON) ──────────
 
 if(IMF_DEV_TOOLS)
