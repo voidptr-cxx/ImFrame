@@ -18,6 +18,14 @@ if(IMF_BUILD_METAL_BACKEND)
     list(APPEND VCPKG_MANIFEST_FEATURES "metal-backend")
 endif()
 
+# IMF_BUILD_DX12_BACKEND must be read before project() for the same reason —
+# see the IMF_BACKEND_SDL3_VULKAN block above. Windows-only at build time:
+# Backends/SDL3DX12's own CMakeLists.txt is added only under `if(WIN32)` below.
+option(IMF_BUILD_DX12_BACKEND "Build the SDL3 + DirectX 12 backend (Windows only)" OFF)
+if(IMF_BUILD_DX12_BACKEND)
+    list(APPEND VCPKG_MANIFEST_FEATURES "dx12-backend")
+endif()
+
 project(ImFrame
     VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
@@ -52,7 +60,7 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
-if(IMF_BACKEND_SDL3_VULKAN OR IMF_BUILD_METAL_BACKEND)
+if(IMF_BACKEND_SDL3_VULKAN OR IMF_BUILD_METAL_BACKEND OR IMF_BUILD_DX12_BACKEND)
     find_package(SDL3 CONFIG REQUIRED)
 endif()
 
@@ -218,6 +226,14 @@ endif()
 # unless CMAKE_SYSTEM_NAME is "iOS" — always added so the scaffold exists
 # whenever an iOS toolchain is actually used, independent of IMF_BUILD_METAL_BACKEND.
 add_subdirectory(Backends/iOSMetal)
+
+if(IMF_BUILD_DX12_BACKEND AND NOT WIN32)
+    # No silent no-op — same rationale as the Metal block above.
+    message(WARNING "IMF_BUILD_DX12_BACKEND=ON has no effect on this platform — "
+                     "the DX12 backend is Windows-only. Backends/SDL3DX12 will not be built.")
+elseif(WIN32 AND IMF_BUILD_DX12_BACKEND)
+    add_subdirectory(Backends/SDL3DX12)
+endif()
 
 # ─── Tests and Examples ───────────────────────────────────────────────────────
 if(IMF_BUILD_TESTS)

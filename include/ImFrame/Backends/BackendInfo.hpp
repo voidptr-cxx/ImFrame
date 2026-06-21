@@ -148,14 +148,17 @@ struct MetalContext {
 
 /**
  * @struct DX12Context
- * @brief  Direct3D 12 device and queue handles for Phase 22 Viewport use
+ * @brief  Direct3D 12 device and queue handles for Phase 24 Viewport use
  * @since  1.9.0
  */
 struct DX12Context {
     void*         Device            = nullptr; ///< ID3D12Device*
-    void*         CommandQueue      = nullptr; ///< ID3D12CommandQueue*
-    void*         SrvDescriptorHeap = nullptr; ///< ID3D12DescriptorHeap* for SRVs
-    std::uint32_t SwapChainFormat   = 0;       ///< DXGI_FORMAT value
+    void*         CommandQueue      = nullptr; ///< Direct ID3D12CommandQueue*
+    void*         CopyQueue         = nullptr; ///< Copy ID3D12CommandQueue* — Phase 24 Viewport texture uploads
+    void*         SrvHeap           = nullptr; ///< Shader-visible ID3D12DescriptorHeap* (CBV_SRV_UAV)
+    std::uint32_t SrvDescriptorSize = 0;       ///< GetDescriptorHandleIncrementSize() for SrvHeap
+    std::uint32_t SwapChainFormat   = 0;       ///< DXGI_FORMAT of the primary window's swap chain
+    int           FramesInFlight    = 2;       ///< Configured frame-in-flight count
 };
 
 /**
