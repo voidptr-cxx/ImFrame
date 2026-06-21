@@ -59,8 +59,21 @@
       ]
     },
     "dx12-backend": {
-      "description": "DirectX 12 rendering backend (Phase 22)",
-      "dependencies": []
+      "description": "DirectX 12 rendering backend via SDL3 (Phase 22)",
+      "dependencies": [
+        {
+          "name": "sdl3",
+          "platform": "windows"
+        },
+        {
+          "name": "imgui",
+          "features": [
+            "sdl3-binding",
+            "dx12-binding"
+          ],
+          "platform": "windows"
+        }
+      ]
     },
     "webgpu-backend": {
       "description": "WebGPU rendering backend (Phase 23)",
