@@ -65,6 +65,9 @@ Docs/api/html/
 Docs/api/latex/
 Docs/_build/
 
+# ─── graphify knowledge-graph output ──────────────────────────────────────────
+graphify-out/
+
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
 *.pem
