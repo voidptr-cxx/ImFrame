@@ -68,6 +68,12 @@ Docs/_build/
 # ─── graphify knowledge-graph output ──────────────────────────────────────────
 graphify-out/
 
+# ─── Session / diagnostic logs ────────────────────────────────────────────────
+*.log
+
+# ─── Claude Code local settings (machine-specific, not project config) ────────
+.claude/settings.json
+
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
 *.pem

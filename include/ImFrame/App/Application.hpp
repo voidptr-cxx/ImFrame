@@ -173,6 +173,14 @@ public:
     /**
      * @brief    Initialise the backend and run the render loop until the window closes.
      *
+     * On Emscripten (UNVERIFIED — see PHASE_STATUS.md), `emscripten_set_main_loop_arg()`
+     * hands the render loop to the browser and never returns to this call site;
+     * code after `Run()` in `main()` is unreachable there. Not declared
+     * `[[noreturn]]` — `emscripten_set_main_loop_arg()` itself isn't, so the
+     * compiler cannot prove the trailing `return` statement unreachable, and
+     * `[[noreturn]]` on a function whose body provably returns is a build
+     * error under this project's `-Werror`/`/WX`.
+     *
      * @return   Empty result on success, or an `Error` if `Init()` failed.
      * @throws   Nothing.
      */
@@ -282,6 +290,17 @@ public:
     [[nodiscard]] static Application CreateHeadless(WindowConfig config = {});
 
 private:
+#if defined(__EMSCRIPTEN__)
+    /**
+     * @brief    Per-tick callback passed to `emscripten_set_main_loop_arg()`.
+     *
+     * UNVERIFIED — see PHASE_STATUS.md/DECISIONS.md.
+     *
+     * @param[in]  arg  The owning `Application*`, cast back from `void*`.
+     */
+    static void EmscriptenMainLoopTick(void* arg);
+#endif
+
     std::unique_ptr<Internal::IBackend>     _backend;
     WindowConfig                            _config;
     Utility::Timer                          _timer;

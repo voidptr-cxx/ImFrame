@@ -651,7 +651,14 @@ FileWatcher& FileWatcher::operator=(FileWatcher&&) noexcept = default;
 
 Result<WatchHandle> FileWatcher::Watch(const Path& path)
 {
+#if defined(__EMSCRIPTEN__)
+    // No background file monitoring thread is created on Emscripten — see
+    // the Phase 23 proposal's Utility Layer on Emscripten section.
+    (void)path;
+    return std::unexpected(Error::NotSupported);
+#else
     return _impl->AddWatch(path);
+#endif
 }
 
 void FileWatcher::Unwatch(WatchHandle handle)

@@ -494,6 +494,81 @@ if(IMF_BUILD_DX12_BACKEND)
     catch_discover_tests(ImFrame_Tests_Backends_DX12Leak PROPERTIES LABELS dx12 TIMEOUT 60)
 endif()
 
+# ─── Phase 23: SDL3 Dawn WebGPU backend tests ────────────────────────────────
+# WebGPUInput_test: pure InputTranslation unit tests — no GPU required.
+# WebGPUBackend_test / WebGPUConformance_test: full backend integration —
+# requires a WebGPU-capable GPU (Dawn translates to D3D12/Metal/Vulkan).
+
+if(IMF_BUILD_WEBGPU_BACKEND)
+    add_executable(ImFrame_Tests_Backends_WebGPUInput
+        Backends/WebGPUInput_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_WebGPUInput PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_WebGPUInput
+        PRIVATE
+            ImFrame
+            ImFrame_SDL3Vulkan # InputTranslation.hpp/.cpp is reused directly from Phase 20
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_WebGPUInput PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_WebGPUInput PROPERTIES LABELS unit)
+
+    add_executable(ImFrame_Tests_Backends_WebGPUBackend
+        Backends/WebGPUBackend_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_WebGPUBackend PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_WebGPUBackend
+        PRIVATE
+            ImFrame
+            ImFrame_DawnWebGPU
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_WebGPUBackend PRIVATE cxx_std_23)
+    # TIMEOUT guards against hangs if no WebGPU-capable GPU/driver is present in CI.
+    catch_discover_tests(ImFrame_Tests_Backends_WebGPUBackend PROPERTIES LABELS webgpu TIMEOUT 60)
+
+    add_executable(ImFrame_Tests_Backends_WebGPUConformance
+        Backends/WebGPUConformance_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Backends_WebGPUConformance PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+    target_link_libraries(ImFrame_Tests_Backends_WebGPUConformance
+        PRIVATE
+            ImFrame
+            ImFrame_DawnWebGPU
+            imgui::imgui
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Backends_WebGPUConformance PRIVATE cxx_std_23)
+    catch_discover_tests(ImFrame_Tests_Backends_WebGPUConformance PROPERTIES LABELS webgpu TIMEOUT 60)
+
+    if(WIN32 AND NOT EMSCRIPTEN)
+        # Dawn's D3D12 backend probes dxil.dll at device-init time (EnsureDXCLibraries, called
+        # before any shader compilation). The DLL ships with the directx-dxc vcpkg package but
+        # is NOT in System32, so it must be deployed beside each test executable.
+        # dxcompiler.dll is copied too — it is loaded at shader-compile time.
+        set(_dxc_dir_debug   "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/debug/bin")
+        set(_dxc_dir_release "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/bin")
+        foreach(_tgt
+            ImFrame_Tests_Backends_WebGPUBackend
+            ImFrame_Tests_Backends_WebGPUConformance)
+            add_custom_command(TARGET ${_tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<IF:$<CONFIG:Debug>,${_dxc_dir_debug},${_dxc_dir_release}>/dxil.dll"
+                    "$<IF:$<CONFIG:Debug>,${_dxc_dir_debug},${_dxc_dir_release}>/dxcompiler.dll"
+                    "$<TARGET_FILE_DIR:${_tgt}>"
+                COMMENT "Deploying DXC DLLs beside ${_tgt}"
+            )
+        endforeach()
+    endif()
+endif()
+
 # ─── Phase 17: DevTools tests (compiled only when IMF_DEV_TOOLS=ON) ──────────
 
 if(IMF_DEV_TOOLS)
