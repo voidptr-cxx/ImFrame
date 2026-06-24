@@ -71,6 +71,10 @@ enum class Error {
 
     /// A configuration file could not be parsed (invalid TOML syntax or unsupported construct).
     ConfigParseFailed,
+
+    /// The requested operation is not available on this backend/platform
+    /// (e.g. multi-window or FileWatcher on the Emscripten backend, Phase 23).
+    NotSupported,
 };
 
 } // namespace ImFrame::Core

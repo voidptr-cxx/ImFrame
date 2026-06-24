@@ -28,6 +28,12 @@
 
 #include <imgui.h>
 
+#if defined(__EMSCRIPTEN__)
+// UNVERIFIED — see PHASE_STATUS.md/DECISIONS.md. No Emscripten-target build
+// of ImFrame has been attempted; this branch has never been compiled.
+#include <emscripten/emscripten.h>
+#endif
+
 #if defined(IMF_DEV_TOOLS)
 #include "ImFrame/Theme/Themes/Dracula.hpp"
 #endif
@@ -121,7 +127,15 @@ VoidResult Application::Run() {
 #endif
 
     // ── Render loop ───────────────────────────────────────────────────────────
+#if defined(__EMSCRIPTEN__)
+    // The browser owns the main thread's event loop — emscripten_set_main_loop_arg
+    // never returns to this call site. Teardown below is therefore unreachable
+    // on Emscripten; the process ends only when the browser tab closes. See the
+    // Phase 23 proposal's Render Loop section and DECISIONS.md.
+    emscripten_set_main_loop_arg(&Application::EmscriptenMainLoopTick, this, 0, true);
+#else
     while (RunOneFrame()) {}
+#endif
 
     // ── Teardown ──────────────────────────────────────────────────────────────
     _windowManager.Clear();
@@ -135,6 +149,14 @@ VoidResult Application::Run() {
 
     return {};
 }
+
+#if defined(__EMSCRIPTEN__)
+void Application::EmscriptenMainLoopTick(void* arg)
+{
+    auto* self = static_cast<Application*>(arg);
+    self->RunOneFrame(); // ShouldClose has no effect on Emscripten — see CancelClose()'s callers.
+}
+#endif
 
 // ─── RunOneFrame ──────────────────────────────────────────────────────────────
 

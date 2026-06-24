@@ -95,6 +95,11 @@ struct WindowConfig {
     /// Number of frames that may be in flight simultaneously.
     /// Affects swap chain image count (always >= FramesInFlight + 1).
     int FramesInFlight = 2;
+
+    /// CSS selector of the HTML canvas element to render into. Only
+    /// meaningful for the Emscripten WebGPU backend (Phase 23) — ignored on
+    /// every other backend. Defaults to Emscripten's shell-provided canvas.
+    std::string_view EmscriptenCanvasSelector = "#canvas";
 };
 
 // ─── WindowExtent ─────────────────────────────────────────────────────────────
@@ -163,12 +168,15 @@ struct DX12Context {
 
 /**
  * @struct WebGPUContext
- * @brief  WebGPU device and queue handles for Phase 23 Viewport use
+ * @brief  WebGPU device and queue handles for Phase 24 Viewport use
  * @since  1.9.0
  */
 struct WebGPUContext {
-    void* Device = nullptr; ///< WGPUDevice
-    void* Queue  = nullptr; ///< WGPUQueue
+    void*         Device          = nullptr; ///< WGPUDevice
+    void*         Queue           = nullptr; ///< WGPUQueue
+    std::uint32_t PreferredFormat = 0;       ///< WGPUTextureFormat of the primary surface (or offscreen target, headless)
+    std::uint32_t MaxTextureDimension2D = 0; ///< WGPULimits::maxTextureDimension2D — Phase 24 Viewport size validation
+    bool          IsEmscripten    = false;   ///< True on the browser build; false for the native Dawn backend
 };
 
 /**

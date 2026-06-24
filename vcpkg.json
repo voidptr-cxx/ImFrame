@@ -76,8 +76,18 @@
       ]
     },
     "webgpu-backend": {
-      "description": "WebGPU rendering backend (Phase 23)",
-      "dependencies": []
+      "description": "WebGPU rendering backend via SDL3 + Dawn (Phase 23)",
+      "dependencies": [
+        "sdl3",
+        "dawn",
+        {
+          "name": "imgui",
+          "features": [
+            "sdl3-binding",
+            "webgpu-binding"
+          ]
+        }
+      ]
     }
   }
 }

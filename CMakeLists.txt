@@ -26,6 +26,15 @@ if(IMF_BUILD_DX12_BACKEND)
     list(APPEND VCPKG_MANIFEST_FEATURES "dx12-backend")
 endif()
 
+# IMF_BUILD_WEBGPU_BACKEND must be read before project() for the same reason —
+# see the IMF_BACKEND_SDL3_VULKAN block above. Unlike Metal/DX12, this backend
+# is genuinely cross-platform: Dawn translates to D3D12/Metal/Vulkan per host
+# platform automatically, so Backends/DawnWebGPU is added on every platform.
+option(IMF_BUILD_WEBGPU_BACKEND "Build the SDL3 + Dawn WebGPU backend" OFF)
+if(IMF_BUILD_WEBGPU_BACKEND)
+    list(APPEND VCPKG_MANIFEST_FEATURES "webgpu-backend")
+endif()
+
 project(ImFrame
     VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
@@ -60,13 +69,30 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
-if(IMF_BACKEND_SDL3_VULKAN OR IMF_BUILD_METAL_BACKEND OR IMF_BUILD_DX12_BACKEND)
+# SDL3 is not used on Emscripten at all (Backends/DawnWebGPU/CMakeLists.txt's
+# EMSCRIPTEN branch uses DOM events directly — see the Phase 23 proposal's
+# Input section), so it is skipped there even when IMF_BUILD_WEBGPU_BACKEND=ON.
+if((IMF_BACKEND_SDL3_VULKAN OR IMF_BUILD_METAL_BACKEND OR IMF_BUILD_DX12_BACKEND OR IMF_BUILD_WEBGPU_BACKEND)
+   AND NOT EMSCRIPTEN)
     find_package(SDL3 CONFIG REQUIRED)
 endif()
 
 if(IMF_BACKEND_SDL3_VULKAN)
     find_package(Vulkan                REQUIRED)
     find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+endif()
+
+# vcpkg's dawn port is the native-only path. On Emscripten, WebGPU comes from
+# emscripten's own --use-port=emdawnwebgpu instead (wired directly in
+# Backends/DawnWebGPU/CMakeLists.txt) — no vcpkg dawn package is involved.
+# NOTE: this whole IMF_BUILD_WEBGPU_BACKEND=ON path has not been exercised
+# under an actual Emscripten toolchain invocation — see DECISIONS.md/
+# PHASE_STATUS.md. The other vcpkg dependencies below (imgui, implot, glfw3,
+# glad, freetype) would also need a working wasm32-emscripten vcpkg triplet
+# for a real Emscripten build to configure at all, which has not been
+# attempted either.
+if(IMF_BUILD_WEBGPU_BACKEND AND NOT EMSCRIPTEN)
+    find_package(dawn CONFIG REQUIRED)
 endif()
 
 # Threads is required by Thread, ThreadPool, BackgroundWorker, FileWatcher (std::jthread).
@@ -233,6 +259,10 @@ if(IMF_BUILD_DX12_BACKEND AND NOT WIN32)
                      "the DX12 backend is Windows-only. Backends/SDL3DX12 will not be built.")
 elseif(WIN32 AND IMF_BUILD_DX12_BACKEND)
     add_subdirectory(Backends/SDL3DX12)
+endif()
+
+if(IMF_BUILD_WEBGPU_BACKEND)
+    add_subdirectory(Backends/DawnWebGPU)
 endif()
 
 # ─── Tests and Examples ───────────────────────────────────────────────────────
