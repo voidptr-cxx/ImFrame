@@ -199,6 +199,11 @@ add_library(ImFrame STATIC
     src/App/ApplicationContext.cpp
     src/Rendering/Viewport.cpp
     src/Rendering/ViewportRegistry.cpp
+
+    # ── Phase 25: Canvas2D, Camera2D, DrawContext ─────────────────────────────
+    src/Rendering/Camera2D.cpp
+    src/Rendering/DrawContext.cpp
+    src/Rendering/Canvas2D.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────
