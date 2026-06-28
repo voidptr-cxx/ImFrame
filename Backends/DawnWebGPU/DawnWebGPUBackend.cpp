@@ -20,6 +20,7 @@
 #include "DawnWebGPUBackend.hpp"
 #include "../SDL3Vulkan/InputTranslation.hpp"
 #include "NativeSurface.hpp"
+#include "ViewportWebGPU.hpp"
 
 #include "ImFrame/Utility/Logger.hpp"
 
@@ -705,6 +706,20 @@ NativeGraphicsContext DawnWebGPUBackend::GetNativeGraphicsContext() const
         .MaxTextureDimension2D = _maxTextureDimension2D,
         .IsEmscripten          = false,
     };
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> DawnWebGPUBackend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    if (!_initialised) return nullptr;
+    return std::make_unique<ViewportFramebufferWebGPU>(
+        _device,
+        _queue,
+        WGPUTextureFormat_BGRA8Unorm,
+        width,
+        height);
 }
 
 // ─── ReadPixels ───────────────────────────────────────────────────────────────

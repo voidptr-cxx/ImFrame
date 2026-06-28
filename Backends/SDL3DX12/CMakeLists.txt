@@ -6,6 +6,7 @@ add_library(ImFrame_SDL3DX12 STATIC
     DX12SwapChain.cpp
     FrameResources.cpp
     DescriptorAllocator.cpp
+    ViewportDX12.cpp
     # Reused directly from Phase 20 rather than copied — SDL3's event model is
     # platform-agnostic, so the same translation unit compiles unchanged here
     # (mirrors Phase 21's reuse of the same file for the Metal backend).

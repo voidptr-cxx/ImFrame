@@ -16,6 +16,7 @@
  */
 
 #include "HeadlessBackend.hpp"
+#include "Backends/Headless/ViewportHeadless.hpp"
 
 #include <imgui.h>
 
@@ -130,6 +131,14 @@ std::span<const InputEvent> HeadlessBackend::DrainInputEvents()
 NativeGraphicsContext HeadlessBackend::GetNativeGraphicsContext() const
 {
     return HeadlessContext{ _width, _height, HeadlessPixelFormat::RGBA8 };
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> HeadlessBackend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    return std::make_unique<ViewportFramebufferHeadless>(width, height);
 }
 
 // ─── InjectInputEvent ─────────────────────────────────────────────────────────

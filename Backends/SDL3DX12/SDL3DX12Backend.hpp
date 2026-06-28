@@ -172,6 +172,12 @@ public:
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
     /**
+     * @brief    Allocate a D3D12 committed render target for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
+    /**
      * @brief    Reads back the primary window's offscreen render target.
      *
      * Only supported when the backend was constructed with `headless = true`.

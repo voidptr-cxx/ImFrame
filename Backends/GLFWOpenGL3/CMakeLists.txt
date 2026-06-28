@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 # ─── GLFWOpenGL3 backend static library ───────────────────────────────────────
 add_library(ImFrame_GLFWOpenGL3 STATIC
     GLFWOpenGL3Backend.cpp
+    ViewportGL.cpp
 )
 
 # Expose own source directory so consumers can:

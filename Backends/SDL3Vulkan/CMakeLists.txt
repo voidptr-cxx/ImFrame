@@ -5,6 +5,7 @@ add_library(ImFrame_SDL3Vulkan STATIC
     SDL3VulkanBackend.cpp
     SwapChain.cpp
     InputTranslation.cpp
+    ViewportVulkan.cpp
 )
 
 # Expose own source directory so consumers can:

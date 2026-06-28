@@ -27,6 +27,8 @@
 #include "ImFrame/Backends/InputEvent.hpp"
 #include "ImFrame/Core/Error.hpp"
 
+#include <cstdint>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <variant>
@@ -221,6 +223,110 @@ using NativeGraphicsContext = std::variant<
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace ImFrame::Internal {
+
+// ─── IViewportFramebuffer ────────────────────────────────────────────────────
+
+/**
+ * @struct ViewportHandles
+ * @brief  Raw GPU handles for one Viewport framebuffer, backend-specific fields populated
+ *
+ * Each backend fills only the fields relevant to it. `ViewportRegistry` converts
+ * this struct into the appropriate `Rendering::ViewportImageXxx` member.
+ *
+ * @internal
+ * @since  2.0.0
+ */
+struct ViewportHandles {
+    // ── OpenGL ────────────────────────────────────────────────────────────────
+    unsigned int glFBO       = 0; ///< GLuint FBO — bind before user renders.
+    unsigned int glColorTex  = 0; ///< GLuint colour texture attached to glFBO.
+    // ── Vulkan ────────────────────────────────────────────────────────────────
+    void* vkImage   = nullptr; ///< VkImage in COLOR_ATTACHMENT_OPTIMAL layout.
+    void* vkView    = nullptr; ///< VkImageView for vkImage.
+    void* vkCmdBuf  = nullptr; ///< VkCommandBuffer from ViewportCommandPool, already begun.
+    // ── Metal ─────────────────────────────────────────────────────────────────
+    void* mtlTex    = nullptr; ///< MTLTexture* (BGRA8Unorm_sRGB). ARC-managed.
+    // ── DX12 ──────────────────────────────────────────────────────────────────
+    void*          d3dResource = nullptr; ///< ID3D12Resource* in RENDER_TARGET state.
+    std::uintptr_t d3dRTV      = 0;       ///< D3D12_CPU_DESCRIPTOR_HANDLE.ptr for colour target.
+    std::uint64_t  d3dSRV      = 0;       ///< D3D12_GPU_DESCRIPTOR_HANDLE.ptr sampled by ImGui.
+    void*          d3dCmdList  = nullptr; ///< ID3D12GraphicsCommandList7* opened by ImFrame.
+    // ── WebGPU ────────────────────────────────────────────────────────────────
+    void* wgpuTex     = nullptr; ///< WGPUTexture (RenderAttachment | TextureBinding).
+    void* wgpuView    = nullptr; ///< WGPUTextureView for wgpuTex.
+    void* wgpuEncoder = nullptr; ///< WGPUCommandEncoder created by ImFrame. Do not Finish it.
+    // ── Headless ──────────────────────────────────────────────────────────────
+    std::uint8_t* headlessPixels = nullptr; ///< RGBA8 CPU buffer, width*height*4 bytes.
+    // ── Common ────────────────────────────────────────────────────────────────
+    std::uint32_t width       = 0; ///< Framebuffer width in pixels.
+    std::uint32_t height      = 0; ///< Framebuffer height in pixels.
+    std::uint64_t imTextureId = 0; ///< Opaque ImTextureID — passed to ImGui::Image().
+};
+
+/**
+ * @class IViewportFramebuffer
+ * @brief Abstract owner of one Viewport's offscreen GPU resources
+ *
+ * Each backend provides a concrete subclass. `ViewportRegistry` holds one
+ * instance per registered `Viewport` and drives the render cycle via
+ * `BeginRender` / `EndRender` around the user's `OnRender` callback.
+ *
+ * All methods are called from the main thread between `Poll()` and `BeginFrame()`.
+ *
+ * @internal
+ * @since 2.0.0
+ */
+class IViewportFramebuffer {
+public:
+    virtual ~IViewportFramebuffer() = default;
+
+    /**
+     * @brief    Recreate GPU resources at a new pixel size.
+     *
+     * Called by `ViewportRegistry` when the Viewport's size changes. The old
+     * resources are released before new ones are allocated.
+     *
+     * @param[in]  width   New width in pixels. Must be > 0.
+     * @param[in]  height  New height in pixels. Must be > 0.
+     */
+    virtual void Resize(std::uint32_t width, std::uint32_t height) = 0;
+
+    /**
+     * @brief    Transition the framebuffer to a render-ready state.
+     *
+     * Called once per frame before the user's `OnRender` callback. Backends that
+     * use command buffers open them here; Vulkan transitions the image layout.
+     *
+     * @param[in]  frameIndex  Current frame-in-flight index.
+     */
+    virtual void BeginRender(std::uint32_t frameIndex) = 0;
+
+    /**
+     * @brief    Submit GPU work and synchronise with the main render pass.
+     *
+     * Called immediately after `OnRender` returns. Backends submit their command
+     * buffer and, where necessary, block the CPU until the GPU completes the
+     * viewport render so the texture is ready for `ImGui::Image()` sampling.
+     *
+     * @param[in]  frameIndex  Current frame-in-flight index.
+     */
+    virtual void EndRender(std::uint32_t frameIndex) = 0;
+
+    /**
+     * @brief    Return raw GPU handles for the current frame.
+     *
+     * Called between `BeginRender` and `EndRender`. `ViewportRegistry` converts
+     * the populated fields into the appropriate `Rendering::ViewportImageXxx`.
+     *
+     * @return   `ViewportHandles` with backend-relevant fields populated.
+     */
+    [[nodiscard]] virtual ViewportHandles GetHandles() const = 0;
+};
+
+} // namespace ImFrame::Internal — close early so IBackend opens its own block below
+
+// Re-open ImFrame::Internal for IBackend
 namespace ImFrame::Internal {
 
 /**
@@ -421,6 +527,24 @@ public:
      */
     virtual NativeGraphicsContext GetNativeGraphicsContext() const {
         return OpenGLContext{};
+    }
+
+    /**
+     * @brief    Allocate a backend-specific offscreen framebuffer for a Viewport.
+     *
+     * Called by `ViewportRegistry` on the first frame a `Viewport` is shown, and
+     * again after a size change. Backends that do not support Viewport rendering
+     * return `nullptr` (default).
+     *
+     * @param[in]  width   Framebuffer width in pixels.
+     * @param[in]  height  Framebuffer height in pixels.
+     * @return   Owning pointer to the framebuffer, or `nullptr` if unsupported.
+     */
+    virtual std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) {
+        (void)width;
+        (void)height;
+        return nullptr;
     }
 };
 

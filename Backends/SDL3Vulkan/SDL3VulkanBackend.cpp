@@ -25,6 +25,7 @@
 
 #include "SDL3VulkanBackend.hpp"
 #include "InputTranslation.hpp"
+#include "ViewportVulkan.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -1278,6 +1279,24 @@ NativeGraphicsContext SDL3VulkanBackend::GetNativeGraphicsContext() const
         .DescriptorPool      = _descriptorPool,
         .SwapchainImageFormat = static_cast<uint32_t>(_primary.swapChain.format),
     };
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> SDL3VulkanBackend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    if (!_initialised) return nullptr;
+    return std::make_unique<ViewportFramebufferVulkan>(
+        _device,
+        _vmaAllocator,
+        _graphicsQueue,
+        _viewportCmdPool,
+        _descriptorPool,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        _framesInFlight,
+        width,
+        height);
 }
 
 // ─── ReadPixels ───────────────────────────────────────────────────────────────

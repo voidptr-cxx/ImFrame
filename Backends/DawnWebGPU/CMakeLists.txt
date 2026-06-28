@@ -45,6 +45,7 @@ add_library(ImFrame_DawnWebGPU STATIC
     WebGPUSurface.cpp
     WebGPUDeviceSetup.cpp
     NativeSurface.cpp
+    ViewportWebGPU.cpp
     # Reused directly from Phase 20 — SDL3's event model is platform-agnostic,
     # so the same translation unit compiles unchanged here (mirrors Phase
     # 21/22's reuse of the same file).

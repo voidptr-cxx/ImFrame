@@ -26,6 +26,7 @@
 #include "SDL3DX12Backend.hpp"
 #include "../SDL3Vulkan/InputTranslation.hpp"
 #include "DX12Util.hpp"
+#include "ViewportDX12.hpp"
 
 #include "ImFrame/Utility/Logger.hpp"
 
@@ -1020,6 +1021,23 @@ NativeGraphicsContext SDL3DX12Backend::GetNativeGraphicsContext() const
         .SwapChainFormat   = static_cast<std::uint32_t>(_primary.headless ? HEADLESS_FORMAT : _primary.swapChain.format),
         .FramesInFlight    = _framesInFlight,
     };
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> SDL3DX12Backend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    if (!_initialised) return nullptr;
+    return std::make_unique<ViewportFramebufferDX12>(
+        _device.Get(),
+        _directQueue.Get(),
+        &_rtvHeap,
+        &_srvHeap,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        _framesInFlight,
+        width,
+        height);
 }
 
 // ─── ReadPixels ───────────────────────────────────────────────────────────────

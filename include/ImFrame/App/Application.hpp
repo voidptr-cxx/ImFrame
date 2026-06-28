@@ -52,7 +52,9 @@
 #include <optional>
 #include <vector>
 
-namespace ImFrame::Theme { struct Theme; }
+namespace ImFrame::Theme       { struct Theme;            }
+namespace ImFrame::Rendering  { class  Viewport;          }
+namespace ImFrame::Internal   { class  ViewportRegistry;  }
 
 namespace ImFrame::App {
 
@@ -290,6 +292,8 @@ public:
     [[nodiscard]] static Application CreateHeadless(WindowConfig config = {});
 
 private:
+    friend class Rendering::Viewport; ///< Viewport::Show() accesses _viewportRegistry and _backend.
+
 #if defined(__EMSCRIPTEN__)
     /**
      * @brief    Per-tick callback passed to `emscripten_set_main_loop_arg()`.
@@ -301,8 +305,10 @@ private:
     static void EmscriptenMainLoopTick(void* arg);
 #endif
 
-    std::unique_ptr<Internal::IBackend>     _backend;
-    WindowConfig                            _config;
+    std::unique_ptr<Internal::IBackend>      _backend;
+    std::unique_ptr<Internal::ViewportRegistry> _viewportRegistry;
+    std::uint32_t                            _frameIndex = 0;
+    WindowConfig                             _config;
     Utility::Timer                          _timer;
     Utility::Config                         _layoutConfig;
     DockSpace                               _dockSpace;

@@ -193,6 +193,12 @@ add_library(ImFrame STATIC
 
     # ── Phase 19: Headless backend (compiled into core for Application::CreateHeadless) ──
     Backends/Headless/HeadlessBackend.cpp
+    Backends/Headless/ViewportHeadless.cpp
+
+    # ── Phase 24: Viewport foundation ────────────────────────────────────────────
+    src/App/ApplicationContext.cpp
+    src/Rendering/Viewport.cpp
+    src/Rendering/ViewportRegistry.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

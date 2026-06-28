@@ -25,6 +25,8 @@
 // HeadlessBackend lives in Backends/Headless/ and is compiled into ImFrame.
 // ${CMAKE_SOURCE_DIR} is a PRIVATE include dir for ImFrame, so this path resolves.
 #include "Backends/Headless/HeadlessBackend.hpp"
+#include "App/ApplicationContext.hpp"
+#include "Rendering/ViewportRegistry.hpp"
 
 #include <imgui.h>
 
@@ -44,6 +46,7 @@ namespace ImFrame::App {
 
 Application::Application(std::unique_ptr<Internal::IBackend> backend, WindowConfig config)
     : _backend(std::move(backend))
+    , _viewportRegistry(std::make_unique<Internal::ViewportRegistry>())
     , _config(config)
 {}
 
@@ -145,6 +148,7 @@ VoidResult Application::Run() {
         Utility::Logger::Instance().RemoveSink(_uiSink);
     }
 #endif
+    _viewportRegistry->DestroyAll();
     _backend->Shutdown();
 
     return {};
@@ -161,6 +165,8 @@ void Application::EmscriptenMainLoopTick(void* arg)
 // ─── RunOneFrame ──────────────────────────────────────────────────────────────
 
 bool Application::RunOneFrame() {
+    Internal::SetCurrentApplication(this);
+
     // ── Poll for OS events and per-frame metadata ─────────────────────────────
     auto info = _backend->Poll();
     _deltaTime              = info.DeltaTime;
@@ -200,6 +206,9 @@ bool Application::RunOneFrame() {
     }
 #endif
 
+    // ── Viewport pre-render (must run before BeginFrame) ─────────────────────
+    _viewportRegistry->DispatchRenders(*_backend, _deltaTime, _frameIndex++);
+
     // ── ImGui frame ───────────────────────────────────────────────────────────
     _backend->BeginFrame();
 
@@ -224,6 +233,7 @@ bool Application::RunOneFrame() {
     _dockSpace.End();
 
     _backend->EndFrame();
+    _viewportRegistry->FlipShownFlags();
 
     return true;
 }

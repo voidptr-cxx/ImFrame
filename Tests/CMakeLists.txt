@@ -592,3 +592,39 @@ if(IMF_DEV_TOOLS)
     target_compile_definitions(ImFrame_Tests_DevTools_ThemeHotReload PRIVATE IMF_DEV_TOOLS)
     catch_discover_tests(ImFrame_Tests_DevTools_ThemeHotReload PROPERTIES LABELS unit TIMEOUT 10)
 endif()
+
+# ─── Phase 24: Viewport tests ─────────────────────────────────────────────────
+# Both targets use HeadlessBackend (compiled into ImFrame core) via a
+# FrameLimitedHeadlessBackend subclass defined inline in each test file.
+# ${CMAKE_SOURCE_DIR} is added as PRIVATE include so test TUs can reach
+# "Backends/Headless/HeadlessBackend.hpp" directly.
+
+add_executable(ImFrame_Tests_Rendering_Viewport
+    Rendering/Viewport_test.cpp
+)
+target_include_directories(ImFrame_Tests_Rendering_Viewport PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Rendering_Viewport
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_Viewport PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_Viewport PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_Viewport PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Rendering_ViewportConformance
+    Rendering/ViewportConformance_test.cpp
+)
+target_include_directories(ImFrame_Tests_Rendering_ViewportConformance PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Rendering_ViewportConformance
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_ViewportConformance PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_ViewportConformance PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_ViewportConformance PROPERTIES LABELS unit)

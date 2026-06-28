@@ -160,6 +160,12 @@ public:
      */
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
+    /**
+     * @brief    Allocate a CPU pixel-buffer framebuffer for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
     // ─── Headless-specific API ────────────────────────────────────────────────
 
     /**
