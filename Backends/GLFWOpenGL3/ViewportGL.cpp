@@ -23,7 +23,7 @@
 // GLFW must come after GLAD.
 #include <GLFW/glfw3.h>
 
-#include "Backends/GLFWOpenGL3/ViewportGL.hpp"
+#include "ViewportGL.hpp"
 
 namespace ImFrame::Internal {
 

@@ -50,7 +50,7 @@ namespace ImFrame::Internal {
  *
  * @see      IBackend, Application::CreateHeadless
  */
-class HeadlessBackend final : public IBackend {
+class HeadlessBackend : public IBackend {
 public:
     /**
      * @brief  Default constructor. No resources are acquired until Init().

@@ -12,7 +12,7 @@
  *            or modification of this file is strictly prohibited.
  */
 
-#include "Backends/Headless/ViewportHeadless.hpp"
+#include "ViewportHeadless.hpp"
 
 namespace ImFrame::Internal {
 

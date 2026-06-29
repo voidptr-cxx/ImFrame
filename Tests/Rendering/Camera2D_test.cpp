@@ -20,6 +20,7 @@
 
 #include "ImFrame/Rendering/Camera2D.hpp"
 
+using namespace ImFrame;
 using namespace ImFrame::Rendering;
 using Catch::Matchers::WithinAbs;
 

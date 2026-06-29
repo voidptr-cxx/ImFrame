@@ -221,7 +221,8 @@ target_include_directories(ImFrame
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        ${CMAKE_SOURCE_DIR}    # allows #include "Backends/Headless/HeadlessBackend.hpp"
+        ${CMAKE_SOURCE_DIR}        # allows #include "Backends/Headless/HeadlessBackend.hpp"
+        ${CMAKE_SOURCE_DIR}/src    # allows cross-directory src/ includes e.g. "App/ApplicationContext.hpp"
 )
 
 target_link_libraries(ImFrame

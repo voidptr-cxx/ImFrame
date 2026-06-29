@@ -15,7 +15,7 @@
 #include <webgpu/webgpu.h>
 #include <imgui_impl_wgpu.h>
 
-#include "Backends/DawnWebGPU/ViewportWebGPU.hpp"
+#include "ViewportWebGPU.hpp"
 
 namespace ImFrame::Internal {
 
@@ -41,14 +41,12 @@ void ViewportFramebufferWebGPU::Resize(std::uint32_t width, std::uint32_t height
 
 void ViewportFramebufferWebGPU::BeginRender(std::uint32_t /*frameIndex*/) {
     WGPUCommandEncoderDescriptor desc{};
-    desc.label   = "ImFrame_ViewportEncoder";
     _encoder = wgpuDeviceCreateCommandEncoder(_device, &desc);
 }
 
 void ViewportFramebufferWebGPU::EndRender(std::uint32_t /*frameIndex*/) {
     if (!_encoder) return;
     WGPUCommandBufferDescriptor cbDesc{};
-    cbDesc.label = "ImFrame_ViewportCmdBuf";
     WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(_encoder, &cbDesc);
     wgpuCommandEncoderRelease(_encoder);
     _encoder = nullptr;
@@ -74,7 +72,6 @@ void ViewportFramebufferWebGPU::Allocate(std::uint32_t width, std::uint32_t heig
     _height = height;
 
     WGPUTextureDescriptor texDesc{};
-    texDesc.label         = "ImFrame_ViewportTex";
     texDesc.usage         = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
     texDesc.dimension     = WGPUTextureDimension_2D;
     texDesc.size          = { width, height, 1 };
@@ -84,25 +81,18 @@ void ViewportFramebufferWebGPU::Allocate(std::uint32_t width, std::uint32_t heig
     _texture = wgpuDeviceCreateTexture(_device, &texDesc);
 
     WGPUTextureViewDescriptor viewDesc{};
-    viewDesc.label           = "ImFrame_ViewportView";
     viewDesc.format          = _format;
     viewDesc.dimension       = WGPUTextureViewDimension_2D;
     viewDesc.mipLevelCount   = 1;
     viewDesc.arrayLayerCount = 1;
     _view = wgpuTextureCreateView(_texture, &viewDesc);
 
-    // Register with ImGui — returns an opaque uint64 used as ImTextureID.
-    // ImGui_ImplWGPU_AddTexture is available in imgui 1.92+.
-    _imTextureId = reinterpret_cast<std::uint64_t>(
-        ImGui_ImplWGPU_AddTexture(nullptr, _view, WGPUTextureFormat_Undefined));
+    // imgui_impl_wgpu uses WGPUTextureView* directly as ImTextureID (cast to uint64).
+    _imTextureId = static_cast<std::uint64_t>(reinterpret_cast<uintptr_t>(_view));
 }
 
 void ViewportFramebufferWebGPU::Release() noexcept {
-    if (_imTextureId) {
-        ImGui_ImplWGPU_RemoveTexture(
-            reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(_imTextureId)));
-        _imTextureId = 0;
-    }
+    _imTextureId = 0;
     if (_view)    { wgpuTextureViewRelease(_view);  _view    = nullptr; }
     if (_texture) { wgpuTextureRelease(_texture);   _texture = nullptr; }
 }

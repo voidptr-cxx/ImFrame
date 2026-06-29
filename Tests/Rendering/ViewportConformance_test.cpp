@@ -183,8 +183,8 @@ TEST_CASE("HeadlessViewport RenderContext Size matches requested dimensions", "[
     app.OnUi([&] { vp.Show(); });
     REQUIRE(app.Run().has_value());
 
-    REQUIRE(capturedSize.X == 48.0f);
-    REQUIRE(capturedSize.Y == 36.0f);
+    REQUIRE(capturedSize.x == 48.0f);
+    REQUIRE(capturedSize.y == 36.0f);
 }
 
 TEST_CASE("HeadlessViewport RenderContext DeltaTime is positive", "[unit]")

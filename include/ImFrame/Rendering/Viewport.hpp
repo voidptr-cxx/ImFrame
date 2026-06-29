@@ -128,7 +128,7 @@ public:
      * @param[in]  callback  Callable accepting a `const InputEvent&`.
      * @return   Reference to this Viewport for chaining.
      */
-    Viewport& OnInput(Utility::Delegate<void(const Backends::InputEvent&)> callback);
+    Viewport& OnInput(Utility::Delegate<void(const InputEvent&)> callback);
 
     /**
      * @brief    Remove the ImGui child-window border around the Viewport.
@@ -158,7 +158,7 @@ public:
 
     void FireOnRender(const RenderContext& ctx);
     void FireOnResize(Widgets::Vec2 newSize);
-    void FireOnInput(const Backends::InputEvent& ev);
+    void FireOnInput(const InputEvent& ev);
 
     /// Called by ViewportRegistry after OnRender to let subclasses capture pixel data.
     virtual void CaptureAfterRender(const Internal::ViewportHandles&) {}
@@ -174,7 +174,7 @@ private:
     Internal::ViewportRegistry*                           _registry        = nullptr;
     Utility::Delegate<void(const RenderContext&)>         _onRender;
     Utility::Delegate<void(Widgets::Vec2)>                _onResize;
-    Utility::Delegate<void(const Backends::InputEvent&)>  _onInput;
+    Utility::Delegate<void(const InputEvent&)>  _onInput;
 };
 
 /**

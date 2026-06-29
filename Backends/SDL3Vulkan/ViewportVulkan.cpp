@@ -30,7 +30,7 @@
 #include <vk_mem_alloc.h>
 #include <imgui_impl_vulkan.h>
 
-#include "Backends/SDL3Vulkan/ViewportVulkan.hpp"
+#include "ViewportVulkan.hpp"
 
 namespace ImFrame::Internal {
 

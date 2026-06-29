@@ -77,6 +77,7 @@ TEST_CASE("Viewport OnRender fires starting from the second frame", "[unit]")
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
 
     HeadlessViewport vp("timing_test");
+    vp.Size({200.0f, 200.0f});
     int renderCount = 0;
     vp.OnRender([&](const RenderContext&) { ++renderCount; });
 
@@ -106,6 +107,7 @@ TEST_CASE("Viewport render count is N-1 for N frames", "[unit]")
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(5), TestConfig());
 
     HeadlessViewport vp("scale_test");
+    vp.Size({200.0f, 200.0f});
     int renderCount = 0;
     vp.OnRender([&](const RenderContext&) { ++renderCount; });
 
@@ -129,8 +131,8 @@ TEST_CASE("Viewport OnResize fires on first Show with the initial dimensions", "
     app.OnUi([&] { vp.Show(); });
 
     REQUIRE(app.Run().has_value());
-    REQUIRE(lastSize.X == 64.0f);
-    REQUIRE(lastSize.Y == 64.0f);
+    REQUIRE(lastSize.x == 64.0f);
+    REQUIRE(lastSize.y == 64.0f);
 }
 
 TEST_CASE("Viewport OnResize fires when explicit size changes between Shows", "[unit]")
@@ -156,8 +158,8 @@ TEST_CASE("Viewport OnResize fires when explicit size changes between Shows", "[
 
     REQUIRE(app.Run().has_value());
     REQUIRE(resizeCount == 2);
-    REQUIRE(lastSize.X == 128.0f);
-    REQUIRE(lastSize.Y == 128.0f);
+    REQUIRE(lastSize.x == 128.0f);
+    REQUIRE(lastSize.y == 128.0f);
 }
 
 // ─── Input callback registration ─────────────────────────────────────────────
@@ -171,7 +173,7 @@ TEST_CASE("Viewport HasInputCallback is false before OnInput is registered", "[u
 TEST_CASE("Viewport HasInputCallback is true after OnInput is registered", "[unit]")
 {
     Viewport vp("input_post");
-    vp.OnInput([](const Backends::InputEvent&) {});
+    vp.OnInput([](const InputEvent&) {});
     REQUIRE(vp.HasInputCallback());
 }
 
@@ -182,6 +184,7 @@ TEST_CASE("Viewport destructor after Run does not crash", "[unit]")
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(2), TestConfig());
     {
         HeadlessViewport vp("dtor_test");
+        vp.Size({200.0f, 200.0f});
         app.OnUi([&] { vp.Show(); });
         REQUIRE(app.Run().has_value());
         // vp destroyed here — ~Viewport() must not crash.
@@ -197,6 +200,8 @@ TEST_CASE("Two Viewports with different IDs receive independent render callbacks
 
     HeadlessViewport vpA("vp_a");
     HeadlessViewport vpB("vp_b");
+    vpA.Size({200.0f, 200.0f});
+    vpB.Size({200.0f, 200.0f});
     int countA = 0;
     int countB = 0;
     vpA.OnRender([&](const RenderContext&) { ++countA; });

@@ -18,6 +18,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <imgui.h>
 
 #include "Backends/Headless/HeadlessBackend.hpp"
 #include "ImFrame/App/Application.hpp"
@@ -36,13 +37,13 @@ class FrameLimitedHeadlessBackend final : public Internal::HeadlessBackend {
 public:
     explicit FrameLimitedHeadlessBackend(int maxFrames) : _maxFrames{maxFrames} {}
 
-    Backends::FrameInfo Poll() override {
+    FrameInfo Poll() override {
         auto info        = Internal::HeadlessBackend::Poll();
         info.ShouldClose = (_frameCount >= _maxFrames);
         return info;
     }
 
-    void BeginFrame(Backends::WindowHandle h = PrimaryWindow) override {
+    void BeginFrame(WindowHandle h = PrimaryWindow) override {
         Internal::HeadlessBackend::BeginFrame(h);
         ++_frameCount;
     }
@@ -52,8 +53,8 @@ private:
     int _frameCount = 0;
 };
 
-static App::WindowConfig TestConfig() {
-    App::WindowConfig cfg;
+static WindowConfig TestConfig() {
+    WindowConfig cfg;
     cfg.Title  = "Canvas2D Test";
     cfg.Width  = 800;
     cfg.Height = 600;
@@ -72,11 +73,16 @@ TEST_CASE("Canvas2D::OnDraw fires once per Show() call per frame", "[unit]") {
     canvas.Size({200.f, 200.f})
           .OnDraw([&](DrawContext&) { ++drawCount; });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 
-    // Frame 0: registers. Frames 1-2: two OnDraw calls.
-    REQUIRE(drawCount == 2);
+    // 3 frames × 1 Show() per frame = 3 OnDraw calls.
+    REQUIRE(drawCount == 3);
 }
 
 // ─── DrawRectFilled does not crash ────────────────────────────────────────────
@@ -89,7 +95,12 @@ TEST_CASE("Canvas2D DrawRectFilled executes without crash", "[unit]") {
               ctx.DrawRectFilled({0.f, 0.f}, {100.f, 100.f}, {1.f, 0.f, 0.f, 1.f});
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 }
 
@@ -113,7 +124,12 @@ TEST_CASE("Canvas2D all draw primitives execute without crash", "[unit]") {
               ctx.DrawText({0.f, 0.f}, {1.f, 1.f, 1.f, 1.f}, "hello");
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 }
 
@@ -129,7 +145,12 @@ TEST_CASE("Canvas2D::HitTest returns correct ID for point inside shape", "[unit]
                                  {1.f, 0.f, 0.f, 1.f}, 0.f, 42u);
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 
     // At identity camera (zoom=1, pos=0), canvas (50,50) → screen (~50,50).
@@ -150,7 +171,12 @@ TEST_CASE("Canvas2D::HitTest returns nullopt when no shapes registered", "[unit]
     canvas.Size({400.f, 400.f})
           .OnDraw([](DrawContext&) { /* no shapes */ });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
     REQUIRE(!canvas.HitTest({200.f, 200.f}).has_value());
 }
@@ -173,7 +199,12 @@ TEST_CASE("Canvas2D::HitTest higher layer occludes lower layer", "[unit]") {
               ctx.PopLayer();
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 
     // Both rects cover the same area. HitTest should return ID=2 (higher layer).
@@ -202,7 +233,12 @@ TEST_CASE("Canvas2D::LayerCount returns number of distinct layers used", "[unit]
               ctx.PopLayer();
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
     REQUIRE(canvas.LayerCount() == 3);
 }
@@ -222,7 +258,12 @@ TEST_CASE("Canvas2D PushTransform/PopTransform do not crash", "[unit]") {
               ctx.DrawCircleFilled({0.f, 0.f}, 5.f, {0.f, 1.f, 1.f, 1.f});
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 }
 
@@ -245,11 +286,15 @@ TEST_CASE("Canvas2D BeginStatic/EndStatic replays on cache hit", "[unit]") {
               }
           });
 
-    app.OnUi([&] { canvas.Show(); });
+    app.OnUi([&] {
+        ImGui::SetNextWindowSize({600.f, 500.f}, ImGuiCond_Always);
+        ImGui::Begin("##canvas_test", nullptr, ImGuiWindowFlags_NoSavedSettings);
+        canvas.Show();
+        ImGui::End();
+    });
     REQUIRE(app.Run().has_value());
 
-    // Frame 0 registers (no OnDraw). Frames 1-3 call OnDraw.
-    // Frame 1: cache miss → drawCallCount=1. Frames 2-3: cache hit → no additional calls.
+    // Frame 0: cache miss → drawCallCount=1. Frames 1-3: cache hit → no additional calls.
     REQUIRE(drawCallCount == 1);
 }
 
@@ -258,8 +303,8 @@ TEST_CASE("Canvas2D BeginStatic/EndStatic replays on cache hit", "[unit]") {
 TEST_CASE("Canvas2D::GetCamera reflects MinZoom/MaxZoom setters", "[unit]") {
     Canvas2D canvas{"test_cam"};
     canvas.MinZoom(0.5f).MaxZoom(8.0f);
-    REQUIRE(canvas.GetCamera().GetMinZoom() == Catch::Approx(0.5f));
-    REQUIRE(canvas.GetCamera().GetMaxZoom() == Catch::Approx(8.0f));
+    REQUIRE_THAT(canvas.GetCamera().GetMinZoom(), Catch::Matchers::WithinAbs(0.5f, 1e-4f));
+    REQUIRE_THAT(canvas.GetCamera().GetMaxZoom(), Catch::Matchers::WithinAbs(8.0f, 1e-4f));
 }
 
 // ─── LayerCount is 0 before first Show ────────────────────────────────────────

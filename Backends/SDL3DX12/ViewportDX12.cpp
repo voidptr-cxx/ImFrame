@@ -20,8 +20,8 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-#include "Backends/SDL3DX12/DescriptorAllocator.hpp"
-#include "Backends/SDL3DX12/ViewportDX12.hpp"
+#include "DescriptorAllocator.hpp"
+#include "ViewportDX12.hpp"
 
 namespace ImFrame::Internal {
 

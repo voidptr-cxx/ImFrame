@@ -50,7 +50,7 @@ Viewport& Viewport::OnResize(Utility::Delegate<void(Widgets::Vec2)> callback) {
     return *this;
 }
 
-Viewport& Viewport::OnInput(Utility::Delegate<void(const Backends::InputEvent&)> callback) {
+Viewport& Viewport::OnInput(Utility::Delegate<void(const InputEvent&)> callback) {
     _onInput = std::move(callback);
     return *this;
 }
@@ -66,10 +66,10 @@ void Viewport::Show() {
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const std::uint32_t w = _hasExplicitSize
-        ? std::max(static_cast<std::uint32_t>(_requestedSize.X), 1u)
+        ? std::max(static_cast<std::uint32_t>(_requestedSize.x), 1u)
         : std::max(static_cast<std::uint32_t>(avail.x), 1u);
     const std::uint32_t h = _hasExplicitSize
-        ? std::max(static_cast<std::uint32_t>(_requestedSize.Y), 1u)
+        ? std::max(static_cast<std::uint32_t>(_requestedSize.y), 1u)
         : std::max(static_cast<std::uint32_t>(avail.y), 1u);
 
     Internal::ViewportEntry& entry =
@@ -80,8 +80,7 @@ void Viewport::Show() {
 
     if (entry.imTextureId != 0) {
         ImGui::Image(
-            reinterpret_cast<ImTextureID>(
-                static_cast<std::uintptr_t>(entry.imTextureId)),
+            ImTextureRef{static_cast<ImTextureID>(entry.imTextureId)},
             ImVec2(static_cast<float>(entry.currentW),
                    static_cast<float>(entry.currentH)));
 
@@ -107,7 +106,7 @@ void Viewport::FireOnResize(Widgets::Vec2 newSize) {
     if (_onResize) _onResize(newSize);
 }
 
-void Viewport::FireOnInput(const Backends::InputEvent& ev) {
+void Viewport::FireOnInput(const InputEvent& ev) {
     if (_onInput) _onInput(ev);
 }
 

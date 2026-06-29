@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace ImFrame::Rendering {
 
@@ -263,7 +264,7 @@ void DrawContext::DrawImage(Widgets::TextureHandle textureId,
     ImU32  col  = ToImU32(tint);
 
     Enqueue(im, [sMin, sMax, textureId, uv0, uv1, col](ImDrawList* dl) {
-        dl->AddImage(static_cast<ImTextureID>(textureId),
+        dl->AddImage(ImTextureRef{textureId},
                      sMin, sMax,
                      {uv0.x, uv0.y}, {uv1.x, uv1.y},
                      col);
