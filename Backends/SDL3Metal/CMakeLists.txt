@@ -18,6 +18,7 @@ endif()
 add_library(ImFrame_SDL3Metal STATIC
     SDL3MetalBackend.mm
     MetalLayer.mm
+    ViewportMetal.mm
     # Reused directly from Phase 20 rather than copied — SDL3's event model is
     # platform-agnostic, so the same translation unit compiles unchanged here.
     ${CMAKE_CURRENT_SOURCE_DIR}/../SDL3Vulkan/InputTranslation.cpp
@@ -28,6 +29,7 @@ add_library(ImFrame_SDL3Metal STATIC
 set_source_files_properties(
     SDL3MetalBackend.mm
     MetalLayer.mm
+    ViewportMetal.mm
     PROPERTIES COMPILE_FLAGS "-fobjc-arc"
 )
 

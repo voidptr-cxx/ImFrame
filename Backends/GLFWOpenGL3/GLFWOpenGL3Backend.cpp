@@ -23,6 +23,7 @@
 // ─── GLAD before GLFW (architecture invariant) ────────────────────────────────
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include "ViewportGL.hpp"
 
 // ─── Dear ImGui ───────────────────────────────────────────────────────────────
 #include <imgui.h>
@@ -450,6 +451,14 @@ std::span<const InputEvent> GLFWOpenGL3Backend::DrainInputEvents()
 NativeGraphicsContext GLFWOpenGL3Backend::GetNativeGraphicsContext() const
 {
     return OpenGLContext{};
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> GLFWOpenGL3Backend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    return std::make_unique<ViewportFramebufferGL>(width, height);
 }
 
 // ─── Gamepad polling ──────────────────────────────────────────────────────────

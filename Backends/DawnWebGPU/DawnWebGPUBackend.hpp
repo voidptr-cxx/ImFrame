@@ -100,6 +100,10 @@ public:
     std::span<const InputEvent> DrainInputEvents() override;
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
+    /// Allocate a WGPUTexture framebuffer for Viewport use.
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
     /**
      * @brief    Reads back the primary window's offscreen render target.
      *

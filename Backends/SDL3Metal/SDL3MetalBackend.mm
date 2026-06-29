@@ -24,6 +24,7 @@
 
 #include "SDL3MetalBackend.hpp"
 #include "../SDL3Vulkan/InputTranslation.hpp"
+#include "ViewportMetal.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_metal.h>
@@ -659,6 +660,20 @@ NativeGraphicsContext SDL3MetalBackend::GetNativeGraphicsContext() const
         .PixelFormat    = static_cast<uint32_t>(_primary.metalLayer.pixelFormat),
         .FramesInFlight = _framesInFlight,
     };
+}
+
+// ─── CreateViewportFramebuffer ────────────────────────────────────────────────
+
+std::unique_ptr<IViewportFramebuffer> SDL3MetalBackend::CreateViewportFramebuffer(
+    std::uint32_t width, std::uint32_t height)
+{
+    if (!_initialised || _device == nil) return nullptr;
+    return std::make_unique<ViewportFramebufferMetal>(
+        _device,
+        _commandQueue,
+        MTLPixelFormatBGRA8Unorm_sRGB,
+        width,
+        height);
 }
 
 // ─── ReadPixels ───────────────────────────────────────────────────────────────

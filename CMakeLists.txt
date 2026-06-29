@@ -193,6 +193,17 @@ add_library(ImFrame STATIC
 
     # ── Phase 19: Headless backend (compiled into core for Application::CreateHeadless) ──
     Backends/Headless/HeadlessBackend.cpp
+    Backends/Headless/ViewportHeadless.cpp
+
+    # ── Phase 24: Viewport foundation ────────────────────────────────────────────
+    src/App/ApplicationContext.cpp
+    src/Rendering/Viewport.cpp
+    src/Rendering/ViewportRegistry.cpp
+
+    # ── Phase 25: Canvas2D, Camera2D, DrawContext ─────────────────────────────
+    src/Rendering/Camera2D.cpp
+    src/Rendering/DrawContext.cpp
+    src/Rendering/Canvas2D.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────
@@ -210,7 +221,8 @@ target_include_directories(ImFrame
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
     PRIVATE
-        ${CMAKE_SOURCE_DIR}    # allows #include "Backends/Headless/HeadlessBackend.hpp"
+        ${CMAKE_SOURCE_DIR}        # allows #include "Backends/Headless/HeadlessBackend.hpp"
+        ${CMAKE_SOURCE_DIR}/src    # allows cross-directory src/ includes e.g. "App/ApplicationContext.hpp"
 )
 
 target_link_libraries(ImFrame

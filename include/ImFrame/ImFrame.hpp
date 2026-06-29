@@ -107,36 +107,15 @@
 #include "ImFrame/DevTools/ThemeHotReload.hpp"
 #endif
 
-// ─── Rendering ────────────────────────────────────────────────────────────────
+// ─── Rendering (Phases 24–25) ─────────────────────────────────────────────────
 #include "ImFrame/Rendering/RenderContext.hpp"
 #include "ImFrame/Rendering/Viewport.hpp"
-#include "ImFrame/Rendering/Canvas2D.hpp"
+#include "ImFrame/Rendering/Transform2D.hpp"
 #include "ImFrame/Rendering/Camera2D.hpp"
 #include "ImFrame/Rendering/DrawContext.hpp"
-#include "ImFrame/Rendering/Viewport3D.hpp"
-#include "ImFrame/Rendering/Camera3D.hpp"
-#include "ImFrame/Rendering/Gizmo.hpp"
-
-// ─── Widget Tree ──────────────────────────────────────────────────────────────
-#include "ImFrame/Tree/Widget.hpp"
-#include "ImFrame/Tree/Element.hpp"
-#include "ImFrame/Tree/Component.hpp"
-#include "ImFrame/Tree/Key.hpp"
-#include "ImFrame/Tree/Context.hpp"
-#include "ImFrame/Tree/State.hpp"
-#include "ImFrame/Tree/Signal.hpp"
-#include "ImFrame/Tree/Computed.hpp"
-#include "ImFrame/Tree/InheritedWidget.hpp"
-#include "ImFrame/Tree/Portal.hpp"
-#include "ImFrame/Tree/VirtualList.hpp"
-#include "ImFrame/Tree/Primitives/Box.hpp"
-#include "ImFrame/Tree/Primitives/Text.hpp"
-#include "ImFrame/Tree/Primitives/Flex.hpp"
-#include "ImFrame/Tree/Primitives/Stack.hpp"
-#include "ImFrame/Tree/Primitives/GestureRegion.hpp"
-#include "ImFrame/Tree/Primitives/SizedBox.hpp"
-#include "ImFrame/Tree/Primitives/Expanded.hpp"
-#include "ImFrame/Tree/Primitives/Spacer.hpp"
+#include "ImFrame/Rendering/Canvas2D.hpp"
+// Phase 26: Viewport3D, Camera3D, Gizmo — not yet implemented
+// Phase 27–29: Tree subsystem — not yet implemented
 
 /**
  * @namespace ImFrame

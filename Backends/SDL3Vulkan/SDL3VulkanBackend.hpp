@@ -181,6 +181,12 @@ public:
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
     /**
+     * @brief    Allocate a Vulkan VkImage framebuffer for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
+    /**
      * @brief    Reads back the primary window's just-presented swap chain image.
      *
      * Callable between `EndFrame()` and the next `BeginFrame()` — matches

@@ -196,6 +196,12 @@ public:
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
     /**
+     * @brief    Allocate an MTLTexture framebuffer for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
+    /**
      * @brief    Reads back the primary window's offscreen render target.
      *
      * Only supported when the backend was created via `Application::CreateHeadless()`

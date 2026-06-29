@@ -180,6 +180,12 @@ public:
      */
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
+    /**
+     * @brief    Allocate an OpenGL FBO + RGBA8 texture for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
+
 private:
     // ─── GLFW callback thunks ─────────────────────────────────────────────────
     // Static functions retrieve the backend pointer via glfwGetWindowUserPointer

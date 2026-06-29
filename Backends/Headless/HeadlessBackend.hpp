@@ -50,7 +50,7 @@ namespace ImFrame::Internal {
  *
  * @see      IBackend, Application::CreateHeadless
  */
-class HeadlessBackend final : public IBackend {
+class HeadlessBackend : public IBackend {
 public:
     /**
      * @brief  Default constructor. No resources are acquired until Init().
@@ -159,6 +159,12 @@ public:
      * @brief    Returns a `HeadlessContext` descriptor for this backend.
      */
     NativeGraphicsContext GetNativeGraphicsContext() const override;
+
+    /**
+     * @brief    Allocate a CPU pixel-buffer framebuffer for Viewport use.
+     */
+    std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
+        std::uint32_t width, std::uint32_t height) override;
 
     // ─── Headless-specific API ────────────────────────────────────────────────
 
