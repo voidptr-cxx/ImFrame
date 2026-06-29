@@ -661,3 +661,31 @@ if(MSVC)
     target_compile_options(ImFrame_Tests_Rendering_Canvas2D PRIVATE /utf-8)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_Canvas2D PROPERTIES LABELS unit)
+
+# ─── Phase 26: Camera3D, Viewport3D, Gizmo tests ─────────────────────────────
+# Camera3D_test: pure math — no ImGui context required, no backend needed.
+# Gizmo_test: API-level null-guard tests; no ImGui context required.
+
+add_executable(ImFrame_Tests_Rendering_Camera3D
+    Rendering/Camera3D_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Rendering_Camera3D
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_Camera3D PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_Camera3D PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_Camera3D PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Rendering_Gizmo
+    Rendering/Gizmo_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Rendering_Gizmo
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_Gizmo PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_Gizmo PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_Gizmo PROPERTIES LABELS unit)
