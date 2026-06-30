@@ -204,6 +204,11 @@ add_library(ImFrame STATIC
     src/Rendering/Camera2D.cpp
     src/Rendering/DrawContext.cpp
     src/Rendering/Canvas2D.cpp
+
+    # ── Phase 26: Viewport3D, Camera3D, Gizmo ─────────────────────────────────
+    src/Rendering/Camera3D.cpp
+    src/Rendering/Viewport3D.cpp
+    src/Rendering/Gizmo.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

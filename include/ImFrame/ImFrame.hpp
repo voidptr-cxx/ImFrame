@@ -107,14 +107,18 @@
 #include "ImFrame/DevTools/ThemeHotReload.hpp"
 #endif
 
-// ─── Rendering (Phases 24–25) ─────────────────────────────────────────────────
+// ─── Rendering (Phases 24–26) ─────────────────────────────────────────────────
 #include "ImFrame/Rendering/RenderContext.hpp"
 #include "ImFrame/Rendering/Viewport.hpp"
 #include "ImFrame/Rendering/Transform2D.hpp"
 #include "ImFrame/Rendering/Camera2D.hpp"
 #include "ImFrame/Rendering/DrawContext.hpp"
 #include "ImFrame/Rendering/Canvas2D.hpp"
-// Phase 26: Viewport3D, Camera3D, Gizmo — not yet implemented
+#include "ImFrame/Rendering/Ray3D.hpp"
+#include "ImFrame/Rendering/Transform3D.hpp"
+#include "ImFrame/Rendering/Camera3D.hpp"
+#include "ImFrame/Rendering/Viewport3D.hpp"
+#include "ImFrame/Rendering/Gizmo.hpp"
 // Phase 27–29: Tree subsystem — not yet implemented
 
 /**

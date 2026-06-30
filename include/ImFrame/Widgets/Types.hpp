@@ -46,6 +46,28 @@ struct Vec2 {
     float y = 0.0f; ///< Vertical component.
 };
 
+// ─── Vec3 ─────────────────────────────────────────────────────────────────────
+
+/**
+ * @struct   Vec3
+ * @brief    Three-component float vector for 3D positions, directions, and extents
+ *
+ * No equivalent exists in Dear ImGui (which provides only `ImVec2` and `ImVec4`).
+ * Introduced in Phase 26 for the 3D viewport and gizmo subsystem.
+ *
+ * @since    2.1.0
+ *
+ * @example
+ * @code
+ * Widgets::Vec3 pos{1.0f, 2.0f, 3.0f};
+ * @endcode
+ */
+struct Vec3 {
+    float x = 0.0f; ///< X component.
+    float y = 0.0f; ///< Y component.
+    float z = 0.0f; ///< Z component.
+};
+
 // ─── Vec4 ─────────────────────────────────────────────────────────────────────
 
 /**
