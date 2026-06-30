@@ -34,6 +34,7 @@
 #include "ImFrame/App/DockSpace.hpp"
 #include "ImFrame/App/Window.hpp"
 #include "ImFrame/Backends/BackendInfo.hpp"
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Utility/Config.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
 #include "ImFrame/Utility/Logger.hpp"
@@ -55,6 +56,7 @@
 namespace ImFrame::Theme       { struct Theme;            }
 namespace ImFrame::Rendering  { class  Viewport;          }
 namespace ImFrame::Internal   { class  ViewportRegistry;  }
+namespace ImFrame::Internal   { class  Reconciler;        }
 
 namespace ImFrame::App {
 
@@ -143,6 +145,24 @@ public:
      * @return   Reference to this Application for chaining.
      */
     Application& OnUi(Utility::Delegate<void()> callback);
+
+    /**
+     * @brief    Set the root of the declarative widget tree (Phase 27+).
+     *
+     * `root.Build()` is called every frame and reconciled against the
+     * existing element tree, rendered in the same scope as `OnUi()`'s
+     * callback. `root` must outlive the `Application` (or until a different
+     * root is set) — only a reference is captured.
+     *
+     * @tparam   T     A type satisfying `Tree::Component` (has `Build() const`).
+     * @param[in] root  The root component instance. Must outlive this `Application`.
+     * @return   Reference to this Application for chaining.
+     */
+    template <Tree::Component T>
+    Application& SetRoot(T& root) {
+        _rootBuilder = [&root]() -> Tree::Widget { return root.Build(); };
+        return *this;
+    }
 
     /**
      * @brief    Register a per-frame update callback.
@@ -307,6 +327,7 @@ private:
 
     std::unique_ptr<Internal::IBackend>      _backend;
     std::unique_ptr<Internal::ViewportRegistry> _viewportRegistry;
+    std::unique_ptr<Internal::Reconciler>    _reconciler;
     std::uint32_t                            _frameIndex = 0;
     WindowConfig                             _config;
     Utility::Timer                          _timer;
@@ -317,6 +338,7 @@ private:
     Utility::Delegate<void()>               _onUi;
     Utility::Delegate<void(float)>          _onUpdate;
     Utility::Delegate<bool()>               _onClose;
+    Utility::Delegate<Tree::Widget()>        _rootBuilder;
     std::vector<FontConfig>                 _pendingFonts;
     const ImFrame::Theme::Theme*            _pendingTheme            = nullptr;
     bool                                    _themeDirty              = false;

@@ -209,6 +209,20 @@ add_library(ImFrame STATIC
     src/Rendering/Camera3D.cpp
     src/Rendering/Viewport3D.cpp
     src/Rendering/Gizmo.cpp
+
+    # ── Phase 27: Widget tree core ────────────────────────────────────────────
+    src/Tree/ElementInternal.cpp
+    src/Tree/Layout.cpp
+    src/Tree/Reconciler.cpp
+    src/Tree/RenderObjects/RootBridge.cpp
+    src/Tree/RenderObjects/BoxRO.cpp
+    src/Tree/RenderObjects/TextRO.cpp
+    src/Tree/RenderObjects/FlexRO.cpp
+    src/Tree/RenderObjects/StackRO.cpp
+    src/Tree/RenderObjects/GestureRegionRO.cpp
+    src/Tree/RenderObjects/SizedBoxRO.cpp
+    src/Tree/RenderObjects/ExpandedRO.cpp
+    src/Tree/RenderObjects/SpacerRO.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

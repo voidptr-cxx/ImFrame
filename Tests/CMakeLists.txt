@@ -689,3 +689,53 @@ if(MSVC)
     target_compile_options(ImFrame_Tests_Rendering_Gizmo PRIVATE /utf-8)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_Gizmo PROPERTIES LABELS unit)
+
+# ─── Phase 27: Widget tree core tests ────────────────────────────────────────
+# Layout_test / Reconciler_test: pure logic, no ImGui context required, but need
+# ${CMAKE_SOURCE_DIR}/src as an include dir to reach internal Tree/ headers.
+# Primitives_test: drives a real HeadlessBackend Application via SetRoot().
+
+add_executable(ImFrame_Tests_Tree_Layout
+    Tree/Layout_test.cpp
+)
+target_include_directories(ImFrame_Tests_Tree_Layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ImFrame_Tests_Tree_Layout
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Tree_Layout PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Tree_Layout PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Tree_Layout PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Tree_Reconciler
+    Tree/Reconciler_test.cpp
+)
+target_include_directories(ImFrame_Tests_Tree_Reconciler PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ImFrame_Tests_Tree_Reconciler
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Tree_Reconciler PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Tree_Reconciler PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Tree_Reconciler PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Tree_Primitives
+    Tree/Primitives_test.cpp
+)
+target_include_directories(ImFrame_Tests_Tree_Primitives PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Tree_Primitives
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Tree_Primitives PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Tree_Primitives PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Tree_Primitives PROPERTIES LABELS unit)
