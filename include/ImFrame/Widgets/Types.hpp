@@ -93,6 +93,55 @@ struct Vec4 {
     float w = 0.0f; ///< Alpha component (or W).
 };
 
+// ─── EdgeInsets ───────────────────────────────────────────────────────────────
+
+/**
+ * @struct   EdgeInsets
+ * @brief    Per-side padding/margin offsets, in logical pixels
+ *
+ * Introduced in Phase 27 for `Tree::Primitives::Box::Padding()`. Layout code
+ * adds `Left + Right` to a measured width and `Top + Bottom` to a measured
+ * height when computing outer extents.
+ *
+ * @since    2.2.0
+ *
+ * @example
+ * @code
+ * auto insets = EdgeInsets::All(8.0f);
+ * auto symmetric = EdgeInsets::Symmetric(12.0f, 4.0f); // horizontal, vertical
+ * @endcode
+ */
+struct EdgeInsets {
+    float Left   = 0.0f; ///< Left inset.
+    float Top    = 0.0f; ///< Top inset.
+    float Right  = 0.0f; ///< Right inset.
+    float Bottom = 0.0f; ///< Bottom inset.
+
+    /// Equal inset on all four sides.
+    [[nodiscard]] static constexpr EdgeInsets All(float v) noexcept { return {v, v, v, v}; }
+
+    /// Equal horizontal inset and equal vertical inset.
+    [[nodiscard]] static constexpr EdgeInsets Symmetric(float horizontal, float vertical) noexcept {
+        return {horizontal, vertical, horizontal, vertical};
+    }
+};
+
+// ─── TextAlign ────────────────────────────────────────────────────────────────
+
+/**
+ * @enum     TextAlign
+ * @brief    Horizontal text alignment within the available width
+ *
+ * Introduced in Phase 27 for `Tree::Primitives::Text::Align()`.
+ *
+ * @since    2.2.0
+ */
+enum class TextAlign : unsigned char {
+    Start,  ///< Left-aligned (default).
+    Center, ///< Centered within the available width.
+    End,    ///< Right-aligned.
+};
+
 // ─── TextureHandle ────────────────────────────────────────────────────────────
 
 /// Opaque GPU texture handle, matching the default `ImTextureID = void*`.

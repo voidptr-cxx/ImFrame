@@ -119,7 +119,22 @@
 #include "ImFrame/Rendering/Camera3D.hpp"
 #include "ImFrame/Rendering/Viewport3D.hpp"
 #include "ImFrame/Rendering/Gizmo.hpp"
-// Phase 27–29: Tree subsystem — not yet implemented
+
+// ─── Tree (Phase 27) ──────────────────────────────────────────────────────────
+#include "ImFrame/Tree/Key.hpp"
+#include "ImFrame/Tree/Component.hpp"
+#include "ImFrame/Tree/Context.hpp"
+#include "ImFrame/Tree/Element.hpp"
+#include "ImFrame/Tree/Widget.hpp"
+#include "ImFrame/Tree/Primitives/Box.hpp"
+#include "ImFrame/Tree/Primitives/Text.hpp"
+#include "ImFrame/Tree/Primitives/Flex.hpp"
+#include "ImFrame/Tree/Primitives/Stack.hpp"
+#include "ImFrame/Tree/Primitives/GestureRegion.hpp"
+#include "ImFrame/Tree/Primitives/SizedBox.hpp"
+#include "ImFrame/Tree/Primitives/Expanded.hpp"
+#include "ImFrame/Tree/Primitives/Spacer.hpp"
+// Phase 28–29: Reactive state, VirtualList, Portal — not yet implemented
 
 /**
  * @namespace ImFrame

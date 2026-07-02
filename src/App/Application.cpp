@@ -27,6 +27,7 @@
 #include "Backends/Headless/HeadlessBackend.hpp"
 #include "App/ApplicationContext.hpp"
 #include "Rendering/ViewportRegistry.hpp"
+#include "Tree/Reconciler.hpp"
 
 #include <imgui.h>
 
@@ -47,6 +48,7 @@ namespace ImFrame::App {
 Application::Application(std::unique_ptr<Internal::IBackend> backend, WindowConfig config)
     : _backend(std::move(backend))
     , _viewportRegistry(std::make_unique<Internal::ViewportRegistry>())
+    , _reconciler(std::make_unique<Internal::Reconciler>())
     , _config(config)
 {}
 
@@ -224,6 +226,10 @@ bool Application::RunOneFrame() {
     _dockSpace.Begin();
     if (_onUi) {
         _onUi();
+    }
+    if (_rootBuilder) {
+        const Tree::Widget rootWidget = _rootBuilder();
+        _reconciler->Show(rootWidget);
     }
     Overlay::ToastManager::Instance().Render(_deltaTime);
 #if defined(IMF_DEV_TOOLS)
