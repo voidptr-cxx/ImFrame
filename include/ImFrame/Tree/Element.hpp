@@ -28,8 +28,11 @@
 #include "ImFrame/Tree/Key.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
+#include <atomic>
 #include <cstddef>
+#include <functional>
 #include <limits>
+#include <memory>
 #include <typeindex>
 
 namespace ImFrame::Tree {
@@ -136,6 +139,44 @@ public:
 
     /// The size computed by the most recent `Layout()` call.
     [[nodiscard]] Widgets::Vec2 Size() const noexcept { return _size; }
+
+    /// Direct parent in the element tree, or `nullptr` for the root.
+    [[nodiscard]] Element* Parent() const noexcept { return _parent; }
+
+    /**
+     * @brief    If this element is an `InheritedElement<T>`, returns a pointer to its value.
+     *
+     * Used by `Context::Of<T>()` to perform the inherited-value lookup without
+     * knowing the concrete element type. The default implementation returns
+     * `nullptr`; `InheritedElement<T>` overrides it.
+     *
+     * @param[in] typeId  `std::type_index` of the requested value type `T`.
+     * @return   Pointer to the stored value, or `nullptr` if this element does not
+     *           hold an `InheritedWidget<T>` value for `typeId`.
+     */
+    [[nodiscard]] virtual const void* GetInheritedValue(std::type_index /*typeId*/) const noexcept { return nullptr; }
+
+    /**
+     * @brief    Register a callback to be fired when this element's inherited value changes.
+     *
+     * Used by `Context::Of<T>()` so that consumer elements are marked dirty whenever
+     * the `InheritedWidget<T>` they read from changes its value. The default
+     * implementation is a no-op; `InheritedElement<T>` overrides it.
+     *
+     * @param[in] callback  Callable to invoke on value change. Stored until consumed.
+     */
+    virtual void RegisterDependentDirtyCallback(std::function<void()> /*callback*/) {}
+
+    /**
+     * @brief    Returns a weak reference to this element's dirty flag, if it has one.
+     *
+     * `ComponentElement<T>` returns its `shared_ptr<std::atomic<bool>>` dirty flag
+     * here so that `InheritedElement<T>` and `State<T>` can mark it dirty from any
+     * thread via a safe weak_ptr promotion. Default: empty weak_ptr.
+     *
+     * @return   Weak pointer to the dirty flag, or an empty weak_ptr.
+     */
+    [[nodiscard]] virtual std::weak_ptr<std::atomic<bool>> GetDirtyFlag() const noexcept { return {}; }
 
 protected:
     /// Records `widget`'s type and key onto this element. Call from `Mount()`/`Update()` overrides.

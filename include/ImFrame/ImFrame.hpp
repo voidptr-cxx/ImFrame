@@ -120,7 +120,7 @@
 #include "ImFrame/Rendering/Viewport3D.hpp"
 #include "ImFrame/Rendering/Gizmo.hpp"
 
-// ─── Tree (Phase 27) ──────────────────────────────────────────────────────────
+// ─── Tree (Phases 27–28) ──────────────────────────────────────────────────────
 #include "ImFrame/Tree/Key.hpp"
 #include "ImFrame/Tree/Component.hpp"
 #include "ImFrame/Tree/Context.hpp"
@@ -134,7 +134,11 @@
 #include "ImFrame/Tree/Primitives/SizedBox.hpp"
 #include "ImFrame/Tree/Primitives/Expanded.hpp"
 #include "ImFrame/Tree/Primitives/Spacer.hpp"
-// Phase 28–29: Reactive state, VirtualList, Portal — not yet implemented
+#include "ImFrame/Tree/State.hpp"
+#include "ImFrame/Tree/Signal.hpp"
+#include "ImFrame/Tree/Computed.hpp"
+#include "ImFrame/Tree/InheritedWidget.hpp"
+// Phase 29: VirtualList, Portal — not yet implemented
 
 /**
  * @namespace ImFrame
