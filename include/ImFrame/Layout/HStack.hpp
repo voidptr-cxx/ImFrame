@@ -46,7 +46,8 @@ namespace ImFrame::Layout {
  * );
  * @endcode
  */
-class HStack {
+/// @deprecated Use `Tree::Primitives::Flex(Flex::Axis::Horizontal)` instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] HStack {
 public:
     /**
      * @brief    Construct an HStack with optional explicit spacing.

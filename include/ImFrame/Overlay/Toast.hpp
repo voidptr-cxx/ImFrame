@@ -23,8 +23,11 @@
 
 #pragma once
 
+#include "ImFrame/Tree/Widget.hpp"
+
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace ImFrame::Overlay {
 
@@ -57,6 +60,26 @@ struct ToastConfig {
     float defaultDuration = 3.0f; ///< Hold duration in seconds (override per toast with Add())
     float fadeInDuration  = 0.3f; ///< Fade-in window in seconds
     float fadeOutDuration = 0.4f; ///< Fade-out window in seconds
+};
+
+// ─── ToastSnapshot (Phase 29) ───────────────────────────────────────────────────
+
+/**
+ * @struct   ToastSnapshot
+ * @brief    Read-only view of one active toast's render-relevant state
+ *
+ * Returned by `ToastManager::Snapshot()` for `ToastOverlayWidget` — a
+ * declarative, `Portal`-based alternative to `Render()`'s raw ImGui draw-list
+ * calls, without touching the fade/queue logic that already exists in
+ * `ToastManager::Impl`.
+ *
+ * @since    2.4.0
+ */
+struct ToastSnapshot {
+    ToastType   Type;
+    std::string Title;
+    std::string Body;
+    float       Opacity = 1.0f; ///< Current fade-in/out opacity, `[0, 1]`.
 };
 
 // ─── ToastManager ─────────────────────────────────────────────────────────────
@@ -141,6 +164,17 @@ public:
      */
     void Clear() noexcept;
 
+    /**
+     * @brief    Returns a read-only snapshot of the currently active toasts.
+     *
+     * For `ToastOverlayWidget` (Phase 29) — lets a declarative `Build()` render
+     * the same toast queue/fade state `Render()` uses, without duplicating the
+     * animation logic in `Impl`.
+     *
+     * @return   Active toasts in display order (oldest first).
+     */
+    [[nodiscard]] std::vector<ToastSnapshot> Snapshot() const;
+
     ToastManager(const ToastManager&)            = delete;
     ToastManager& operator=(const ToastManager&) = delete;
     ToastManager(ToastManager&&)                 = delete;
@@ -188,5 +222,47 @@ void ToastWarning(std::string title, std::string body = "", float duration = -1.
  * @param[in]  duration  Override hold duration in seconds (-1 = default)
  */
 void ToastError(std::string title, std::string body = "", float duration = -1.0f);
+
+// ─── ToastOverlayWidget (Phase 29) ──────────────────────────────────────────────
+
+/**
+ * @class    ToastOverlayWidget
+ * @brief    Declarative, `Portal`-based toast renderer — a `Tree::Component`
+ *
+ * Stateless by design: takes a snapshot of the toasts to render (typically
+ * `ToastManager::Instance().Snapshot()`, reusing its existing queue/fade
+ * logic) and composes them into a bottom-right stack via `Portal`, so they
+ * always render on top regardless of where this widget sits in the tree.
+ * Being stateless sidesteps the "parent rebuild resets embedded `State<T>`"
+ * pitfall entirely — there is no persisted state to lose.
+ *
+ * This coexists with the existing automatic `Application::RunOneFrame()` call
+ * to `ToastManager::Instance().Render(dt)` — use one or the other, not both,
+ * to avoid rendering the same toasts twice.
+ *
+ * @since    2.4.0
+ *
+ * @example
+ * @code
+ * struct MyRoot {
+ *     Widget Build() const {
+ *         return Flex(Flex::Axis::Vertical).Children({
+ *             Widget(MainContent{}),
+ *             Widget(ToastOverlayWidget(Overlay::ToastManager::Instance().Snapshot())),
+ *         });
+ *     }
+ * };
+ * @endcode
+ */
+class ToastOverlayWidget {
+public:
+    explicit ToastOverlayWidget(std::vector<ToastSnapshot> toasts) : _toasts(std::move(toasts)) {}
+
+    /// @internal Composes the `Portal`-wrapped toast stack. Defined in `Toast.cpp`.
+    [[nodiscard]] Tree::Widget Build() const;
+
+private:
+    std::vector<ToastSnapshot> _toasts;
+};
 
 } // namespace ImFrame::Overlay

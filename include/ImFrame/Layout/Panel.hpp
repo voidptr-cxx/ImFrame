@@ -41,7 +41,8 @@ namespace ImFrame::Layout {
  * }
  * @endcode
  */
-class Panel {
+/// @deprecated Use `Tree::Primitives::Box` instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Panel {
 public:
     /**
      * @brief    Construct a panel with the given ImGui child-window ID.

@@ -126,7 +126,8 @@ private:
  * }
  * @endcode
  */
-class PropertyGrid {
+/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] PropertyGrid {
 public:
     /**
      * @brief    Construct a property grid with a unique identifier.

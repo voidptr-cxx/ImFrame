@@ -300,3 +300,47 @@ bool Canvas2D::Show() {
 }
 
 } // namespace ImFrame::Rendering
+
+// ─── Canvas2DWidget / Canvas2DElement (Phase 29) ────────────────────────────────
+
+namespace ImFrame::Internal {
+
+class Canvas2DElement final : public Tree::Element {
+public:
+    void Mount(Tree::Element* parent, std::size_t slotIndex, const Tree::Widget& widget) override {
+        _parent    = parent;
+        _slotIndex = slotIndex;
+        RecordWidgetMeta(widget);
+        _config = widget.As<Rendering::Canvas2DWidget>();
+    }
+
+    void Update(const Tree::Widget& newWidget) override {
+        RecordWidgetMeta(newWidget);
+        _config = newWidget.As<Rendering::Canvas2DWidget>();
+    }
+
+    [[nodiscard]] Widgets::Vec2 Layout(Tree::BoxConstraints constraints) override {
+        _size = {constraints.MaxWidth, constraints.MaxHeight};
+        return _size;
+    }
+
+    void Paint(Widgets::Vec2 position) override {
+        Rendering::Canvas2D* canvas = _config.GetCanvas();
+        if (!canvas) { return; }
+        ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
+        (void)canvas->Show();
+    }
+
+private:
+    Rendering::Canvas2DWidget _config{nullptr};
+};
+
+} // namespace ImFrame::Internal
+
+namespace ImFrame::Rendering {
+
+std::unique_ptr<Tree::Element> Canvas2DWidget::CreateElement() const {
+    return std::make_unique<Internal::Canvas2DElement>();
+}
+
+} // namespace ImFrame::Rendering

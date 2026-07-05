@@ -47,7 +47,8 @@ namespace ImFrame::Layout {
  * );
  * @endcode
  */
-class VStack {
+/// @deprecated Use `Tree::Primitives::Flex(Flex::Axis::Vertical)` instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] VStack {
 public:
     /**
      * @brief    Construct a VStack with optional spacing between items.

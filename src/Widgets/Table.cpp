@@ -29,12 +29,26 @@
  */
 
 #include "ImFrame/Widgets/Table.hpp"
+#include "ImFrame/Tree/Primitives/Flex.hpp"
+#include "ImFrame/Tree/Primitives/GestureRegion.hpp"
+#include "ImFrame/Tree/Primitives/Text.hpp"
+#include "ImFrame/Tree/VirtualList.hpp"
 
 #include <imgui.h>
 
 #include <algorithm>
 
 namespace ImFrame::Widgets {
+
+// MSVC's C4996 fires on the deprecated `Table`'s own out-of-line fluent setters
+// below (their `Table&` return type counts as a "use" of the deprecated class,
+// even in the class's own implementation) — unlike Button/Checkbox, whose
+// setters are inline in the header and so exempt. Suppressed here since this is
+// the deprecated API's own continued implementation, not an external caller.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 
 // ─── ColumnDef ────────────────────────────────────────────────────────────────
 
@@ -177,6 +191,45 @@ void Table::Render(int rowCount, std::function<void(int)> rowRenderer) {
     }
 
     ImGui::EndTable();
+}
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+// ─── TableWidget (Phase 29) ─────────────────────────────────────────────────────
+
+Tree::Widget TableWidget::Build() const {
+    using Tree::Primitives::Flex;
+    using Tree::Primitives::GestureRegion;
+    using Tree::Primitives::Text;
+    using Tree::VirtualList;
+
+    std::vector<Tree::Widget> headerCells;
+    headerCells.reserve(_columns.size());
+    for (const auto& col : _columns) {
+        headerCells.push_back(Tree::Widget(Text(col.Label)));
+    }
+    Tree::Widget header = Tree::Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(headerCells)));
+
+    const TableWidget* self = this;
+    Tree::Widget body = Tree::Widget(VirtualList(_rowCount, _rowHeight, [self](int rowIndex) -> Tree::Widget {
+        std::vector<Tree::Widget> cells;
+        cells.reserve(self->_columns.size());
+        for (const auto& col : self->_columns) {
+            std::string text = col.CellText ? col.CellText(rowIndex) : std::string{};
+            cells.push_back(Tree::Widget(Text(std::move(text))));
+        }
+        Tree::Widget rowFlex = Tree::Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(cells)));
+
+        if (self->_onRowClick) {
+            return Tree::Widget(
+                GestureRegion().OnClick([self, rowIndex] { self->_onRowClick(rowIndex); }).Child(rowFlex));
+        }
+        return rowFlex;
+    }));
+
+    return Tree::Widget(Flex(Flex::Axis::Vertical).Children({header, body}));
 }
 
 } // namespace ImFrame::Widgets

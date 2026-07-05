@@ -33,7 +33,8 @@ namespace ImFrame::Widgets {
  * Widgets::Separator().Label("Advanced").Show();  // labelled section divider
  * @endcode
  */
-class Separator {
+/// @deprecated Use a `Tree::Primitives::Box` with a thin `Height`/`Width` and `Background` instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Separator {
 public:
     Separator() = default;
 

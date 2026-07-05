@@ -138,7 +138,8 @@
 #include "ImFrame/Tree/Signal.hpp"
 #include "ImFrame/Tree/Computed.hpp"
 #include "ImFrame/Tree/InheritedWidget.hpp"
-// Phase 29: VirtualList, Portal — not yet implemented
+#include "ImFrame/Tree/Portal.hpp"
+#include "ImFrame/Tree/VirtualList.hpp"
 
 /**
  * @namespace ImFrame

@@ -64,6 +64,22 @@ void MakeNullTerm(char* buf, std::size_t sz, std::string_view sv) {
 
 namespace ImFrame::Internal {
 
+// ─── Widget-tree primitive helpers (Phase 29) ──────────────────────────────────
+
+Widgets::Vec2 MeasureControlSize(float explicitWidth) {
+    constexpr float kDefaultWidth = 200.0f;
+    return {explicitWidth > 0.0f ? explicitWidth : kDefaultWidth, ImGui::GetFrameHeight()};
+}
+
+void BeginControlPaint(const void* elementIdentity, Widgets::Vec2 position) {
+    ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
+    ImGui::PushID(elementIdentity);
+}
+
+void EndControlPaint() {
+    ImGui::PopID();
+}
+
 // ─── TextInput helpers ────────────────────────────────────────────────────────
 
 bool ShowTextInputStr(std::string_view id, std::string_view label, std::string& value,

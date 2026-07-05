@@ -35,6 +35,15 @@
 #include <string>
 #include <vector>
 
+// This demo predates Phase 29's Tree/Component widget API and is a known,
+// accepted user of the deprecated Phase 10–14 Show()-builder widgets — the
+// baseline entry the Phase 29 proposal's `deprecated_usage.txt` mechanism is
+// meant to track. Migrating it to ButtonWidget/CheckboxWidget/etc. is tracked
+// separately, not part of this phase.
+#if defined(_MSC_VER)
+#pragma warning(disable : 4996)
+#endif
+
 // ─── Using declarations ───────────────────────────────────────────────────────
 
 using namespace ImFrame;

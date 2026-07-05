@@ -26,7 +26,11 @@
 
 #pragma once
 
+#include "ImFrame/Tree/Widget.hpp"
+#include "ImFrame/Utility/Delegate.hpp"
+
 #include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -148,6 +152,12 @@ private:
  * @class    Table
  * @brief    Virtualised, sortable data table built on ImGui tables and ImGuiListClipper
  *
+ * @deprecated Use `TableWidget` instead (Phase 29). See `Docs/Migration_v1_to_v2.md`.
+ *             Removed in Phase 30. Note: `TableWidget` covers virtualized column
+ *             rendering and row-click selection only — sort-state, context menus,
+ *             and striped/fixed/auto column width modes are not yet reimplemented;
+ *             use the deprecated `Table` for those until a future phase adds them.
+ *
  * Store as a class member and call `Render()` once per frame.  Column
  * definitions are added once via `Column()`; the builder setters may be called
  * before the first `Render()` or updated between frames.
@@ -178,7 +188,7 @@ private:
  * if (_table.GetSortState().dirty) { std::sort(rows.begin(), rows.end(), ...); }
  * @endcode
  */
-class Table {
+class [[deprecated("Use TableWidget instead. See Docs/Migration_v1_to_v2.md.")]] Table {
 public:
     /**
      * @brief    Construct a table with a unique identifier and column count.
@@ -254,6 +264,76 @@ private:
     SortState                    _sortState {};
     int                          _pendingContextRow = -1;
     int                          _activeContextRow  = -1;
+};
+
+// ─── TableWidget (Phase 29) ─────────────────────────────────────────────────────
+
+/**
+ * @struct   TableColumn
+ * @brief    One column of a `TableWidget`: header label and per-row cell text
+ * @since    2.4.0
+ */
+struct TableColumn {
+    std::string                                  Label;
+    Utility::Delegate<std::string(int rowIndex)>  CellText;
+};
+
+/**
+ * @class    TableWidget
+ * @brief    Virtualised data table built on `Tree::VirtualList` — a `Tree::Component`
+ *
+ * Reimplements the "large row count, only visible rows built" core of `Table`
+ * on top of Phase 29's `VirtualList` instead of `ImGuiListClipper`. A header
+ * `Flex` row of column labels sits above a `VirtualList` body; each visible
+ * row is a `Flex` of per-column cell `Text`, optionally wrapped in a
+ * `GestureRegion` for row-click selection.
+ *
+ * **Not yet reimplemented** (use the deprecated `Table` for these): sort-state
+ * tracking, right-click context menus, striped rows, and Fixed/Stretch/Auto
+ * column width modes — this phase's scope is the virtualization mechanism
+ * itself, not full feature parity.
+ *
+ * @since    2.4.0
+ *
+ * @example
+ * @code
+ * TableWidget(rows.size(), 24.0f)
+ *     .Column("Name",  [&](int r) { return rows[r].name; })
+ *     .Column("Score", [&](int r) { return std::to_string(rows[r].score); })
+ *     .OnRowClick([&](int r) { selectedRow = r; });
+ * @endcode
+ */
+class TableWidget {
+public:
+    /**
+     * @param[in] rowCount   Total number of data rows (may be very large).
+     * @param[in] rowHeight  Uniform row height in pixels.
+     */
+    TableWidget(int rowCount, float rowHeight) : _rowCount(rowCount), _rowHeight(rowHeight) {}
+
+    /// Adds a column with the given header label and per-row cell-text callback.
+    TableWidget& Column(std::string label, Utility::Delegate<std::string(int)> cellText) {
+        _columns.push_back(TableColumn{std::move(label), std::move(cellText)});
+        return *this;
+    }
+
+    /// Fires with the clicked row's index.
+    TableWidget& OnRowClick(Utility::Delegate<void(int)> cb) { _onRowClick = std::move(cb); return *this; }
+
+    /// Explicit identity override — see `Tree::Key`.
+    TableWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+
+    /// @internal Composes the header + `VirtualList` body. Defined in `Table.cpp`.
+    [[nodiscard]] Tree::Widget Build() const;
+
+private:
+    int                          _rowCount;
+    float                        _rowHeight;
+    std::vector<TableColumn>     _columns;
+    Utility::Delegate<void(int)> _onRowClick;
+    Tree::Key                    _key;
 };
 
 } // namespace ImFrame::Widgets

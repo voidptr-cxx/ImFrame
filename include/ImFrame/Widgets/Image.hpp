@@ -40,7 +40,8 @@ namespace ImFrame::Widgets {
  * if (Widgets::Image(iconTex, {32.0f, 32.0f}).ShowButton()) { DoAction(); }
  * @endcode
  */
-class Image {
+/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Image {
 public:
     /**
      * @brief    Construct an image widget.
