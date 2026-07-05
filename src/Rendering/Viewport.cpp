@@ -130,3 +130,52 @@ void HeadlessViewport::CaptureAfterRender(const Internal::ViewportHandles& h) {
 }
 
 } // namespace ImFrame::Rendering
+
+// ─── ViewportWidget / ViewportElement (Phase 29) ────────────────────────────────
+
+namespace ImFrame::Internal {
+
+class ViewportElement final : public Tree::Element {
+public:
+    void Mount(Tree::Element* parent, std::size_t slotIndex, const Tree::Widget& widget) override {
+        _parent    = parent;
+        _slotIndex = slotIndex;
+        RecordWidgetMeta(widget);
+        _config = widget.As<Rendering::ViewportWidget>();
+    }
+
+    void Update(const Tree::Widget& newWidget) override {
+        RecordWidgetMeta(newWidget);
+        _config = newWidget.As<Rendering::ViewportWidget>();
+    }
+
+    [[nodiscard]] Widgets::Vec2 Layout(Tree::BoxConstraints constraints) override {
+        Rendering::Viewport* vp = _config.GetViewport();
+        if (vp && vp->HasExplicitSize()) {
+            _size = constraints.Constrain(vp->RequestedSize());
+        } else {
+            _size = {constraints.MaxWidth, constraints.MaxHeight};
+        }
+        return _size;
+    }
+
+    void Paint(Widgets::Vec2 position) override {
+        Rendering::Viewport* vp = _config.GetViewport();
+        if (!vp) { return; }
+        ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
+        vp->Show();
+    }
+
+private:
+    Rendering::ViewportWidget _config{nullptr};
+};
+
+} // namespace ImFrame::Internal
+
+namespace ImFrame::Rendering {
+
+std::unique_ptr<Tree::Element> ViewportWidget::CreateElement() const {
+    return std::make_unique<Internal::ViewportElement>();
+}
+
+} // namespace ImFrame::Rendering

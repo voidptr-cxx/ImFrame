@@ -61,7 +61,8 @@ namespace ImFrame::Layout {
  * );
  * @endcode
  */
-class Grid {
+/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Grid {
 public:
     /**
      * @brief    Construct a grid with the given column count.

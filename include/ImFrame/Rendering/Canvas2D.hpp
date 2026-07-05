@@ -19,6 +19,7 @@
 
 #include "ImFrame/Rendering/Camera2D.hpp"
 #include "ImFrame/Rendering/DrawContext.hpp"
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
@@ -201,6 +202,38 @@ public:
 
 private:
     std::unique_ptr<Internal::CanvasImpl> _impl;
+};
+
+// ─── Canvas2DWidget (Phase 29) ───────────────────────────────────────────────────
+
+/**
+ * @class    Canvas2DWidget
+ * @brief    Declarative leaf — `Tree::PrimitiveWidget` wrapper that calls `Canvas2D::Show()`
+ *
+ * Binds via a raw pointer since `Canvas2D` is non-copyable/non-copy-assignable
+ * and primitive `Element`s require their config type to be copy-assignable.
+ * Fills whatever space the tree layout gives it — `Canvas2D` has no public
+ * query for a previously-set explicit size.
+ *
+ * @since    2.4.0
+ */
+class Canvas2DWidget {
+public:
+    /// `canvas` must outlive this widget and every `Element` mounted from it.
+    explicit Canvas2DWidget(Canvas2D* canvas) : _canvas(canvas) {}
+
+    /// Explicit identity override — see `Tree::Key`.
+    Canvas2DWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+    [[nodiscard]] Canvas2D* GetCanvas() const noexcept { return _canvas; }
+
+    /// @internal Produces this widget's concrete `Element`. Defined in `Canvas2D.cpp`.
+    [[nodiscard]] std::unique_ptr<Tree::Element> CreateElement() const;
+
+private:
+    Canvas2D* _canvas = nullptr;
+    Tree::Key _key;
 };
 
 } // namespace ImFrame::Rendering

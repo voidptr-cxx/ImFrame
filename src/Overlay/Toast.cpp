@@ -21,6 +21,10 @@
 
 #include "ImFrame/Overlay/Toast.hpp"
 #include "ImFrame/Anim/AnimatedValue.hpp"
+#include "ImFrame/Tree/Portal.hpp"
+#include "ImFrame/Tree/Primitives/Box.hpp"
+#include "ImFrame/Tree/Primitives/Flex.hpp"
+#include "ImFrame/Tree/Primitives/Text.hpp"
 
 #include <imgui.h>
 
@@ -178,6 +182,15 @@ void ToastManager::Render(float dt) {
     }
 }
 
+std::vector<ToastSnapshot> ToastManager::Snapshot() const {
+    std::vector<ToastSnapshot> result;
+    result.reserve(_impl->active.size());
+    for (const Toast& t : _impl->active) {
+        result.push_back(ToastSnapshot{t.type, t.title, t.body, t.opacity.Value()});
+    }
+    return result;
+}
+
 int ToastManager::ActiveCount() const noexcept {
     return static_cast<int>(_impl->active.size());
 }
@@ -207,6 +220,44 @@ void ToastWarning(std::string title, std::string body, float duration) {
 
 void ToastError(std::string title, std::string body, float duration) {
     ToastManager::Instance().Add(ToastType::Error, std::move(title), std::move(body), duration);
+}
+
+// ─── ToastOverlayWidget (Phase 29) ──────────────────────────────────────────────
+
+Tree::Widget ToastOverlayWidget::Build() const {
+    using Tree::Primitives::Box;
+    using Tree::Primitives::Flex;
+    using Tree::Primitives::Text;
+
+    std::vector<Tree::Widget> toastBoxes;
+    toastBoxes.reserve(_toasts.size());
+    for (const ToastSnapshot& t : _toasts) {
+        const ImVec4&        col = k_toastColors[static_cast<int>(t.Type)];
+        const Widgets::Vec4  bg{col.x, col.y, col.z, t.Opacity * 0.88f};
+        const Widgets::Vec4  textColor{1.0f, 1.0f, 1.0f, t.Opacity};
+
+        std::vector<Tree::Widget> lines;
+        lines.push_back(Tree::Widget(Text(t.Title).Color(textColor)));
+        if (!t.Body.empty()) {
+            const Widgets::Vec4 subColor{0.90f, 0.90f, 0.90f, t.Opacity * 0.75f};
+            lines.push_back(Tree::Widget(Text(t.Body).Color(subColor)));
+        }
+
+        toastBoxes.push_back(Tree::Widget(Box()
+                                               .Width(TOAST_W)
+                                               .Padding(Widgets::EdgeInsets::All(TOAST_PAD))
+                                               .Background(bg)
+                                               .Radius(TOAST_R)
+                                               .Child(Tree::Widget(Flex(Flex::Axis::Vertical).Children(std::move(lines))))));
+    }
+
+    Tree::Widget stack = Tree::Widget(Flex(Flex::Axis::Vertical)
+                                           .MainAlign(Flex::MainAlignment::End)
+                                           .CrossAlign(Flex::CrossAlignment::End)
+                                           .Gap(TOAST_PAD)
+                                           .Children(std::move(toastBoxes)));
+
+    return Tree::Widget(Tree::Portal(stack));
 }
 
 } // namespace ImFrame::Overlay

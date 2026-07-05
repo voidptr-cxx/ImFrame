@@ -22,6 +22,7 @@
 #include "ImFrame/Rendering/Camera3D.hpp"
 #include "ImFrame/Rendering/Ray3D.hpp"
 #include "ImFrame/Rendering/RenderContext.hpp"
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
@@ -207,6 +208,37 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> _impl;
+};
+
+// ─── Viewport3DWidget (Phase 29) ─────────────────────────────────────────────────
+
+/**
+ * @class    Viewport3DWidget
+ * @brief    Declarative leaf — `Tree::PrimitiveWidget` wrapper that calls `Viewport3D::Show()`
+ *
+ * Binds via a raw pointer since `Viewport3D` is non-copyable/non-copy-assignable
+ * and primitive `Element`s require their config type to be copy-assignable.
+ * Fills whatever space the tree layout gives it.
+ *
+ * @since    2.4.0
+ */
+class Viewport3DWidget {
+public:
+    /// `viewport` must outlive this widget and every `Element` mounted from it.
+    explicit Viewport3DWidget(Viewport3D* viewport) : _viewport(viewport) {}
+
+    /// Explicit identity override — see `Tree::Key`.
+    Viewport3DWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+    [[nodiscard]] Viewport3D* GetViewport() const noexcept { return _viewport; }
+
+    /// @internal Produces this widget's concrete `Element`. Defined in `Viewport3D.cpp`.
+    [[nodiscard]] std::unique_ptr<Tree::Element> CreateElement() const;
+
+private:
+    Viewport3D* _viewport = nullptr;
+    Tree::Key   _key;
 };
 
 } // namespace ImFrame::Rendering

@@ -252,3 +252,47 @@ void Viewport3D::Show() {
 }
 
 } // namespace ImFrame::Rendering
+
+// ─── Viewport3DWidget / Viewport3DElement (Phase 29) ────────────────────────────
+
+namespace ImFrame::Internal {
+
+class Viewport3DElement final : public Tree::Element {
+public:
+    void Mount(Tree::Element* parent, std::size_t slotIndex, const Tree::Widget& widget) override {
+        _parent    = parent;
+        _slotIndex = slotIndex;
+        RecordWidgetMeta(widget);
+        _config = widget.As<Rendering::Viewport3DWidget>();
+    }
+
+    void Update(const Tree::Widget& newWidget) override {
+        RecordWidgetMeta(newWidget);
+        _config = newWidget.As<Rendering::Viewport3DWidget>();
+    }
+
+    [[nodiscard]] Widgets::Vec2 Layout(Tree::BoxConstraints constraints) override {
+        _size = {constraints.MaxWidth, constraints.MaxHeight};
+        return _size;
+    }
+
+    void Paint(Widgets::Vec2 position) override {
+        Rendering::Viewport3D* viewport = _config.GetViewport();
+        if (!viewport) { return; }
+        ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
+        viewport->Show();
+    }
+
+private:
+    Rendering::Viewport3DWidget _config{nullptr};
+};
+
+} // namespace ImFrame::Internal
+
+namespace ImFrame::Rendering {
+
+std::unique_ptr<Tree::Element> Viewport3DWidget::CreateElement() const {
+    return std::make_unique<Internal::Viewport3DElement>();
+}
+
+} // namespace ImFrame::Rendering

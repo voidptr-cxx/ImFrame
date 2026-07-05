@@ -17,10 +17,21 @@
  */
 
 #include "ImFrame/Overlay/ContextMenu.hpp"
+#include "../Tree/ElementInternal.hpp"
 
 #include <imgui.h>
 
 namespace ImFrame::Overlay {
+
+// MSVC's C4996 fires on the deprecated `ContextMenu`'s own out-of-line fluent
+// setters below (their `ContextMenu&` return type counts as a "use" of the
+// deprecated class, even in the class's own implementation) — suppressed here
+// since this is the deprecated API's own continued implementation, not an
+// external caller.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
 
 ContextMenu::ContextMenu(std::string id) : _id(std::move(id)) {}
 
@@ -33,6 +44,10 @@ ContextMenu& ContextMenu::Separator() {
     _items.push_back({ "", nullptr, true, true });
     return *this;
 }
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 void ContextMenu::RenderItems() {
     for (const auto& entry : _items) {
@@ -59,6 +74,74 @@ void ContextMenu::ShowWindow() {
         RenderItems();
         ImGui::EndPopup();
     }
+}
+
+} // namespace ImFrame::Overlay
+
+// ─── ContextMenuWidget / ContextMenuElement (Phase 29) ──────────────────────────
+
+namespace ImFrame::Internal {
+
+class ContextMenuElement final : public Tree::Element {
+public:
+    void Mount(Tree::Element* parent, std::size_t slotIndex, const Tree::Widget& widget) override {
+        _parent    = parent;
+        _slotIndex = slotIndex;
+        RecordWidgetMeta(widget);
+        Sync(widget);
+    }
+
+    void Update(const Tree::Widget& newWidget) override {
+        RecordWidgetMeta(newWidget);
+        Sync(newWidget);
+    }
+
+    void Unmount() override {
+        if (_child) { _child->Unmount(); }
+        _child.reset();
+    }
+
+    [[nodiscard]] Widgets::Vec2 Layout(Tree::BoxConstraints constraints) override {
+        _size = _child ? _child->Layout(constraints) : Widgets::Vec2{};
+        return _size;
+    }
+
+    void Paint(Widgets::Vec2 position) override {
+        if (_child) { _child->Paint(position); }
+
+        ImGui::PushID(this);
+        if (ImGui::BeginPopupContextItem("##ctx")) {
+            for (const auto& entry : _items) {
+                if (entry.IsSeparator) {
+                    ImGui::Separator();
+                } else if (ImGui::MenuItem(entry.Label.c_str(), nullptr, false, entry.Enabled)) {
+                    if (entry.Action) { entry.Action(); }
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+
+private:
+    void Sync(const Tree::Widget& widget) {
+        const auto& config = widget.As<Overlay::ContextMenuWidget>();
+        _items              = config.GetItems();
+        const Tree::Widget* childWidget = &config.GetChild();
+        ReconcileChild(this, _child, childWidget);
+    }
+
+    std::vector<Overlay::ContextMenuEntry> _items;
+    std::unique_ptr<Tree::Element>         _child;
+};
+
+} // namespace ImFrame::Internal
+
+namespace ImFrame::Overlay {
+
+std::unique_ptr<Tree::Element> ContextMenuWidget::CreateElement() const {
+    return std::make_unique<Internal::ContextMenuElement>();
 }
 
 } // namespace ImFrame::Overlay

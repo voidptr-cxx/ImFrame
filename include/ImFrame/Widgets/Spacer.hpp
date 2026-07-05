@@ -33,7 +33,8 @@ namespace ImFrame::Widgets {
  * Widgets::Spacer({12.0f, 0.0f}).Show(); // 12 px horizontal gap
  * @endcode
  */
-class Spacer {
+/// @deprecated Use `Tree::Primitives::SizedBox` (fixed gap) or `Tree::Primitives::Spacer` (flexible gap) instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Spacer {
 public:
     /**
      * @brief    Construct a spacer with a given pixel size.

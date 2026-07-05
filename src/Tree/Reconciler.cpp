@@ -18,6 +18,8 @@
  */
 
 #include "Reconciler.hpp"
+#include "PortalRegistry.hpp"
+#include "RenderObjects/PortalRO.hpp"
 #include "RenderObjects/RootBridge.hpp"
 
 namespace ImFrame::Internal {
@@ -34,6 +36,14 @@ void Reconciler::Show(const Tree::Widget& rootWidget) {
     const RootWindowInfo info = BeginRootWindow();
     (void)_rootElement->Layout(Tree::BoxConstraints::Loose(info.AvailableSize));
     _rootElement->Paint(info.CursorScreenPos);
+
+    // Portals registered themselves during the Mount/Update pass above; draining and
+    // rendering them last (still inside the same root window) puts portal content
+    // after all non-portal draw calls, so it always renders on top.
+    for (PortalElement* portal : DrainPortals()) {
+        portal->RenderDeferred(info.AvailableSize, info.CursorScreenPos);
+    }
+
     EndRootWindow();
 }
 

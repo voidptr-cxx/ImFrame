@@ -37,7 +37,8 @@ namespace ImFrame::Widgets {
  * Widgets::Text(longDescription).Wrapped().Show();
  * @endcode
  */
-class Text {
+/// @deprecated Use `Tree::Primitives::Text` instead. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Text {
 public:
     /**
      * @brief    Construct a text widget.

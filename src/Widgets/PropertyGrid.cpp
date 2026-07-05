@@ -60,6 +60,15 @@ void PropertyGridSeparator(std::string_view groupName) {
 
 namespace ImFrame::Widgets {
 
+// MSVC's C4996 fires on `PropertyGrid::SplitRatio`'s `PropertyGrid&` return
+// type below (an out-of-line fluent setter, unlike most other Phase 10-14
+// widgets whose setters are inline in the header) — suppressed here since this
+// is the deprecated API's own continued implementation, not an external caller.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+
 // ─── PropertyGridScope ────────────────────────────────────────────────────────
 
 PropertyGridScope::PropertyGridScope(bool open) : _open(open) {}
@@ -101,5 +110,9 @@ PropertyGridScope PropertyGrid::Begin() {
 
     return PropertyGridScope(true);
 }
+
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 } // namespace ImFrame::Widgets

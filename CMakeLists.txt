@@ -223,6 +223,11 @@ add_library(ImFrame STATIC
     src/Tree/RenderObjects/SizedBoxRO.cpp
     src/Tree/RenderObjects/ExpandedRO.cpp
     src/Tree/RenderObjects/SpacerRO.cpp
+
+    # ── Phase 29: Portal, VirtualList ─────────────────────────────────────────
+    src/Tree/PortalRegistry.cpp
+    src/Tree/RenderObjects/PortalRO.cpp
+    src/Tree/RenderObjects/VirtualListRO.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

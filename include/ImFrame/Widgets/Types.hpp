@@ -161,3 +161,26 @@ template<typename T>
 concept Renderable = requires(T t) { { t.Show() } -> std::same_as<bool>; };
 
 } // namespace ImFrame::Widgets
+
+namespace ImFrame::Internal {
+
+/**
+ * @brief    Estimates `{width, height}` for a single-line ImGui control at `Element::Layout()` time.
+ *
+ * Template-based widget-tree primitives (`Widgets::SliderWidget<T>`,
+ * `Widgets::TextInputWidget<T>`) must stay ImGui-free in their public header, so
+ * this helper — declared here, defined in `src/Widgets/WidgetImpl.cpp` — is the
+ * one non-template ImGui touch-point their inline `Layout()` can call.
+ *
+ * @param[in] explicitWidth  Caller-specified width, or `<= 0` for ImGui's default.
+ * @return   `{width, ImGui::GetFrameHeight()}`.
+ */
+[[nodiscard]] Widgets::Vec2 MeasureControlSize(float explicitWidth);
+
+/// Pushes `elementIdentity` as an ImGui ID scope and repositions the cursor. Pair with `EndControlPaint()`.
+void BeginControlPaint(const void* elementIdentity, Widgets::Vec2 position);
+
+/// Pops the ID scope opened by `BeginControlPaint()`.
+void EndControlPaint();
+
+} // namespace ImFrame::Internal

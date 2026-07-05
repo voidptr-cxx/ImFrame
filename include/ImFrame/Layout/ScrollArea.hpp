@@ -43,7 +43,8 @@ namespace ImFrame::Layout {
  * }
  * @endcode
  */
-class ScrollArea {
+/// @deprecated Use `Tree::VirtualList` for large scrolling lists. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
+class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] ScrollArea {
 public:
     /**
      * @brief    Construct a scroll area with the given ImGui child-window ID.
