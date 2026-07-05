@@ -44,11 +44,15 @@
 #pragma once
 
 #include "ImFrame/Tree/Component.hpp"
+#include "ImFrame/Tree/Context.hpp"
 #include "ImFrame/Tree/Element.hpp"
 #include "ImFrame/Tree/Key.hpp"
 
+#include <atomic>
 #include <concepts>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <type_traits>
 #include <typeindex>
 #include <utility>
@@ -210,24 +214,40 @@ namespace ImFrame::Internal {
  * `Build()`. `Layout()`/`Paint()` are pure pass-through to the child — a
  * `Component` has no rendering of its own.
  *
+ * **Phase 28 — dirty tracking**
+ * Each `ComponentElement<T>` holds a `shared_ptr<atomic<bool>>` dirty flag.
+ * `State<T>::Get()` and `Tree::Signal<T>::Get()` capture a copy of this flag
+ * (via `g_stateRegistrar`) during `Build()` and atomically set it on `Set()`/
+ * `operator=()`. `Update()` reads and clears the flag: if dirty, `Rebuild()` is
+ * called; otherwise the last built `Widget` is forwarded to the child so the
+ * child can perform its own dirty check.
+ *
  * @tparam   T  A type satisfying `Tree::Component`.
  * @since    2.2.0
  */
 template <typename T>
 class ComponentElement final : public Tree::Element {
 public:
-    explicit ComponentElement(T component) : _component(std::move(component)) {}
+    explicit ComponentElement(T component)
+        : _component(std::move(component))
+        , _dirtyFlag(std::make_shared<std::atomic<bool>>(false)) {}
 
     void Mount(Tree::Element* parent, std::size_t slotIndex, const Tree::Widget& widget) override {
         _parent    = parent;
         _slotIndex = slotIndex;
         RecordWidgetMeta(widget);
-        Rebuild(/*isFirstMount=*/true);
+        Rebuild();
     }
 
     void Update(const Tree::Widget& newWidget) override {
+        _component = newWidget.As<T>();
         RecordWidgetMeta(newWidget);
-        Rebuild(/*isFirstMount=*/false);
+        bool wasDirty = _dirtyFlag->exchange(false, std::memory_order_acq_rel);
+        if (wasDirty) {
+            Rebuild();
+        } else if (_child && _lastBuilt.has_value()) {
+            _child->Update(*_lastBuilt);
+        }
     }
 
     void Unmount() override {
@@ -244,10 +264,23 @@ public:
         if (_child) { _child->Paint(position); }
     }
 
+    [[nodiscard]] std::weak_ptr<std::atomic<bool>> GetDirtyFlag() const noexcept override {
+        return _dirtyFlag;
+    }
+
 private:
-    void Rebuild(bool isFirstMount) {
+    void Rebuild() {
+        _dirtyFlag->store(false, std::memory_order_release);
+        std::function<void()> markDirty = [flag = _dirtyFlag]() {
+            flag->store(true, std::memory_order_release);
+        };
+        StateRegistrarScope registrarScope{markDirty};
+        BuildElementScope   elemScope{this};
+
         Tree::Widget built = _component.Build();
-        if (!isFirstMount && _child && _child->CanUpdate(built)) {
+        _lastBuilt = built;
+
+        if (_child && _child->CanUpdate(built)) {
             _child->Update(built);
         } else {
             if (_child) { _child->Unmount(); }
@@ -256,8 +289,10 @@ private:
         }
     }
 
-    T                              _component;
-    std::unique_ptr<Tree::Element> _child;
+    T                                   _component;
+    std::unique_ptr<Tree::Element>      _child;
+    std::optional<Tree::Widget>         _lastBuilt;
+    std::shared_ptr<std::atomic<bool>>  _dirtyFlag;
 };
 
 // ─── ComponentModel<T> ────────────────────────────────────────────────────────
