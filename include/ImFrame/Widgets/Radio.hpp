@@ -13,8 +13,10 @@
 
 #pragma once
 
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
+#include <string>
 #include <string_view>
 
 namespace ImFrame::Widgets {
@@ -36,8 +38,8 @@ namespace ImFrame::Widgets {
  * Widgets::Radio("Cubic",   mode, 2).Show();
  * @endcode
  */
-/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
-class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Radio {
+/// @deprecated Use `RadioWidget` instead (Phase 30). See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.2.
+class [[deprecated("Use RadioWidget instead. See Docs/Migration_v1_to_v2.md.")]] Radio {
 public:
     /**
      * @brief    Construct a radio button.
@@ -69,6 +71,60 @@ private:
     std::string_view    _id;
     float               _width    = 0.0f;
     bool                _disabled = false;
+};
+
+// ─── RadioWidget (Phase 30) ─────────────────────────────────────────────────────
+
+/**
+ * @class    RadioWidget
+ * @brief    Declarative radio button — `Tree::PrimitiveWidget` replacement for `Radio`
+ *
+ * Binds to caller-owned storage via a raw pointer (not a reference — mirrors
+ * `CheckboxWidget`'s `bool*` reasoning). Multiple `RadioWidget`s bound to the
+ * same `int*` form a group. Produces the exact same
+ * `ImGui::RadioButton(label, int*, int)` call as `Radio::Show()`.
+ *
+ * @since    2.5.0
+ *
+ * @example
+ * @code
+ * int mode = 0;
+ * RadioWidget("Linear",  &mode, 0);
+ * RadioWidget("Nearest", &mode, 1);
+ * @endcode
+ */
+class RadioWidget {
+public:
+    /// `value` must outlive this widget and every `Element` mounted from it.
+    RadioWidget(std::string label, int* value, int option)
+        : _label(std::move(label)), _value(value), _option(option) {}
+
+    RadioWidget& Disabled(bool disabled = true) noexcept { _disabled = disabled; return *this; }
+    RadioWidget& Tooltip(std::string tip) { _tooltip = std::move(tip); return *this; }
+    RadioWidget& Width(float w) noexcept { _width = w; return *this; }
+
+    /// Explicit identity override — see `Tree::Key`.
+    RadioWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+    [[nodiscard]] const std::string& GetLabel() const noexcept { return _label; }
+    [[nodiscard]] int* GetValue() const noexcept { return _value; }
+    [[nodiscard]] int GetOption() const noexcept { return _option; }
+    [[nodiscard]] bool GetDisabled() const noexcept { return _disabled; }
+    [[nodiscard]] const std::string& GetTooltip() const noexcept { return _tooltip; }
+    [[nodiscard]] float GetWidth() const noexcept { return _width; }
+
+    /// @internal Produces this radio button's concrete `Element`. Defined in `Radio.cpp`.
+    [[nodiscard]] std::unique_ptr<Tree::Element> CreateElement() const;
+
+private:
+    std::string _label;
+    int*        _value = nullptr;
+    int         _option;
+    bool        _disabled = false;
+    std::string _tooltip;
+    float       _width    = 0.0f;
+    Tree::Key   _key;
 };
 
 } // namespace ImFrame::Widgets

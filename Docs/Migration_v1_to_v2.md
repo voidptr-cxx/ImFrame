@@ -3,9 +3,12 @@
 Phase 29 reimplements the Phase 10–14 widget library as `Tree::Component`/
 `Tree::PrimitiveWidget` types built from the Phase 27 primitives (`Box`, `Flex`,
 `Text`, `GestureRegion`, `SizedBox`, `Expanded`, `Spacer`, `Stack`) plus two new
-ones added this phase (`Portal`, `VirtualList`). The old `Show()`-builder API
-is marked `[[deprecated]]` — it still compiles and works, but new code should
-use the declarative API described here. **The old API is removed in Phase 30.**
+ones added this phase (`Portal`, `VirtualList`). Phase 30.1 completes the set
+by reimplementing the remaining seven widgets that Phase 29 left deprecated
+with no replacement (`Separator`, `Image`, `ProgressBar`, `ColorEdit`, `Radio`,
+`PropertyGrid`, `Grid`). The old `Show()`-builder API is marked `[[deprecated]]`
+— it still compiles and works, but new code should use the declarative API
+described here. **The old API is removed in Phase 30.2.**
 
 The visual output is identical: the reimplemented widgets call the same
 underlying ImGui functions, just reached through a `Build()` method instead of
@@ -62,12 +65,17 @@ the same header and namespace as its deprecated predecessor:
 | `ImFrame::Rendering::Viewport3D` | wrap in `ImFrame::Rendering::Viewport3DWidget` |
 | `ImFrame::Widgets::Text` | `ImFrame::Tree::Primitives::Text` (Phase 27, no suffix — different namespace) |
 | `ImFrame::Widgets::Spacer` | `ImFrame::Tree::Primitives::SizedBox` (fixed) or `Tree::Primitives::Spacer` (flexible) |
-| `ImFrame::Widgets::Separator` | `Tree::Primitives::Box` with a thin `Height`/`Width` and `Background` |
+| `ImFrame::Widgets::Separator` | `ImFrame::Widgets::SeparatorWidget` (Phase 30.1) |
+| `ImFrame::Widgets::Image` | `ImFrame::Widgets::ImageWidget` (Phase 30.1) |
+| `ImFrame::Widgets::ProgressBar` | `ImFrame::Widgets::ProgressBarWidget` (Phase 30.1) |
+| `ImFrame::Widgets::ColorEdit` | `ImFrame::Widgets::ColorEditWidget` (Phase 30.1) |
+| `ImFrame::Widgets::Radio` | `ImFrame::Widgets::RadioWidget` (Phase 30.1) |
+| `ImFrame::Widgets::PropertyGrid` | `ImFrame::Widgets::PropertyGridWidget` (Phase 30.1) |
 | `ImFrame::Layout::Panel` | `ImFrame::Tree::Primitives::Box` |
 | `ImFrame::Layout::HStack` | `Tree::Primitives::Flex(Flex::Axis::Horizontal)` |
 | `ImFrame::Layout::VStack` | `Tree::Primitives::Flex(Flex::Axis::Vertical)` |
 | `ImFrame::Layout::ScrollArea` | `Tree::VirtualList` (for large scrolling lists) |
-| `ImFrame::Widgets::Radio`, `ColorEdit`, `Image`, `ProgressBar`, `PropertyGrid`, `Grid` | **not yet reimplemented** — remain deprecated with no Component equivalent this phase; keep using the old API for these until a future phase adds one |
+| `ImFrame::Layout::Grid` | `ImFrame::Layout::GridWidget` (Phase 30.1) |
 
 ---
 
@@ -221,6 +229,78 @@ scene.OnRender([](const RenderContext& ctx) { /* ... */ });
 return Widget(Rendering::ViewportWidget(&scene));
 ```
 
+### SeparatorWidget / ProgressBarWidget
+
+Stateless, no behavioral changes. Same `ImGui::SeparatorText()`/`ImGui::Separator()`
+and `ImGui::ProgressBar()` calls as the deprecated classes.
+
+```cpp
+Widget(SeparatorWidget().Label("Advanced"));
+Widget(ProgressBarWidget(loadProgress).Overlay("Loading assets..."));
+```
+
+### ImageWidget
+
+Collapses the old dual `Show()`/`ShowButton()` API into one widget: calls
+`ImGui::Image()` when no `OnClick` is set, or `ImGui::ImageButton()` when one
+is — the same OnClick-gated pattern `ButtonWidget`/`CheckboxWidget` already
+use instead of a separate call path.
+
+```cpp
+Widget(ImageWidget(myTex, {256.0f, 256.0f}).Tint({1, 1, 1, 0.8f}));
+Widget(ImageWidget(iconTex, {32.0f, 32.0f}).OnClick([&] { DoAction(); }));
+```
+
+### ColorEditWidget / RadioWidget
+
+Same pointer-binding pattern as `CheckboxWidget` (`Vec4*` / `int*`). `RadioWidget`
+has no `OnChange` — same as the old `Radio`, which only returned a `bool` from
+`Show()`; multiple `RadioWidget`s bound to the same `int*` form a group.
+
+```cpp
+Vec4 tint{1.0f, 0.5f, 0.0f, 1.0f};
+Widget(ColorEditWidget("Tint", &tint).Alpha(true));
+
+int mode = 0;
+Widget(RadioWidget("Linear",  &mode, 0));
+Widget(RadioWidget("Nearest", &mode, 1));
+```
+
+### GridWidget
+
+Unlike the deprecated `Grid` (backed by `ImGui::BeginTable`), `GridWidget` is
+pure layout math — no ImGui table involved, the same architectural choice
+already made when `HStack`/`VStack` were replaced by `Flex`. Children fill
+columns left-to-right, wrapping into a new row every `Columns()` children.
+
+```cpp
+Widget(Layout::GridWidget(3).Spacing(4.0f).Children({
+    Widget(ButtonWidget("A")), Widget(ButtonWidget("B")),
+    Widget(ButtonWidget("C")), Widget(ButtonWidget("D")), // wraps to row 2
+}));
+```
+
+### PropertyGridWidget
+
+The imperative `Begin()`/`Row()`/`Separator()` scope pattern has no
+declarative analogue, so `PropertyGridWidget` takes the full row list
+up front via `Rows()` instead of being called into row-by-row. `SplitRatio`
+is expressed as a pair of `Flex` factors (`ratio*100` / `(1-ratio)*100`)
+rather than a fixed pixel width, since `Build()` runs before any `Layout()`
+pass has constraint information — `Flex`'s existing proportional-width math
+does the rest. Purely composed from `Flex`/`Expanded`/`Text`/`SeparatorWidget`;
+no new primitive or `Element` was written for it.
+
+```cpp
+Widget(PropertyGridWidget("##props")
+           .SplitRatio(0.4f)
+           .Rows({
+               {"Name", Widget(TextInputWidget<std::string>("##name", &name))},
+               PropertyGridRow::Separator("Transform"),
+               {"Position", Widget(SliderWidget<float>("##x", &posX, -10.0f, 10.0f))},
+           }));
+```
+
 ---
 
 ## A note on internal component state
@@ -238,9 +318,8 @@ interaction state itself.
 
 ---
 
-## What's still deprecated with no replacement (yet)
+## Status: every Phase 10–14 widget now has a replacement
 
-`Radio`, `ColorEdit`, `Image`, `ProgressBar`, `PropertyGrid`, and `Grid` are
-marked `[[deprecated]]` per the Phase 29 blanket policy but have no
-`Tree::Component` equivalent in this phase. Keep using them as-is; a future
-phase will provide replacements before Phase 30 removes the old API entirely.
+As of Phase 30.1, every deprecated Phase 10–14 widget has a `Tree::Component`/
+`Tree::PrimitiveWidget` equivalent. Phase 30.2 deletes the deprecated headers
+entirely — migrate any remaining `Show()`-based call sites before then.

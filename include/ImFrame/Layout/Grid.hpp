@@ -21,9 +21,12 @@
 
 #pragma once
 
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
+#include <string>
 #include <string_view>
+#include <vector>
 
 // ─── Internal helpers (declared here for template Render() — not public API) ─
 namespace ImFrame::Internal {
@@ -61,8 +64,8 @@ namespace ImFrame::Layout {
  * );
  * @endcode
  */
-/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
-class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] Grid {
+/// @deprecated Use `GridWidget` instead (Phase 30). See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.2.
+class [[deprecated("Use GridWidget instead. See Docs/Migration_v1_to_v2.md.")]] Grid {
 public:
     /**
      * @brief    Construct a grid with the given column count.
@@ -96,6 +99,54 @@ private:
     std::string_view _id          = "##imf_grid";
     int              _columns     = 1;
     float            _cellPadding = 0.0f;
+};
+
+// ─── GridWidget (Phase 30) ──────────────────────────────────────────────────────
+
+/**
+ * @class    GridWidget
+ * @brief    Declarative N-column layout — `Tree::PrimitiveWidget` replacement for `Grid`
+ *
+ * Unlike `Grid` (backed by `ImGui::BeginTable`), `GridWidget` is pure
+ * layout math with no ImGui table involved — the same architectural choice
+ * already made when `HStack`/`VStack` were replaced by the pure-layout-math
+ * `Flex` primitive. Children fill columns left-to-right, wrapping into a new
+ * row every `Columns()` children; each column is an equal share of the
+ * available width, and each row's height is the tallest child in that row.
+ *
+ * @since    2.5.0
+ *
+ * @example
+ * @code
+ * GridWidget(3).Spacing(4.0f).Children({
+ *     Widget(ButtonWidget("A")), Widget(ButtonWidget("B")),
+ *     Widget(ButtonWidget("C")), Widget(ButtonWidget("D")), // wraps to row 2
+ * });
+ * @endcode
+ */
+class GridWidget {
+public:
+    explicit GridWidget(int columns) noexcept : _columns(columns) {}
+
+    GridWidget& Spacing(float cellPadding) noexcept { _cellPadding = cellPadding; return *this; }
+    GridWidget& Children(std::vector<Tree::Widget> children) { _children = std::move(children); return *this; }
+
+    /// Explicit identity override — see `Tree::Key`.
+    GridWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+    [[nodiscard]] int GetColumns() const noexcept { return _columns; }
+    [[nodiscard]] float GetSpacing() const noexcept { return _cellPadding; }
+    [[nodiscard]] const std::vector<Tree::Widget>& GetChildren() const noexcept { return _children; }
+
+    /// @internal Produces this grid's concrete `Element`. Defined in `src/Tree/RenderObjects/GridRO.cpp`.
+    [[nodiscard]] std::unique_ptr<Tree::Element> CreateElement() const;
+
+private:
+    int                        _columns     = 1;
+    float                      _cellPadding = 0.0f;
+    std::vector<Tree::Widget>  _children;
+    Tree::Key                  _key;
 };
 
 } // namespace ImFrame::Layout

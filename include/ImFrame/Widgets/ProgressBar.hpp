@@ -13,8 +13,10 @@
 
 #pragma once
 
+#include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
+#include <string>
 #include <string_view>
 
 namespace ImFrame::Widgets {
@@ -35,8 +37,8 @@ namespace ImFrame::Widgets {
  *     .Show();
  * @endcode
  */
-/// @deprecated Phase 10–14 imperative widget API, not yet reimplemented as a Tree Component. See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.
-class [[deprecated("See Docs/Migration_v1_to_v2.md.")]] ProgressBar {
+/// @deprecated Use `ProgressBarWidget` instead (Phase 30). See `Docs/Migration_v1_to_v2.md`. Removed in Phase 30.2.
+class [[deprecated("Use ProgressBarWidget instead. See Docs/Migration_v1_to_v2.md.")]] ProgressBar {
 public:
     /**
      * @brief    Construct a progress bar.
@@ -79,6 +81,57 @@ private:
     std::string_view    _id;
     float               _width    = 0.0f;
     bool                _disabled = false;
+};
+
+// ─── ProgressBarWidget (Phase 30) ───────────────────────────────────────────────
+
+/**
+ * @class    ProgressBarWidget
+ * @brief    Declarative progress bar — `Tree::PrimitiveWidget` replacement for `ProgressBar`
+ *
+ * Produces the exact same `ImGui::ProgressBar()` call as `ProgressBar::Show()`.
+ * Stateless — no caller-owned binding needed, `Fraction` is read fresh every
+ * `Build()`.
+ *
+ * @since    2.5.0
+ *
+ * @example
+ * @code
+ * ProgressBarWidget(loadProgress).Overlay("Loading assets...");
+ * @endcode
+ */
+class ProgressBarWidget {
+public:
+    explicit ProgressBarWidget(float fraction) noexcept : _fraction(fraction) {}
+
+    ProgressBarWidget& Size(Vec2 size) noexcept { _size = size; return *this; }
+    ProgressBarWidget& Overlay(std::string text) { _overlay = std::move(text); return *this; }
+    ProgressBarWidget& Disabled(bool d = true) noexcept { _disabled = d; return *this; }
+    ProgressBarWidget& Tooltip(std::string tip) { _tooltip = std::move(tip); return *this; }
+    ProgressBarWidget& Width(float w) noexcept { _width = w; return *this; }
+
+    /// Explicit identity override — see `Tree::Key`.
+    ProgressBarWidget& Key(std::uint64_t k) noexcept { _key = Tree::Key(k); return *this; }
+
+    [[nodiscard]] Tree::Key GetKey() const noexcept { return _key; }
+    [[nodiscard]] float GetFraction() const noexcept { return _fraction; }
+    [[nodiscard]] Vec2 GetSize() const noexcept { return _size; }
+    [[nodiscard]] const std::string& GetOverlay() const noexcept { return _overlay; }
+    [[nodiscard]] bool GetDisabled() const noexcept { return _disabled; }
+    [[nodiscard]] const std::string& GetTooltip() const noexcept { return _tooltip; }
+    [[nodiscard]] float GetWidth() const noexcept { return _width; }
+
+    /// @internal Produces this progress bar's concrete `Element`. Defined in `ProgressBar.cpp`.
+    [[nodiscard]] std::unique_ptr<Tree::Element> CreateElement() const;
+
+private:
+    float       _fraction;
+    Vec2        _size     {-1.0f, 0.0f};
+    std::string _overlay;
+    bool        _disabled = false;
+    std::string _tooltip;
+    float       _width    = 0.0f;
+    Tree::Key   _key;
 };
 
 } // namespace ImFrame::Widgets

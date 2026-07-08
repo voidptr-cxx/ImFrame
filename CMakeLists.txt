@@ -228,6 +228,9 @@ add_library(ImFrame STATIC
     src/Tree/PortalRegistry.cpp
     src/Tree/RenderObjects/PortalRO.cpp
     src/Tree/RenderObjects/VirtualListRO.cpp
+
+    # ── Phase 30.1: Widget replacement gap closure (GridWidget) ───────────────
+    src/Tree/RenderObjects/GridRO.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

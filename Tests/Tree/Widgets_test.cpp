@@ -25,13 +25,21 @@
 #include "ImFrame/Overlay/ContextMenu.hpp"
 #include "ImFrame/Overlay/Modal.hpp"
 #include "ImFrame/Overlay/Toast.hpp"
+#include "ImFrame/Layout/Grid.hpp"
+#include "ImFrame/Tree/Primitives/Expanded.hpp"
 #include "ImFrame/Tree/Primitives/Flex.hpp"
 #include "ImFrame/Tree/Primitives/GestureRegion.hpp"
 #include "ImFrame/Tree/Primitives/Text.hpp"
 #include "ImFrame/Tree/VirtualList.hpp"
 #include "ImFrame/Widgets/Button.hpp"
 #include "ImFrame/Widgets/Checkbox.hpp"
+#include "ImFrame/Widgets/ColorEdit.hpp"
 #include "ImFrame/Widgets/Combo.hpp"
+#include "ImFrame/Widgets/Image.hpp"
+#include "ImFrame/Widgets/ProgressBar.hpp"
+#include "ImFrame/Widgets/PropertyGrid.hpp"
+#include "ImFrame/Widgets/Radio.hpp"
+#include "ImFrame/Widgets/Separator.hpp"
 #include "ImFrame/Widgets/Slider.hpp"
 #include "ImFrame/Widgets/Table.hpp"
 #include "ImFrame/Widgets/TextInput.hpp"
@@ -341,4 +349,182 @@ TEST_CASE("ToastOverlayWidget: empty snapshot renders without error", "[tree][wi
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(2), TestConfig());
     app.SetRoot(root);
     REQUIRE(app.Run().has_value());
+}
+
+// ─── SeparatorWidget (Phase 30.1) ───────────────────────────────────────────────
+
+TEST_CASE("SeparatorWidget: renders without error, plain and labelled", "[tree][widgets][separator]") {
+    struct Root {
+        [[nodiscard]] Widget Build() const {
+            return Widget(Tree::Primitives::Flex(Tree::Primitives::Flex::Axis::Vertical).Children({
+                Widget(SeparatorWidget()),
+                Widget(SeparatorWidget().Label("Advanced")),
+            }));
+        }
+    } root;
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+}
+
+// ─── ImageWidget (Phase 30.1) ───────────────────────────────────────────────────
+
+TEST_CASE("ImageWidget: renders without error and OnClick fires when set", "[tree][widgets][image]") {
+    bool clicked = false;
+    int  frame   = 0;
+
+    struct Root {
+        bool* clicked;
+        [[nodiscard]] Widget Build() const {
+            // Texture ID 1 — the font atlas is set to ID 1 in the headless backend.
+            return Widget(ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
+                              .OnClick([c = clicked] { *c = true; }));
+        }
+    } root{&clicked};
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(4), TestConfig());
+    app.SetRoot(root);
+    app.OnUpdate([&](float) {
+        ++frame;
+        if (frame == 2) { ClickAt(10.0f, 10.0f); }
+    });
+    REQUIRE(app.Run().has_value());
+    CHECK(clicked);
+}
+
+TEST_CASE("ImageWidget: renders without error and stays non-interactive when OnClick is unset", "[tree][widgets][image]") {
+    struct Root {
+        [[nodiscard]] Widget Build() const {
+            return Widget(ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
+                              .Tint({1.0f, 1.0f, 1.0f, 0.8f})
+                              .UV0({0.0f, 0.0f})
+                              .UV1({0.5f, 0.5f}));
+        }
+    } root;
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+}
+
+// ─── ProgressBarWidget (Phase 30.1) ─────────────────────────────────────────────
+
+TEST_CASE("ProgressBarWidget: renders without error", "[tree][widgets][progressbar]") {
+    struct Root {
+        [[nodiscard]] Widget Build() const { return Widget(ProgressBarWidget(0.5f).Overlay("Loading...")); }
+    } root;
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+}
+
+// ─── ColorEditWidget (Phase 30.1) ───────────────────────────────────────────────
+
+TEST_CASE("ColorEditWidget: renders without error and value round-trips through the pointer binding",
+          "[tree][widgets][coloredit]") {
+    Widgets::Vec4 tint{1.0f, 0.5f, 0.0f, 1.0f};
+    struct Root {
+        Widgets::Vec4* value;
+        [[nodiscard]] Widget Build() const { return Widget(ColorEditWidget("Tint", value).Alpha(true)); }
+    } root{&tint};
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+    CHECK(tint.x == 1.0f); // unchanged — no simulated drag; confirms no crash and value round-trips
+}
+
+// ─── RadioWidget (Phase 30.1) ───────────────────────────────────────────────────
+
+TEST_CASE("RadioWidget: renders without error and clicking sets the bound value to its option",
+          "[tree][widgets][radio]") {
+    int mode  = -1;
+    int frame = 0;
+
+    struct Root {
+        int* value;
+        [[nodiscard]] Widget Build() const { return Widget(RadioWidget("Linear", value, 0)); }
+    } root{&mode};
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(4), TestConfig());
+    app.SetRoot(root);
+    app.OnUpdate([&](float) {
+        ++frame;
+        if (frame == 2) { ClickAt(10.0f, 10.0f); }
+    });
+    REQUIRE(app.Run().has_value());
+    CHECK(mode == 0);
+}
+
+// ─── GridWidget (Phase 30.1) ────────────────────────────────────────────────────
+
+TEST_CASE("GridWidget: renders without error across multiple wrapped rows", "[tree][widgets][grid]") {
+    struct Root {
+        [[nodiscard]] Widget Build() const {
+            return Widget(Layout::GridWidget(3).Spacing(4.0f).Children({
+                Widget(Tree::Primitives::Text("A")),
+                Widget(Tree::Primitives::Text("B")),
+                Widget(Tree::Primitives::Text("C")),
+                Widget(Tree::Primitives::Text("D")), // wraps to row 2
+            }));
+        }
+    } root;
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+}
+
+TEST_CASE("GridWidget: exposes its children in insertion order", "[tree][widgets][grid]") {
+    Layout::GridWidget grid = Layout::GridWidget(2).Children({
+        Widget(Tree::Primitives::Text("A")),
+        Widget(Tree::Primitives::Text("B")),
+        Widget(Tree::Primitives::Text("C")),
+    });
+
+    REQUIRE(grid.GetChildren().size() == 3);
+    CHECK(grid.GetChildren()[0].As<Tree::Primitives::Text>().GetContent() == "A");
+    CHECK(grid.GetChildren()[2].As<Tree::Primitives::Text>().GetContent() == "C");
+}
+
+// ─── PropertyGridWidget (Phase 30.1) ────────────────────────────────────────────
+
+TEST_CASE("PropertyGridWidget: renders without error with rows and a group separator",
+          "[tree][widgets][propertygrid]") {
+    std::string name = "Alice";
+    struct Root {
+        std::string* value;
+        [[nodiscard]] Widget Build() const {
+            std::vector<PropertyGridRow> rows;
+            rows.emplace_back("Name", Widget(TextInputWidget<std::string>("##name", value)));
+            rows.push_back(PropertyGridRow::Separator("Transform"));
+            rows.emplace_back("Label", Widget(Tree::Primitives::Text("static")));
+            return Widget(PropertyGridWidget("##props").SplitRatio(0.4f).Rows(std::move(rows)));
+        }
+    } root{&name};
+
+    Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
+    app.SetRoot(root);
+    REQUIRE(app.Run().has_value());
+}
+
+TEST_CASE("PropertyGridWidget: Build() composes one Flex row per property, split by SplitRatio",
+          "[tree][widgets][propertygrid]") {
+    PropertyGridWidget grid = PropertyGridWidget("##props").SplitRatio(0.4f).Rows({
+        {"Name", Widget(Tree::Primitives::Text("Alice"))},
+    });
+
+    Widget built = grid.Build();
+    const auto& outerFlex = built.As<Tree::Primitives::Flex>();
+    REQUIRE(outerFlex.GetChildren().size() == 1);
+
+    const auto& rowFlex = outerFlex.GetChildren()[0].As<Tree::Primitives::Flex>();
+    REQUIRE(rowFlex.GetChildren().size() == 2);
+
+    const auto& labelExpanded = rowFlex.GetChildren()[0].As<Tree::Primitives::Expanded>();
+    const auto& valueExpanded = rowFlex.GetChildren()[1].As<Tree::Primitives::Expanded>();
+    CHECK(labelExpanded.GetFactor() == 40);
+    CHECK(valueExpanded.GetFactor() == 60);
 }
