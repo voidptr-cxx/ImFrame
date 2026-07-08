@@ -36,11 +36,24 @@ pass() {
     echo "${GRN}PASS${RST} $*"
 }
 
-# strip_comments: remove grep output lines where the code content (the part
-# after "filepath:linenum:") starts with a C++ comment marker (// or block *).
+# filter_real_leaks: drop grep output lines whose match only occurs inside a
+# comment — either a full-line comment (// or block *) or a trailing same-line
+# comment (e.g. "code; ///< doc mentioning ImGui::Image()"). Re-tests $1
+# (the original leak pattern) against the code portion with any "//.*" suffix
+# stripped, so a match that only exists after "//" is correctly dropped.
 # grep output format: "path/file.hpp:42: <content>"
-strip_comments() {
-    grep -vE ':[0-9]+:[[:space:]]*(//|/\*|\*)'
+filter_real_leaks() {
+    local pattern="$1"
+    local line code_only
+    while IFS= read -r line; do
+        if [[ "$line" =~ :[0-9]+:[[:space:]]*(//|/\*|\*) ]]; then
+            continue
+        fi
+        code_only="${line%%//*}"
+        if [[ "$code_only" =~ $pattern ]]; then
+            echo "$line"
+        fi
+    done
 }
 
 # ── Check 1: No imgui headers included in public headers ─────────────────────
@@ -60,7 +73,7 @@ fi
 
 echo "--- Check 2: No ImFrame::Internal:: in ${PUBLIC_HEADERS}/ ---"
 HITS=$(grep -rn --include="*.hpp" 'ImFrame::Internal::' "${PUBLIC_HEADERS}" 2>/dev/null \
-    | strip_comments \
+    | filter_real_leaks 'ImFrame::Internal::' \
     || true)
 if [ -n "$HITS" ]; then
     while IFS= read -r line; do
@@ -78,7 +91,7 @@ echo "--- Check 3: No ImGui/ImVec/ImFont type names in ${PUBLIC_HEADERS}/ ---"
 HITS=$(grep -rn --include="*.hpp" \
     -E '(ImVec[0-9]|ImGui[A-Za-z]+|ImDrawList|ImFont[A-Za-z]*|ImTextureID)' \
     "${PUBLIC_HEADERS}" 2>/dev/null \
-    | strip_comments \
+    | filter_real_leaks '(ImVec[0-9]|ImGui[A-Za-z]+|ImDrawList|ImFont[A-Za-z]*|ImTextureID)' \
     | grep -v 'include/ImFrame/Icons/IconFont\.hpp' \
     || true)
 if [ -n "$HITS" ]; then
