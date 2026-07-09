@@ -1,15 +1,11 @@
 /**
  * @file     ContextMenu.cpp
- * @brief    ContextMenu implementation wrapping ImGui context popup helpers
+ * @brief    ContextMenuElement — `ContextMenuWidget`'s concrete `Element`
  *
  * @internal
- * `Show()` calls `BeginPopupContextItem()` (right-click on the last widget);
- * `ShowWindow()` calls `BeginPopupContextWindow()` (right-click anywhere in
- * the current window).  Both delegate to `RenderItems()` if the popup opens.
- *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-06-08
- * @version  1.3.0
+ * @version  2.5.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -20,63 +16,6 @@
 #include "../Tree/ElementInternal.hpp"
 
 #include <imgui.h>
-
-namespace ImFrame::Overlay {
-
-// MSVC's C4996 fires on the deprecated `ContextMenu`'s own out-of-line fluent
-// setters below (their `ContextMenu&` return type counts as a "use" of the
-// deprecated class, even in the class's own implementation) — suppressed here
-// since this is the deprecated API's own continued implementation, not an
-// external caller.
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-
-ContextMenu::ContextMenu(std::string id) : _id(std::move(id)) {}
-
-ContextMenu& ContextMenu::Item(std::string label, std::function<void()> action, bool enabled) {
-    _items.push_back({ std::move(label), std::move(action), enabled, false });
-    return *this;
-}
-
-ContextMenu& ContextMenu::Separator() {
-    _items.push_back({ "", nullptr, true, true });
-    return *this;
-}
-
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
-void ContextMenu::RenderItems() {
-    for (const auto& entry : _items) {
-        if (entry.isSeparator) {
-            ImGui::Separator();
-        } else if (ImGui::MenuItem(entry.label.c_str(), nullptr, false, entry.enabled)) {
-            if (entry.action) {
-                entry.action();
-            }
-            ImGui::CloseCurrentPopup();
-        }
-    }
-}
-
-void ContextMenu::Show() {
-    if (ImGui::BeginPopupContextItem(_id.c_str())) {
-        RenderItems();
-        ImGui::EndPopup();
-    }
-}
-
-void ContextMenu::ShowWindow() {
-    if (ImGui::BeginPopupContextWindow(_id.c_str())) {
-        RenderItems();
-        ImGui::EndPopup();
-    }
-}
-
-} // namespace ImFrame::Overlay
 
 // ─── ContextMenuWidget / ContextMenuElement (Phase 29) ──────────────────────────
 

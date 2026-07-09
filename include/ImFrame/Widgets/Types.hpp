@@ -1,6 +1,6 @@
 /**
  * @file     Types.hpp
- * @brief    Shared value types and the Renderable concept for the Widgets subsystem
+ * @brief    Shared value types for the Widgets subsystem
  *
  * Defines `Vec2`, `Vec4`, and `TextureHandle` as ImGui-free alternatives to
  * `ImVec2`, `ImVec4`, and `ImTextureID`. The types are layout-identical to their
@@ -19,8 +19,6 @@
  */
 
 #pragma once
-
-#include <concepts>
 
 namespace ImFrame::Widgets {
 
@@ -146,19 +144,6 @@ enum class TextAlign : unsigned char {
 
 /// Opaque GPU texture handle, matching the default `ImTextureID = void*`.
 using TextureHandle = void*;
-
-// ─── Renderable ───────────────────────────────────────────────────────────────
-
-/**
- * @brief    Concept satisfied by any type exposing a `bool Show()` member
- *
- * Phase 11 layout containers use `Renderable` to constrain template parameters.
- * Every widget in this phase satisfies the concept.
- *
- * @since    1.0.0
- */
-template<typename T>
-concept Renderable = requires(T t) { { t.Show() } -> std::same_as<bool>; };
 
 } // namespace ImFrame::Widgets
 

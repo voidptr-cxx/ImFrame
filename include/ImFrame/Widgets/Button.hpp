@@ -18,69 +18,8 @@
 #include "ImFrame/Widgets/Types.hpp"
 
 #include <string>
-#include <string_view>
 
 namespace ImFrame::Widgets {
-
-/**
- * @class    Button
- * @brief    Immediate-mode push button with fluent builder API
- *
- * @deprecated Use `ButtonWidget` instead (Phase 29). See `Docs/Migration_v1_to_v2.md`.
- *             Removed in Phase 30.
- *
- * @since    1.0.0
- *
- * @example
- * @code
- * Widgets::Button("Save")
- *     .Icon(ImFrame::Icons::Fa::FloppyDisk)
- *     .Size({120.0f, 0.0f})
- *     .OnClick([&] { Save(); })
- *     .Show();
- * @endcode
- */
-class [[deprecated("Use ButtonWidget instead. See Docs/Migration_v1_to_v2.md.")]] Button {
-public:
-    /**
-     * @brief    Construct a button with the given label.
-     * @param[in]  label  Text displayed on the button face.
-     * @throws   Nothing.
-     */
-    explicit Button(std::string_view label) : _label(label) {}
-
-    Button& Icon(const char* glyph)                        { _icon = glyph;               return *this; }
-    Button& Size(Vec2 size)                                { _size = size;                 return *this; }
-
-    /**
-     * @brief    Register a click callback fired when the button is clicked.
-     * @param[in]  cb  Zero-argument delegate. Must fit in the 16-byte Delegate buffer.
-     * @return   `*this` for chaining.
-     */
-    Button& OnClick(Utility::Delegate<void()> cb)          { _onClick = std::move(cb);    return *this; }
-
-    Button& Disabled(bool disabled = true)                 { _disabled = disabled;         return *this; }
-    Button& Tooltip(std::string_view tip)                  { _tooltip = tip;               return *this; }
-    Button& Width(float w)                                 { _width = w;                   return *this; }
-    Button& Id(std::string_view id)                        { _id = id;                     return *this; }
-
-    /**
-     * @brief    Render the button and fire `OnClick` if clicked.
-     * @return   `true` if the button was clicked this frame; `false` otherwise.
-     * @throws   Nothing.
-     */
-    bool Show();
-
-private:
-    std::string_view            _label;
-    const char*                 _icon     = nullptr;
-    Vec2                        _size     {};
-    Utility::Delegate<void()>   _onClick;
-    std::string_view            _tooltip;
-    std::string_view            _id;
-    float                       _width    = 0.0f;
-    bool                        _disabled = false;
-};
 
 // ─── ButtonWidget (Phase 29) ────────────────────────────────────────────────────
 

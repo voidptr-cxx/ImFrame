@@ -3,19 +3,26 @@
  * @brief    Full-featured ImFrame showcase demonstrating widgets, layouts, animations, overlays, and plots
  *
  * @internal
- * Demonstrates every major subsystem added in Phases 7–17:
+ * Demonstrates every major subsystem through Phase 30:
  *   - Application / DockSpace / persistent layouts
  *   - Theme engine (Dracula, Nord, CatppuccinMocha, Light) with runtime switching
- *   - All core widgets (Button, Slider, TextInput, Checkbox, Combo, ProgressBar, etc.)
- *   - Layout containers (Panel, HStack, VStack, Grid, ScrollArea)
+ *   - Widget-tree Components (ButtonWidget, SliderWidget, TextInputWidget, CheckboxWidget,
+ *     ComboWidget, ProgressBarWidget, ModalWidget, etc.), driven per-panel via the local
+ *     `TreePanel` helper below rather than `Application::SetRoot()` — `SetRoot()` always
+ *     paints into a single fixed, non-dockable root window (see `DECISIONS.md`, Phase 27:
+ *     "real docking integration is deferred"), but this demo's six panels are each
+ *     independently dockable `ImGui::Begin()` windows. `TreePanel` drives one small
+ *     `Tree::Element`'s Mount/Update/Layout/Paint cycle using only public `Tree::Widget`/
+ *     `Tree::Element` API, inside whichever window already opened.
+ *   - Layout primitives (Box, Flex, GridWidget, VirtualList)
  *   - Animation (AnimatedValue<float>)
- *   - Overlays (Toast, Modal)
- *   - Virtualised Table (10 000 rows, per-column renderer mode)
+ *   - Overlays (Toast, ModalWidget)
+ *   - Virtualised Table (10 000 rows, TableWidget)
  *   - Plots (LinePlot, BarPlot)
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2025-01-15
- * @version  1.8.0
+ * @version  2.6.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
  *            Proprietary and confidential. Unauthorised copying, distribution,
@@ -31,18 +38,11 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <format>
+#include <memory>
 #include <numbers>
 #include <string>
 #include <vector>
-
-// This demo predates Phase 29's Tree/Component widget API and is a known,
-// accepted user of the deprecated Phase 10–14 Show()-builder widgets — the
-// baseline entry the Phase 29 proposal's `deprecated_usage.txt` mechanism is
-// meant to track. Migrating it to ButtonWidget/CheckboxWidget/etc. is tracked
-// separately, not part of this phase.
-#if defined(_MSC_VER)
-#pragma warning(disable : 4996)
-#endif
 
 // ─── Using declarations ───────────────────────────────────────────────────────
 
@@ -52,6 +52,44 @@ using namespace ImFrame::Layout;
 using namespace ImFrame::Overlay;
 using namespace ImFrame::Anim;
 using namespace ImFrame::Icons;
+using namespace ImFrame::Tree;
+using namespace ImFrame::Tree::Primitives;
+
+// ─── TreePanel ────────────────────────────────────────────────────────────────
+
+/**
+ * @brief  Drives one widget-tree Component's Mount/Update + Layout/Paint cycle
+ *         inside the caller's own already-open ImGui window.
+ *
+ * `Application::SetRoot()` is not used here because it always paints into a
+ * single fixed, non-dockable root window — this demo needs each panel to stay
+ * an independently dockable `ImGui::Begin()` window. `Tree::Widget::
+ * CreateElement()` and `Tree::Element::Mount/Update/CanUpdate/Layout/Paint`
+ * are public and need no ImGui window of their own (`Paint()` only calls
+ * `SetCursorScreenPos` and draws), so one `TreePanel` per panel reproduces
+ * exactly what `Internal::Reconciler::Show()` does, minus the window it opens.
+ */
+class TreePanel {
+public:
+    template <Component T>
+    void Show(const T& component) {
+        Widget widget = component.Build();
+        if (_root && _root->CanUpdate(widget)) {
+            _root->Update(widget);
+        } else {
+            if (_root) { _root->Unmount(); }
+            _root = widget.CreateElement();
+            _root->Mount(nullptr, 0, widget);
+        }
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        (void)_root->Layout(BoxConstraints::Loose({avail.x, avail.y}));
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        _root->Paint({cursor.x, cursor.y});
+    }
+
+private:
+    std::unique_ptr<Element> _root;
+};
 
 // ─── Synthetic table data ─────────────────────────────────────────────────────
 
@@ -86,7 +124,7 @@ struct DemoState {
     };
 
     // ─── Modal ────────────────────────────────────────────────────────────────
-    Modal confirmModal{"Confirm##confirm_demo"};
+    bool showConfirmModal = false;
 
     // ─── Animation ────────────────────────────────────────────────────────────
     AnimatedValue<float> fadeBar{0.0f, 5.0f};
@@ -94,9 +132,7 @@ struct DemoState {
     float                tweenClock  = 0.0f;
 
     // ─── Table ────────────────────────────────────────────────────────────────
-    Table            table{"##demo_table", 3};
     std::vector<Row> rows;
-    bool             tableReady = false;
 
     // ─── Plots ────────────────────────────────────────────────────────────────
     std::array<double, 200> xs{};
@@ -104,21 +140,20 @@ struct DemoState {
     std::array<double, 200> cosine{};
     std::array<double, 6>   barVals{};
 
+    // ─── Widget-tree panels ───────────────────────────────────────────────────
+    // Held here (rather than as separate locals in main()) so `OnUi`'s lambda
+    // only needs to capture `[&app, &state]` — two pointers, exactly the
+    // 16-byte `Utility::Delegate<void()>` small-buffer limit. Capturing each
+    // TreePanel individually would overflow it.
+    TreePanel widgetsPanel;
+    TreePanel layoutsPanel;
+    TreePanel animPanel;
+    TreePanel tablePanel;
+    TreePanel iconButtonsPanel;
+
     // ─── Init ─────────────────────────────────────────────────────────────────
     void Init() {
         rows = BuildTableRows();
-
-        table.Scrollable().Striped().Borders().OuterSize(0.0f, 280.0f)
-             .Column(ColumnDef("ID")
-                 .Width(60.0f).WidthMode(ColumnWidthMode::Fixed).SortEnabled()
-                 .Renderer([this](int r) { ImGui::Text("%d", rows[r].id); }))
-             .Column(ColumnDef("Name")
-                 .Width(200.0f).WidthMode(ColumnWidthMode::Fixed).SortEnabled()
-                 .Renderer([this](int r) { ImGui::TextUnformatted(rows[r].name.c_str()); }))
-             .Column(ColumnDef("Value")
-                 .SortEnabled()
-                 .Renderer([this](int r) { ImGui::Text("%.3f", rows[r].value); }));
-        tableReady = true;
 
         for (int i = 0; i < 200; ++i) {
             xs[i]     = static_cast<double>(i) / 20.0;
@@ -127,6 +162,149 @@ struct DemoState {
         }
         for (int i = 0; i < 6; ++i)
             barVals[i] = static_cast<double>(i * i + 1);
+    }
+};
+
+// ─── Widget-tree panel Components ──────────────────────────────────────────────
+
+/// Buttons demonstrating `ButtonWidget::Icon()` — used inside the raw-ImGui Icons panel.
+struct IconButtonsRoot {
+    [[nodiscard]] Widget Build() const {
+        return Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+            Widget(ButtonWidget("Save").Icon(Fa::FloppyDisk).Width(110.0f)),
+            Widget(ButtonWidget("Download").Icon(Fa::Download).Width(110.0f)),
+            Widget(ButtonWidget("Search").Icon(Fa::MagnifyingGlass).Width(110.0f)),
+            Widget(ButtonWidget("Settings").Icon(Fa::Gear).Width(110.0f)),
+        }));
+    }
+};
+
+struct WidgetsPanelRoot {
+    DemoState* state;
+
+    [[nodiscard]] Widget Build() const {
+        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            Widget(SeparatorWidget().Label("Buttons")),
+            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                Widget(ButtonWidget("Primary").Width(100.0f)
+                    .OnClick([] { ToastSuccess("Clicked!", "Primary button pressed."); })),
+                Widget(ButtonWidget("Disabled").Width(100.0f).Disabled()),
+            })),
+
+            Widget(SeparatorWidget().Label("Text Input")),
+            Widget(TextInputWidget<std::string>("##input", &state->inputText)
+                .Hint("Type something...")
+                .Width(260.0f)),
+
+            Widget(SeparatorWidget().Label("Slider")),
+            Widget(SliderWidget<float>("Float##sl", &state->sliderVal, 0.0f, 1.0f).Width(260.0f)),
+
+            Widget(SeparatorWidget().Label("Checkboxes")),
+            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                Widget(CheckboxWidget("Feature A", &state->checkA)),
+                Widget(CheckboxWidget("Feature B", &state->checkB)),
+            })),
+
+            Widget(SeparatorWidget().Label("Combo")),
+            Widget(ComboWidget<std::string>("Pick one", &state->comboSelected,
+                       std::span<const std::string>{DemoState::comboOpts})
+                .Width(180.0f)),
+
+            Widget(SeparatorWidget().Label("Progress")),
+            Widget(ProgressBarWidget(state->sliderVal).Size({-1.0f, 0.0f})),
+
+            Widget(SeparatorWidget().Label("Toasts")),
+            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                Widget(ButtonWidget("Info").Icon(Fa::CircleInfo)
+                    .OnClick([] { ToastInfo("Info", "This is informational."); })),
+                Widget(ButtonWidget("Success").Icon(Fa::CircleCheck)
+                    .OnClick([] { ToastSuccess("Done", "Operation succeeded."); })),
+                Widget(ButtonWidget("Warn").Icon(Fa::CircleExclamation)
+                    .OnClick([] { ToastWarning("Warn", "Something looks off."); })),
+                Widget(ButtonWidget("Error").Icon(Fa::CircleXmark)
+                    .OnClick([] { ToastError("Error", "Something went wrong!"); })),
+            })),
+
+            Widget(SeparatorWidget().Label("Modal")),
+            Widget(ButtonWidget("Open Modal").Icon(Fa::CircleExclamation).Width(140.0f)
+                .OnClick([state = state] { state->showConfirmModal = true; })),
+            Widget(ModalWidget("Confirm##confirm_demo", &state->showConfirmModal)
+                .Content(Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+                    Widget(Text("Are you sure you want to proceed?").Wrap(true)),
+                    Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                        Widget(ButtonWidget("Yes").Width(80.0f).OnClick([state = state] {
+                            state->showConfirmModal = false;
+                            ToastSuccess("Confirmed!");
+                        })),
+                        Widget(ButtonWidget("No").Width(80.0f).OnClick([state = state] {
+                            state->showConfirmModal = false;
+                        })),
+                    })),
+                })))),
+        }));
+    }
+};
+
+struct LayoutsPanelRoot {
+    [[nodiscard]] Widget Build() const {
+        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            Widget(SeparatorWidget().Label("Flex, horizontal (was HStack)")),
+            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                Widget(ButtonWidget("Left").Width(90.0f)),
+                Widget(ButtonWidget("Center").Width(90.0f)),
+                Widget(ButtonWidget("Right").Width(90.0f)),
+            })),
+
+            Widget(SeparatorWidget().Label("Flex, vertical (was VStack)")),
+            Widget(Flex(Flex::Axis::Vertical).Gap(4.0f).Children({
+                Widget(ButtonWidget("Row 1").Width(160.0f)),
+                Widget(ButtonWidget("Row 2").Width(160.0f)),
+                Widget(ButtonWidget("Row 3").Width(160.0f)),
+            })),
+
+            Widget(SeparatorWidget().Label("GridWidget (2 columns)")),
+            Widget(GridWidget(2).Spacing(4.0f).Children({
+                Widget(ButtonWidget("Cell A").Width(110.0f)),
+                Widget(ButtonWidget("Cell B").Width(110.0f)),
+                Widget(ButtonWidget("Cell C").Width(110.0f)),
+                Widget(ButtonWidget("Cell D").Width(110.0f)),
+            })),
+
+            Widget(SeparatorWidget().Label("Box (coloured container, was Panel)")),
+            Widget(Box().Width(200.0f).Height(50.0f)
+                .BorderColor({1.0f, 1.0f, 1.0f, 1.0f}).BorderWidth(1.0f)
+                .Background({0.2f, 0.4f, 0.8f, 1.0f})
+                .Child(Widget(Text("Inside a coloured box")))),
+
+            Widget(SeparatorWidget().Label("VirtualList (scrollable, was ScrollArea)")),
+            Widget(Box().Height(80.0f).Child(Widget(
+                VirtualList(20, 20.0f, [](int i) -> Widget {
+                    return Widget(Text("Scrollable row " + std::to_string(i)));
+                })
+            ))),
+        }));
+    }
+};
+
+struct AnimationPanelRoot {
+    DemoState* state;
+
+    [[nodiscard]] Widget Build() const {
+        const float tweened = static_cast<float>(
+            std::sin(state->tweenClock * std::numbers::pi_v<float>) * 0.5 + 0.5);
+
+        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            Widget(SeparatorWidget().Label("AnimatedValue (exponential decay)")),
+            Widget(Text("Current value tracks toward target at speed 5.")),
+            Widget(ProgressBarWidget(state->fadeBar.Value()).Size({-1.0f, 0.0f})),
+            Widget(ButtonWidget("Toggle target").Width(140.0f).OnClick([state = state] {
+                state->fadeTarget = !state->fadeTarget;
+                state->fadeBar.SetTarget(state->fadeTarget ? 1.0f : 0.0f);
+            })),
+
+            Widget(SeparatorWidget().Label("Sine oscillator (tweenClock)")),
+            Widget(ProgressBarWidget(tweened).Size({-1.0f, 0.0f})),
+        }));
     }
 };
 
@@ -162,14 +340,14 @@ static void DrawMenuBar(App::Application& app, DemoState& state) {
     ImGui::EndMainMenuBar();
 }
 
-static void DrawIconsPanel() {
+static void DrawIconsPanel(DemoState& state) {
     ImGui::Begin("Icons & Fonts");
 
     ImGui::SeparatorText("FontAwesome 6 Free — glyph reference");
     ImGui::TextWrapped("The FA6 icon font is merged into the default typeface via "
                        "Application::WithFont({ .isIconFont = true }). "
                        "Any FA6 glyph constant from ImFrame::Icons::Fa can be passed "
-                       "directly to ImGui::Text or Button::Icon.");
+                       "directly to ImGui::Text or ButtonWidget::Icon.");
 
     ImGui::Spacing();
 
@@ -211,14 +389,8 @@ static void DrawIconsPanel() {
         ImGui::EndTable();
     }
 
-    ImGui::SeparatorText("Button::Icon() fluent API");
-    Button("Save")    .Icon(Fa::FloppyDisk).Width(110.0f).Show();
-    ImGui::SameLine();
-    Button("Download").Icon(Fa::Download)  .Width(110.0f).Show();
-    ImGui::SameLine();
-    Button("Search")  .Icon(Fa::MagnifyingGlass).Width(110.0f).Show();
-    ImGui::SameLine();
-    Button("Settings").Icon(Fa::Gear)      .Width(110.0f).Show();
+    ImGui::SeparatorText("ButtonWidget::Icon() fluent API");
+    state.iconButtonsPanel.Show(IconButtonsRoot{});
 
     ImGui::SeparatorText("Inline icon + text (ImGui::Text)");
     ImGui::Text("%s  Home panel", Fa::House);
@@ -231,139 +403,30 @@ static void DrawIconsPanel() {
 
 static void DrawWidgetsPanel(DemoState& state) {
     ImGui::Begin("Widgets");
-
-    ImGui::SeparatorText("Buttons");
-    Button("Primary")
-        .Width(100.0f)
-        .OnClick([] { ToastSuccess("Clicked!", "Primary button pressed."); })
-        .Show();
-    ImGui::SameLine();
-    Button("Disabled").Width(100.0f).Disabled().Show();
-
-    ImGui::SeparatorText("Text Input");
-    TextInput<std::string>("##input", state.inputText)
-        .Hint("Type something…")
-        .Width(260.0f)
-        .Show();
-
-    ImGui::SeparatorText("Slider");
-    Slider<float>("Float##sl", state.sliderVal, 0.0f, 1.0f).Width(260.0f).Show();
-
-    ImGui::SeparatorText("Checkboxes");
-    Checkbox("Feature A", state.checkA).Show();
-    ImGui::SameLine();
-    Checkbox("Feature B", state.checkB).Show();
-
-    ImGui::SeparatorText("Combo");
-    Combo<std::string>("Pick one", state.comboSelected,
-                       std::span<const std::string>{state.comboOpts})
-        .Width(180.0f)
-        .Show();
-
-    ImGui::SeparatorText("Progress");
-    ProgressBar(state.sliderVal).Size({-1.0f, 0.0f}).Show();
-
-    ImGui::SeparatorText("Toasts");
-    Button("Info")   .Icon(Fa::CircleInfo)       .OnClick([] { ToastInfo("Info",    "This is informational."); }).Show();
-    ImGui::SameLine();
-    Button("Success").Icon(Fa::CircleCheck)       .OnClick([] { ToastSuccess("Done","Operation succeeded.");   }).Show();
-    ImGui::SameLine();
-    Button("Warn")   .Icon(Fa::CircleExclamation).OnClick([] { ToastWarning("Warn", "Something looks off.");  }).Show();
-    ImGui::SameLine();
-    Button("Error")  .Icon(Fa::CircleXmark)      .OnClick([] { ToastError("Error",  "Something went wrong!"); }).Show();
-
-    ImGui::SeparatorText("Modal");
-    Button("Open Modal").Icon(Fa::CircleExclamation).Width(140.0f).OnClick([&state] { state.confirmModal.Open(); }).Show();
-
-    if (auto scope = state.confirmModal.Begin()) {
-        Text("Are you sure you want to proceed?").Wrapped().Show();
-        ImGui::Spacing();
-        Button("Yes").Width(80.0f).OnClick([&state] {
-            state.confirmModal.Close();
-            ToastSuccess("Confirmed!");
-        }).Show();
-        ImGui::SameLine();
-        Button("No").Width(80.0f).OnClick([&state] {
-            state.confirmModal.Close();
-        }).Show();
-    }
-
+    state.widgetsPanel.Show(WidgetsPanelRoot{&state});
     ImGui::End();
 }
 
-static void DrawLayoutPanel(DemoState& /*state*/) {
+static void DrawLayoutPanel(DemoState& state) {
     ImGui::Begin("Layouts");
-
-    ImGui::SeparatorText("HStack (horizontal row)");
-    HStack(8.0f).Render(
-        Button("Left").Width(90.0f),
-        Button("Center").Width(90.0f),
-        Button("Right").Width(90.0f)
-    );
-
-    ImGui::SeparatorText("VStack (vertical column)");
-    VStack(4.0f).Render(
-        Button("Row 1").Width(160.0f),
-        Button("Row 2").Width(160.0f),
-        Button("Row 3").Width(160.0f)
-    );
-
-    ImGui::SeparatorText("Grid (2 columns)");
-    Grid(2).Render(
-        Button("Cell A").Width(110.0f),
-        Button("Cell B").Width(110.0f),
-        Button("Cell C").Width(110.0f),
-        Button("Cell D").Width(110.0f)
-    );
-
-    ImGui::SeparatorText("Panel (coloured child window)");
-    if (auto scope = Panel("##blue_panel")
-            .Size({200.0f, 50.0f})
-            .Border(true)
-            .Background({0.2f, 0.4f, 0.8f, 1.0f})
-            .Begin()) {
-        Text("Inside a blue panel").Show();
-    }
-
-    ImGui::SeparatorText("ScrollArea");
-    {
-        ScrollArea scroll("##scroll_demo");
-        scroll.Size({0.0f, 80.0f}).VerticalBar(true);
-        if (auto scope = scroll.Begin()) {
-            for (int i = 0; i < 20; ++i)
-                Text("Scrollable row " + std::to_string(i)).Show();
-        }
-    }
-
+    state.layoutsPanel.Show(LayoutsPanelRoot{});
     ImGui::End();
 }
 
 static void DrawAnimPanel(DemoState& state) {
     ImGui::Begin("Animation");
-
-    ImGui::SeparatorText("AnimatedValue (exponential decay)");
-    Text("Current value tracks toward target at speed 5.").Show();
-    ProgressBar(state.fadeBar.Value()).Size({-1.0f, 0.0f}).Show();
-
-    Button("Toggle target").Width(140.0f).OnClick([&state] {
-        state.fadeTarget = !state.fadeTarget;
-        state.fadeBar.SetTarget(state.fadeTarget ? 1.0f : 0.0f);
-    }).Show();
-
-    ImGui::SeparatorText("Sine oscillator (tweenClock)");
-    float tweened = static_cast<float>(
-        std::sin(state.tweenClock * std::numbers::pi_v<float>) * 0.5 + 0.5);
-    ProgressBar(tweened).Size({-1.0f, 0.0f}).Show();
-
+    state.animPanel.Show(AnimationPanelRoot{&state});
     ImGui::End();
 }
 
 static void DrawTablePanel(DemoState& state) {
     ImGui::Begin("Table (10 000 rows)");
-
-    if (state.tableReady)
-        state.table.Render(static_cast<int>(state.rows.size()));
-
+    state.tablePanel.Show(
+        TableWidget(static_cast<int>(state.rows.size()), 24.0f)
+            .Column("ID",    [&state](int r) { return std::to_string(state.rows[r].id); })
+            .Column("Name",  [&state](int r) { return state.rows[r].name; })
+            .Column("Value", [&state](int r) { return std::format("{:.3f}", state.rows[r].value); })
+    );
     ImGui::End();
 }
 
@@ -419,7 +482,7 @@ int main()
            DrawMenuBar(app, state);
            DrawWidgetsPanel(state);
            DrawLayoutPanel(state);
-           DrawIconsPanel();
+           DrawIconsPanel(state);
            DrawAnimPanel(state);
            DrawTablePanel(state);
            DrawPlotPanel(state);

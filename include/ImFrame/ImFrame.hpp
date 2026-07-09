@@ -71,8 +71,6 @@
 #include "ImFrame/Widgets/Image.hpp"
 #include "ImFrame/Widgets/ProgressBar.hpp"
 #include "ImFrame/Widgets/Separator.hpp"
-#include "ImFrame/Widgets/Spacer.hpp"
-#include "ImFrame/Widgets/Text.hpp"
 #include "ImFrame/Widgets/Table.hpp"
 #include "ImFrame/Widgets/PropertyGrid.hpp"
 #include "ImFrame/Widgets/PlotContext.hpp"
@@ -83,11 +81,7 @@
 
 // ─── Layout ───────────────────────────────────────────────────────────────────
 #include "ImFrame/Layout/ChildScope.hpp"
-#include "ImFrame/Layout/Panel.hpp"
-#include "ImFrame/Layout/HStack.hpp"
-#include "ImFrame/Layout/VStack.hpp"
 #include "ImFrame/Layout/Grid.hpp"
-#include "ImFrame/Layout/ScrollArea.hpp"
 
 // ─── Animation ────────────────────────────────────────────────────────────────
 #include "ImFrame/Anim/Tween.hpp"
