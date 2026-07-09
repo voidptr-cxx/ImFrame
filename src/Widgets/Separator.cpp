@@ -1,6 +1,6 @@
 /**
  * @file     Separator.cpp
- * @brief    Implementation of Widgets::Separator::Show()
+ * @brief    Implementation of SeparatorWidget's Element
  *
  * @internal
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
@@ -15,33 +15,6 @@
 #include "ImFrame/Widgets/Separator.hpp"
 
 #include <imgui.h>
-
-#include <string>
-
-namespace ImFrame::Widgets {
-
-bool Separator::Show() {
-    if (_disabled) { ImGui::BeginDisabled(); }
-
-    if (_label.empty()) {
-        ImGui::Separator();
-    } else {
-        // SeparatorText requires a null-terminated string.
-        std::string text(_label.data(), _label.size());
-        ImGui::SeparatorText(text.c_str());
-    }
-
-    if (_disabled) { ImGui::EndDisabled(); }
-
-    if (!_tooltip.empty() && ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%.*s",
-                          static_cast<int>(_tooltip.size()), _tooltip.data());
-    }
-
-    return false;
-}
-
-} // namespace ImFrame::Widgets
 
 // ─── SeparatorWidget / SeparatorElement (Phase 30) ──────────────────────────────
 

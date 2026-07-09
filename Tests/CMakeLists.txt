@@ -246,56 +246,6 @@ add_custom_command(TARGET ImFrame_Tests_Icons_IconFont POST_BUILD
     COMMENT "Copying FA6 solid font to test output directory"
 )
 
-# ─── Phase 10: Widget tests ───────────────────────────────────────────────────
-# One executable per widget for fast parallel CI and clear failure attribution.
-
-foreach(_widget
-    Button
-    Checkbox
-    Radio
-    TextInput
-    Slider
-    Combo
-    ColorEdit
-    Image
-    ProgressBar
-    Separator
-    Spacer
-    Text
-)
-    add_executable("ImFrame_Tests_Widgets_${_widget}"
-        "Widgets/${_widget}_test.cpp"
-    )
-    target_link_libraries("ImFrame_Tests_Widgets_${_widget}"
-        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
-    )
-    target_compile_features("ImFrame_Tests_Widgets_${_widget}" PRIVATE cxx_std_23)
-    catch_discover_tests("ImFrame_Tests_Widgets_${_widget}"
-        PROPERTIES LABELS unit
-    )
-endforeach()
-
-# ─── Phase 11: Layout container tests ────────────────────────────────────────
-
-foreach(_layout
-    Panel
-    HStack
-    VStack
-    Grid
-    ScrollArea
-)
-    add_executable("ImFrame_Tests_Layout_${_layout}"
-        "Layout/${_layout}_test.cpp"
-    )
-    target_link_libraries("ImFrame_Tests_Layout_${_layout}"
-        PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
-    )
-    target_compile_features("ImFrame_Tests_Layout_${_layout}" PRIVATE cxx_std_23)
-    catch_discover_tests("ImFrame_Tests_Layout_${_layout}"
-        PROPERTIES LABELS unit
-    )
-endforeach()
-
 # ─── Phase 12: Animation tests ────────────────────────────────────────────────
 # Pure arithmetic — no ImGui context required.
 
@@ -326,35 +276,6 @@ target_link_libraries(ImFrame_Tests_Overlay_Toast
 )
 target_compile_features(ImFrame_Tests_Overlay_Toast PRIVATE cxx_std_23)
 catch_discover_tests(ImFrame_Tests_Overlay_Toast PROPERTIES LABELS unit)
-
-add_executable(ImFrame_Tests_Overlay_Modal
-    Overlay/Modal_test.cpp
-)
-target_link_libraries(ImFrame_Tests_Overlay_Modal
-    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
-)
-target_compile_features(ImFrame_Tests_Overlay_Modal PRIVATE cxx_std_23)
-catch_discover_tests(ImFrame_Tests_Overlay_Modal PROPERTIES LABELS unit)
-
-# ─── Phase 14: Table and PropertyGrid tests ───────────────────────────────────
-
-add_executable(ImFrame_Tests_Widgets_Table
-    Widgets/Table_test.cpp
-)
-target_link_libraries(ImFrame_Tests_Widgets_Table
-    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
-)
-target_compile_features(ImFrame_Tests_Widgets_Table PRIVATE cxx_std_23)
-catch_discover_tests(ImFrame_Tests_Widgets_Table PROPERTIES LABELS unit)
-
-add_executable(ImFrame_Tests_Widgets_PropertyGrid
-    Widgets/PropertyGrid_test.cpp
-)
-target_link_libraries(ImFrame_Tests_Widgets_PropertyGrid
-    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
-)
-target_compile_features(ImFrame_Tests_Widgets_PropertyGrid PRIVATE cxx_std_23)
-catch_discover_tests(ImFrame_Tests_Widgets_PropertyGrid PROPERTIES LABELS unit)
 
 # ─── Phase 15: Plot widget tests ──────────────────────────────────────────────
 

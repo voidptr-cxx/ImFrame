@@ -169,15 +169,10 @@ add_library(ImFrame STATIC
     src/Widgets/Image.cpp
     src/Widgets/ProgressBar.cpp
     src/Widgets/Separator.cpp
-    src/Widgets/Spacer.cpp
-    src/Widgets/Text.cpp
     src/Widgets/WidgetImpl.cpp
 
     # ── Phase 11: Layout containers ───────────────────────────────────────────
     src/Layout/ChildScope.cpp
-    src/Layout/Panel.cpp
-    src/Layout/ScrollArea.cpp
-    src/Layout/LayoutImpl.cpp
 
     # ── Phase 13: Overlay system ──────────────────────────────────────────────
     src/Overlay/Toast.cpp

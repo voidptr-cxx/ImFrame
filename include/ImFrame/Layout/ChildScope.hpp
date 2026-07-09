@@ -2,9 +2,12 @@
  * @file     ChildScope.hpp
  * @brief    RAII scope wrapping ImGui::BeginChild / ImGui::EndChild
  *
- * `ChildScope` is returned by `Panel::Begin()` and `ScrollArea::Begin()`. It
- * guarantees that `ImGui::EndChild()` is called exactly once per `BeginChild()`
- * call, even when the child window is fully clipped.
+ * `ChildScope` is a general-purpose `ImGui::BeginChild()`/`ImGui::EndChild()`
+ * RAII guard. It guarantees that `ImGui::EndChild()` is called exactly once
+ * per `BeginChild()` call, even when the child window is fully clipped. The
+ * `Panel` and `ScrollArea` widgets that used to return it were removed as
+ * deprecated in Phase 30.2 — the type is retained as a standalone utility for
+ * any future or internal code that wraps `ImGui::BeginChild()` directly.
  *
  * Use it as an `if` condition: the body executes only when the child window is
  * visible; the destructor always calls `EndChild()` on scope exit.
@@ -33,8 +36,8 @@ namespace ImFrame::Layout {
  *
  * @example
  * @code
- * if (auto scope = Panel("sidebar").Size({220.0f, 0.0f}).Begin()) {
- *     Widgets::Text("Hello").Show();
+ * if (auto scope = ChildScope(ImGui::BeginChild("sidebar"))) {
+ *     ImGui::Text("Hello");
  * }
  * @endcode
  */

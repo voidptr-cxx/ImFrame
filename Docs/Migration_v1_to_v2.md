@@ -1,14 +1,14 @@
 # Migration Guide: v1.x Imperative Widgets → v2.x Widget Tree
 
-Phase 29 reimplements the Phase 10–14 widget library as `Tree::Component`/
+Phase 29 reimplemented the Phase 10–14 widget library as `Tree::Component`/
 `Tree::PrimitiveWidget` types built from the Phase 27 primitives (`Box`, `Flex`,
 `Text`, `GestureRegion`, `SizedBox`, `Expanded`, `Spacer`, `Stack`) plus two new
-ones added this phase (`Portal`, `VirtualList`). Phase 30.1 completes the set
+ones added that phase (`Portal`, `VirtualList`). Phase 30.1 completed the set
 by reimplementing the remaining seven widgets that Phase 29 left deprecated
 with no replacement (`Separator`, `Image`, `ProgressBar`, `ColorEdit`, `Radio`,
-`PropertyGrid`, `Grid`). The old `Show()`-builder API is marked `[[deprecated]]`
-— it still compiles and works, but new code should use the declarative API
-described here. **The old API is removed in Phase 30.2.**
+`PropertyGrid`, `Grid`). **Phase 30.2 removed the old `Show()`-builder API
+entirely** — this guide is now a historical record of the migration; there is
+no deprecated fallback left to compile against.
 
 The visual output is identical: the reimplemented widgets call the same
 underlying ImGui functions, just reached through a `Build()` method instead of
@@ -318,8 +318,16 @@ interaction state itself.
 
 ---
 
-## Status: every Phase 10–14 widget now has a replacement
+## Status: the Phase 10–14 API has been fully removed
 
-As of Phase 30.1, every deprecated Phase 10–14 widget has a `Tree::Component`/
-`Tree::PrimitiveWidget` equivalent. Phase 30.2 deletes the deprecated headers
-entirely — migrate any remaining `Show()`-based call sites before then.
+Phase 30.1 gave every deprecated Phase 10–14 widget a `Tree::Component`/
+`Tree::PrimitiveWidget` equivalent. Phase 30.2 then deleted the deprecated
+headers entirely, along with the 20 test files that exercised them directly
+and `PropertyGridScope`/`Widgets::Renderable` (both orphaned once
+`PropertyGrid`'s `Begin()`/`Row()`/`Separator()` scope pattern was removed —
+`PropertyGridWidget` never used either). `Examples/DemoApp/main.cpp` was
+migrated to the declarative API in the same phase, via a small local
+`TreePanel` helper (see its file comment) that drives one `Tree::Element`'s
+Mount/Update/Layout/Paint cycle inside each of the demo's six independently
+dockable panels — `Application::SetRoot()` isn't used there because it only
+supports a single fixed, non-dockable root window.
