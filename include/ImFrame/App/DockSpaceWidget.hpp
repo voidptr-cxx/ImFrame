@@ -51,7 +51,7 @@ namespace ImFrame::App {
  * @example
  * @code
  * struct AppRoot {
- *     [[nodiscard]] Tree::Widget Build() const { return Tree::Widget(App::DockSpaceWidget()); }
+ *     [[nodiscard]] Tree::Widget Build() const { return App::DockSpaceWidget(); }
  * };
  * AppRoot root;
  * app.SetRoot(root); // registers the dockspace; open separate dockable windows elsewhere

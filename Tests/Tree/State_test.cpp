@@ -122,7 +122,7 @@ TEST_CASE("ComponentElement: Build skipped when not dirty", "[tree][state][compo
         Widget Build() const {
             ++*buildCount;
             [[maybe_unused]] const int& _ = state.Get();
-            return Widget(SizedBox{});
+            return SizedBox{};
         }
     };
 
@@ -144,7 +144,7 @@ TEST_CASE("ComponentElement: Build skipped when not dirty", "[tree][state][compo
 
 TEST_CASE("ComponentElement: GetDirtyFlag returns a valid weak_ptr", "[tree][state][component]") {
     struct Leaf {
-        Widget Build() const { return Widget(SizedBox{}); }
+        Widget Build() const { return SizedBox{}; }
     };
     Widget  w{Leaf{}};
     auto    elem = w.CreateElement();

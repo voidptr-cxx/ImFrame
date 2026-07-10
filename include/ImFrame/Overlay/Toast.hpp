@@ -247,8 +247,8 @@ void ToastError(std::string title, std::string body = "", float duration = -1.0f
  * struct MyRoot {
  *     Widget Build() const {
  *         return Flex(Flex::Axis::Vertical).Children({
- *             Widget(MainContent{}),
- *             Widget(ToastOverlayWidget(Overlay::ToastManager::Instance().Snapshot())),
+ *             MainContent{},
+ *             ToastOverlayWidget(Overlay::ToastManager::Instance().Snapshot()),
  *         });
  *     }
  * };

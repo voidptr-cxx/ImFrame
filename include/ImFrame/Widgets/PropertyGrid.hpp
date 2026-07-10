@@ -73,9 +73,9 @@ private:
  * PropertyGridWidget("##props")
  *     .SplitRatio(0.4f)
  *     .Rows({
- *         {"Name", Widget(TextInputWidget("##name", &name))},
+ *         {"Name", TextInputWidget("##name", &name)},
  *         PropertyGridRow::Separator("Transform"),
- *         {"Position", Widget(SliderWidget<float>("##x", &posX, -10.0f, 10.0f))},
+ *         {"Position", SliderWidget<float>("##x", &posX, -10.0f, 10.0f)},
  *     });
  * @endcode
  */

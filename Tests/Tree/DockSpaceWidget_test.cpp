@@ -63,7 +63,7 @@ WindowConfig TestConfig() {
 
 TEST_CASE("DockSpaceWidget: renders without error via SetRoot", "[tree][dockspace]") {
     struct Root {
-        [[nodiscard]] Widget Build() const { return Widget(DockSpaceWidget()); }
+        [[nodiscard]] Widget Build() const { return DockSpaceWidget(); }
     } root;
 
     int frame = 0;
@@ -79,7 +79,7 @@ TEST_CASE("DockSpaceWidget: renders without error via SetRoot", "[tree][dockspac
 
 TEST_CASE("DockSpaceWidget: initialises the default layout on the first frame", "[tree][dockspace]") {
     struct Root {
-        [[nodiscard]] Widget Build() const { return Widget(DockSpaceWidget()); }
+        [[nodiscard]] Widget Build() const { return DockSpaceWidget(); }
     } root;
 
     // Application::RunOneFrame() runs OnUi() BEFORE the SetRoot() tree's

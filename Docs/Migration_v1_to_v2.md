@@ -31,7 +31,7 @@ void OnUi() {
 ```cpp
 struct MyRoot {
     [[nodiscard]] Tree::Widget Build() const {
-        return Tree::Widget(Widgets::ButtonWidget("Save").OnClick([&] { Save(); }));
+        return Widgets::ButtonWidget("Save").OnClick([&] { Save(); });
     }
 };
 
@@ -41,6 +41,14 @@ app.SetRoot(root);
 
 Every frame, `root.Build()` is called and reconciled against the previous
 tree — there is no `OnUi()` call site to sprinkle `Show()` calls into anymore.
+
+`Tree::Widget`'s converting constructor is deliberately non-`explicit`, so any
+primitive or `Component` implicitly converts to `Widget` wherever one is
+expected — a `Build()` return value, a `std::vector<Widget>` initializer-list
+element (e.g. `Flex::Children({...})`), or a single-`Widget` setter (e.g.
+`Box::Child(...)`). None of the examples in this guide wrap values in an
+explicit `Widget(...)`/`Tree::Widget(...)` call; write the concrete type
+directly.
 
 ---
 
@@ -92,7 +100,7 @@ Widgets::Checkbox("Wireframe", wireframe).Show();
 
 // New
 bool wireframe = false;
-Widget(Widgets::CheckboxWidget("Wireframe", &wireframe));
+Widgets::CheckboxWidget("Wireframe", &wireframe);
 ```
 
 This is not a style preference — it's required. `ComponentElement<T>` and
@@ -115,7 +123,7 @@ inside the single `ImGui::Button()` call — there is no separate hover-state
 Component to manage.
 
 ```cpp
-Widget(Widgets::ButtonWidget("Save").OnClick([&] { Save(); }));
+Widgets::ButtonWidget("Save").OnClick([&] { Save(); });
 ```
 
 ### CheckboxWidget / SliderWidget\<T\> / TextInputWidget\<T\>
@@ -126,9 +134,9 @@ Same options as before (`Format`, `Hint`, `Multiline`, `Password`, `Tooltip`,
 from `Show()`, which has no equivalent in a declarative `Build()`.
 
 ```cpp
-Widget(Widgets::SliderWidget<float>("Volume", &volume, 0.0f, 1.0f)
-           .Format("%.2f")
-           .OnChange([](float v) { ApplyVolume(v); }));
+Widgets::SliderWidget<float>("Volume", &volume, 0.0f, 1.0f)
+    .Format("%.2f")
+    .OnChange([](float v) { ApplyVolume(v); });
 ```
 
 ### ComboWidget\<T\>
@@ -149,10 +157,10 @@ tracking, right-click context menus per row, striped rows, and
 Fixed/Stretch/Auto column width modes.
 
 ```cpp
-Widget(Widgets::TableWidget(rows.size(), 24.0f)
-           .Column("Name",  [&](int r) { return rows[r].name; })
-           .Column("Score", [&](int r) { return std::to_string(rows[r].score); })
-           .OnRowClick([&](int r) { selectedRow = r; }));
+Widgets::TableWidget(rows.size(), 24.0f)
+    .Column("Name",  [&](int r) { return rows[r].name; })
+    .Column("Score", [&](int r) { return std::to_string(rows[r].score); })
+    .OnRowClick([&](int r) { selectedRow = r; });
 ```
 
 ### ModalWidget
@@ -169,9 +177,9 @@ from `ModalWidget::Content()` plus two `ButtonWidget`s.
 ```cpp
 bool showSettings = false;
 // ...
-Widget(Widgets::ButtonWidget("Settings").OnClick([&] { showSettings = true; }));
-Widget(Overlay::ModalWidget("Settings", &showSettings)
-           .Content(Widget(Tree::Primitives::Text("Settings content"))));
+Widgets::ButtonWidget("Settings").OnClick([&] { showSettings = true; });
+Overlay::ModalWidget("Settings", &showSettings)
+    .Content(Tree::Primitives::Text("Settings content"));
 ```
 
 ### ContextMenuWidget
@@ -181,9 +189,9 @@ Wraps a trigger child `Widget`; right-clicking it opens the menu via
 used. `Portal` is not needed for the same reason as `ModalWidget`.
 
 ```cpp
-Widget(Overlay::ContextMenuWidget(Widget(Tree::Primitives::Text("file.txt")))
-           .Item("Open", [] { OpenFile(); })
-           .Item("Delete", [] { DeleteFile(); }));
+Overlay::ContextMenuWidget(Tree::Primitives::Text("file.txt"))
+    .Item("Open", [] { OpenFile(); })
+    .Item("Delete", [] { DeleteFile(); });
 ```
 
 ### ToastOverlayWidget
@@ -207,10 +215,10 @@ tree — not both, or toasts render twice.
 ```cpp
 struct MyRoot {
     [[nodiscard]] Widget Build() const {
-        return Widget(Tree::Primitives::Flex(Flex::Axis::Vertical).Children({
-            Widget(MainContent{}),
-            Widget(Overlay::ToastOverlayWidget(Overlay::ToastManager::Instance().Snapshot())),
-        }));
+        return Tree::Primitives::Flex(Flex::Axis::Vertical).Children({
+            MainContent{},
+            Overlay::ToastOverlayWidget(Overlay::ToastManager::Instance().Snapshot()),
+        });
     }
 };
 ```
@@ -226,7 +234,7 @@ Bind via a raw pointer (these types are non-copyable, same reasoning as
 Rendering::Viewport scene("3d_view");
 scene.OnRender([](const RenderContext& ctx) { /* ... */ });
 // In Build():
-return Widget(Rendering::ViewportWidget(&scene));
+return Rendering::ViewportWidget(&scene);
 ```
 
 ### SeparatorWidget / ProgressBarWidget
@@ -235,8 +243,8 @@ Stateless, no behavioral changes. Same `ImGui::SeparatorText()`/`ImGui::Separato
 and `ImGui::ProgressBar()` calls as the deprecated classes.
 
 ```cpp
-Widget(SeparatorWidget().Label("Advanced"));
-Widget(ProgressBarWidget(loadProgress).Overlay("Loading assets..."));
+SeparatorWidget().Label("Advanced");
+ProgressBarWidget(loadProgress).Overlay("Loading assets...");
 ```
 
 ### ImageWidget
@@ -247,8 +255,8 @@ is — the same OnClick-gated pattern `ButtonWidget`/`CheckboxWidget` already
 use instead of a separate call path.
 
 ```cpp
-Widget(ImageWidget(myTex, {256.0f, 256.0f}).Tint({1, 1, 1, 0.8f}));
-Widget(ImageWidget(iconTex, {32.0f, 32.0f}).OnClick([&] { DoAction(); }));
+ImageWidget(myTex, {256.0f, 256.0f}).Tint({1, 1, 1, 0.8f});
+ImageWidget(iconTex, {32.0f, 32.0f}).OnClick([&] { DoAction(); });
 ```
 
 ### ColorEditWidget / RadioWidget
@@ -259,11 +267,11 @@ has no `OnChange` — same as the old `Radio`, which only returned a `bool` from
 
 ```cpp
 Vec4 tint{1.0f, 0.5f, 0.0f, 1.0f};
-Widget(ColorEditWidget("Tint", &tint).Alpha(true));
+ColorEditWidget("Tint", &tint).Alpha(true);
 
 int mode = 0;
-Widget(RadioWidget("Linear",  &mode, 0));
-Widget(RadioWidget("Nearest", &mode, 1));
+RadioWidget("Linear",  &mode, 0);
+RadioWidget("Nearest", &mode, 1);
 ```
 
 ### GridWidget
@@ -274,10 +282,10 @@ already made when `HStack`/`VStack` were replaced by `Flex`. Children fill
 columns left-to-right, wrapping into a new row every `Columns()` children.
 
 ```cpp
-Widget(Layout::GridWidget(3).Spacing(4.0f).Children({
-    Widget(ButtonWidget("A")), Widget(ButtonWidget("B")),
-    Widget(ButtonWidget("C")), Widget(ButtonWidget("D")), // wraps to row 2
-}));
+Layout::GridWidget(3).Spacing(4.0f).Children({
+    ButtonWidget("A"), ButtonWidget("B"),
+    ButtonWidget("C"), ButtonWidget("D"), // wraps to row 2
+});
 ```
 
 ### PropertyGridWidget
@@ -292,13 +300,13 @@ does the rest. Purely composed from `Flex`/`Expanded`/`Text`/`SeparatorWidget`;
 no new primitive or `Element` was written for it.
 
 ```cpp
-Widget(PropertyGridWidget("##props")
-           .SplitRatio(0.4f)
-           .Rows({
-               {"Name", Widget(TextInputWidget<std::string>("##name", &name))},
-               PropertyGridRow::Separator("Transform"),
-               {"Position", Widget(SliderWidget<float>("##x", &posX, -10.0f, 10.0f))},
-           }));
+PropertyGridWidget("##props")
+    .SplitRatio(0.4f)
+    .Rows({
+        {"Name", TextInputWidget<std::string>("##name", &name)},
+        PropertyGridRow::Separator("Transform"),
+        {"Position", SliderWidget<float>("##x", &posX, -10.0f, 10.0f)},
+    });
 ```
 
 ---

@@ -48,7 +48,7 @@ struct ContextMenuEntry {
  *
  * @example
  * @code
- * ContextMenuWidget(Widget(Text("file.txt")))
+ * ContextMenuWidget(Text("file.txt"))
  *     .Item("Open", [] { openFile(); })
  *     .Item("Delete", [] { deleteFile(); });
  * @endcode

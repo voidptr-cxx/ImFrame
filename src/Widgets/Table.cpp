@@ -54,28 +54,27 @@ Tree::Widget TableWidget::Build() const {
     std::vector<Tree::Widget> headerCells;
     headerCells.reserve(_columns.size());
     for (const auto& col : _columns) {
-        headerCells.push_back(Tree::Widget(Text(col.Label)));
+        headerCells.push_back(Text(col.Label));
     }
-    Tree::Widget header = Tree::Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(headerCells)));
+    Tree::Widget header = Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(headerCells));
 
     const TableWidget* self = this;
-    Tree::Widget body = Tree::Widget(VirtualList(_rowCount, _rowHeight, [self](int rowIndex) -> Tree::Widget {
+    Tree::Widget body = VirtualList(_rowCount, _rowHeight, [self](int rowIndex) -> Tree::Widget {
         std::vector<Tree::Widget> cells;
         cells.reserve(self->_columns.size());
         for (const auto& col : self->_columns) {
             std::string text = col.CellText ? col.CellText(rowIndex) : std::string{};
-            cells.push_back(Tree::Widget(Text(std::move(text))));
+            cells.push_back(Text(std::move(text)));
         }
-        Tree::Widget rowFlex = Tree::Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(cells)));
+        Tree::Widget rowFlex = Flex(Flex::Axis::Horizontal).Gap(8.0f).Children(std::move(cells));
 
         if (self->_onRowClick) {
-            return Tree::Widget(
-                GestureRegion().OnClick([self, rowIndex] { self->_onRowClick(rowIndex); }).Child(rowFlex));
+            return GestureRegion().OnClick([self, rowIndex] { self->_onRowClick(rowIndex); }).Child(rowFlex);
         }
         return rowFlex;
-    }));
+    });
 
-    return Tree::Widget(Flex(Flex::Axis::Vertical).Children({header, body}));
+    return Flex(Flex::Axis::Vertical).Children({header, body});
 }
 
 } // namespace ImFrame::Widgets

@@ -87,13 +87,13 @@ TEST_CASE("VirtualList: only visible items are built across a 10,000-item list",
     struct Root {
         VListTestState* state;
         [[nodiscard]] Widget Build() const {
-            return Widget(Box().Width(kViewportW).Height(kViewportH).Child(Widget(VirtualList(
+            return Box().Width(kViewportW).Height(kViewportH).Child(VirtualList(
                 kItemCount, kItemHeight,
                 [s = state](int index) -> Widget {
                     s->builtIndices.insert(index);
                     ++s->totalBuilderCalls;
-                    return Widget(SizedBox().Width(kViewportW).Height(kItemHeight));
-                }))));
+                    return SizedBox().Width(kViewportW).Height(kItemHeight);
+                }));
         }
     } root{&state};
 
@@ -114,7 +114,7 @@ TEST_CASE("VirtualList: scrolling to bottom builds the last items", "[tree][virt
     struct Root {
         VListTestState* state;
         [[nodiscard]] Widget Build() const {
-            return Widget(Box().Width(kViewportW).Height(kViewportH).Child(Widget(VirtualList(
+            return Box().Width(kViewportW).Height(kViewportH).Child(VirtualList(
                 kItemCount, kItemHeight,
                 [s = state](int index) -> Widget {
                     s->builtIndices.insert(index);
@@ -125,8 +125,8 @@ TEST_CASE("VirtualList: scrolling to bottom builds the last items", "[tree][virt
                         ImGui::SetScrollY(ImGui::GetScrollMaxY());
                         s->scrolledToBottom = true;
                     }
-                    return Widget(SizedBox().Width(kViewportW).Height(kItemHeight));
-                }))));
+                    return SizedBox().Width(kViewportW).Height(kItemHeight);
+                }));
         }
     } root{&state};
 
@@ -144,14 +144,14 @@ TEST_CASE("VirtualList: fixed item height produces the correct scroll extent", "
     struct Root {
         VListTestState* state;
         [[nodiscard]] Widget Build() const {
-            return Widget(Box().Width(kViewportW).Height(kViewportH).Child(Widget(VirtualList(
+            return Box().Width(kViewportW).Height(kViewportH).Child(VirtualList(
                 kItemCount, kItemHeight,
                 [s = state](int index) -> Widget {
                     // Overwritten every call; the last frame's value is the settled one —
                     // ScrollMaxY reflects the *previous* frame's committed content size.
                     s->observedScrollMaxY = ImGui::GetScrollMaxY();
-                    return Widget(SizedBox().Width(kViewportW).Height(kItemHeight));
-                }))));
+                    return SizedBox().Width(kViewportW).Height(kItemHeight);
+                }));
         }
     } root{&state};
 
@@ -167,8 +167,8 @@ TEST_CASE("VirtualList: fixed item height produces the correct scroll extent", "
 TEST_CASE("VirtualList: zero item count paints nothing and does not crash", "[tree][virtuallist]") {
     struct Root {
         [[nodiscard]] Widget Build() const {
-            return Widget(Box().Width(kViewportW).Height(kViewportH).Child(
-                Widget(VirtualList(0, kItemHeight, [](int) -> Widget { return Widget(SizedBox{}); }))));
+            return Box().Width(kViewportW).Height(kViewportH).Child(
+                VirtualList(0, kItemHeight, [](int) -> Widget { return SizedBox{}; }));
         }
     } root;
 

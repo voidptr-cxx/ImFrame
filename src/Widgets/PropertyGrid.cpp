@@ -54,13 +54,13 @@ Tree::Widget PropertyGridWidget::Build() const {
             rowWidgets.emplace_back(Flex(Flex::Axis::Horizontal)
                 .CrossAlign(Flex::CrossAlignment::Center)
                 .Children({
-                    Tree::Widget(Expanded(Tree::Widget(Text(row.label))).Factor(labelFactor)),
-                    Tree::Widget(Expanded(row.widget).Factor(valueFactor)),
+                    Expanded(Text(row.label)).Factor(labelFactor),
+                    Expanded(row.widget).Factor(valueFactor),
                 }));
         }
     }
 
-    return Tree::Widget(Flex(Flex::Axis::Vertical).Children(std::move(rowWidgets)));
+    return Flex(Flex::Axis::Vertical).Children(std::move(rowWidgets));
 }
 
 } // namespace ImFrame::Widgets

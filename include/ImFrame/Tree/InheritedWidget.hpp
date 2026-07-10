@@ -178,7 +178,7 @@ namespace ImFrame::Tree {
  * };
  *
  * // Wrap the root with the theme provider:
- * Widget root = InheritedWidget<AppTheme>(AppTheme{"Roboto"}, Widget(ThemeConsumer{}));
+ * Widget root = InheritedWidget<AppTheme>(AppTheme{"Roboto"}, ThemeConsumer{});
  * @endcode
  */
 template <typename T>
