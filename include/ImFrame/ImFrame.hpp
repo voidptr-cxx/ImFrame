@@ -46,6 +46,7 @@
 #include "ImFrame/App/Application.hpp"
 #include "ImFrame/App/Window.hpp"
 #include "ImFrame/App/DockSpace.hpp"
+#include "ImFrame/App/DockSpaceWidget.hpp"
 
 // ─── Theme ────────────────────────────────────────────────────────────────────
 #include "ImFrame/Theme/Theme.hpp"

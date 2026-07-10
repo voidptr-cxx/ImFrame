@@ -5,7 +5,12 @@
  * @internal
  * Implements DockSpace::Begin() / End(), the default three-column layout, and
  * the SaveLayout / LoadLayout / ResetLayout / ListLayouts API.
- * DockBuilder APIs require <imgui_internal.h>.
+ *
+ * Phase 30.3: the raw ImGui/DockBuilder calls this class used to make
+ * directly now live in `src/Tree/RenderObjects/DockSpaceRO.hpp`/`.cpp`,
+ * mirroring the `RootBridge` pattern already established for the widget
+ * tree's own root window — this file no longer includes `<imgui.h>` at all.
+ * Behavior is unchanged; only the ImGui call site moved.
  *
  * Layout persistence uses Utility::Config (TOML-subset) — all writes are
  * dispatched through Config::Set() which coalesces them asynchronously so the
@@ -22,9 +27,7 @@
 
 #include "ImFrame/App/DockSpace.hpp"
 #include "ImFrame/Utility/Config.hpp"
-
-#include <imgui.h>
-#include <imgui_internal.h>
+#include "Tree/RenderObjects/DockSpaceRO.hpp"
 
 #include <algorithm>
 
@@ -63,82 +66,32 @@ void DockSpace::SetConfig(Utility::Config* config) {
 // ─── Begin ────────────────────────────────────────────────────────────────────
 
 void DockSpace::Begin() {
-    // Cover the entire main viewport with an invisible, non-interactive window.
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::SetNextWindowViewport(viewport->ID);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,   0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(0.0f, 0.0f));
-
-    ImGuiWindowFlags windowFlags =
-        ImGuiWindowFlags_NoTitleBar          |
-        ImGuiWindowFlags_NoCollapse          |
-        ImGuiWindowFlags_NoResize            |
-        ImGuiWindowFlags_NoMove              |
-        ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus          |
-        ImGuiWindowFlags_NoBackground;
-
-    if (_menuBar) {
-        windowFlags |= ImGuiWindowFlags_MenuBar;
-    }
-
-    ImGui::Begin("##DockSpace", nullptr, windowFlags);
-    ImGui::PopStyleVar(3);
-
     // First frame: if Config has a saved default layout, restore it before the
     // dockspace is set up so ImGui can match saved node IDs.
     if (!_layoutRestored) {
         if (_config && !_defaultIni.empty()) {
-            ImGui::LoadIniSettingsFromMemory(_defaultIni.c_str(), _defaultIni.size());
+            Internal::RestoreIniSettings(_defaultIni);
         }
         _layoutRestored = true;
     }
 
-    // Emit the dockspace and initialise the default layout on the very first frame.
-    const ImGuiID id = ImGui::GetID("MainDockSpace");
-    ImGui::DockSpace(id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
-
-    if (ImGui::DockBuilderGetNode(id) == nullptr) {
-        InitDefaultLayout(id);
+    const Internal::DockSpaceBeginInfo info =
+        Internal::BeginDockSpaceWindow(_menuBar, "##DockSpace", "MainDockSpace");
+    if (info.NeedsDefaultLayout) {
+        InitDefaultLayout(info.Id);
     }
 }
 
 // ─── End ──────────────────────────────────────────────────────────────────────
 
 void DockSpace::End() {
-    ImGui::End();
+    Internal::EndDockSpaceWindow();
 }
 
 // ─── InitDefaultLayout ────────────────────────────────────────────────────────
 
 void DockSpace::InitDefaultLayout(uint32_t dockspaceId) {
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-
-    ImGui::DockBuilderRemoveNode(dockspaceId);
-    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspaceId, viewport->WorkSize);
-
-    ImGuiID remaining    = dockspaceId;
-    ImGuiID sidebarId    = 0;
-    ImGuiID propertiesId = 0;
-    ImGuiID centerId     = 0;
-
-    // Split off left sidebar — 25% of the total width.
-    ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Left, 0.25f, &sidebarId, &remaining);
-
-    // Split off right properties — 33% of the remaining width = 25% of total.
-    ImGui::DockBuilderSplitNode(remaining, ImGuiDir_Right, 0.333f, &propertiesId, &centerId);
-
-    ImGui::DockBuilderFinish(dockspaceId);
-
-    // Capture the resulting ini string so ResetLayout() can always restore it.
-    size_t      iniLen  = 0;
-    const char* iniData = ImGui::SaveIniSettingsToMemory(&iniLen);
-    _defaultIni = std::string(iniData, iniLen);
+    _defaultIni = Internal::InitDefaultLayoutNodes(dockspaceId);
 
     if (_config) {
         _config->Set<std::string>("Layout.Default", _defaultIni);
@@ -148,9 +101,7 @@ void DockSpace::InitDefaultLayout(uint32_t dockspaceId) {
 // ─── Layout management ────────────────────────────────────────────────────────
 
 void DockSpace::SaveLayout(std::string_view name) {
-    size_t      len  = 0;
-    const char* data = ImGui::SaveIniSettingsToMemory(&len);
-    const std::string ini(data, len);
+    const std::string ini = Internal::CaptureIniSettings();
     const std::string key = std::string("Layout.") + std::string(name);
 
     // Add to the name index if not already present.
@@ -176,15 +127,11 @@ void DockSpace::LoadLayout(std::string_view name) {
     if (!_config) return;
     const std::string key = std::string("Layout.") + std::string(name);
     const std::string ini = _config->Get<std::string>(key, "");
-    if (!ini.empty()) {
-        ImGui::LoadIniSettingsFromMemory(ini.c_str(), ini.size());
-    }
+    Internal::RestoreIniSettings(ini);
 }
 
 void DockSpace::ResetLayout() {
-    if (!_defaultIni.empty()) {
-        ImGui::LoadIniSettingsFromMemory(_defaultIni.c_str(), _defaultIni.size());
-    }
+    Internal::RestoreIniSettings(_defaultIni);
 }
 
 std::vector<std::string> DockSpace::ListLayouts() const {

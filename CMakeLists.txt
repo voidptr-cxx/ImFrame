@@ -226,6 +226,10 @@ add_library(ImFrame STATIC
 
     # ── Phase 30.1: Widget replacement gap closure (GridWidget) ───────────────
     src/Tree/RenderObjects/GridRO.cpp
+
+    # ── Phase 30.3: DockSpace reimplementation (DockSpaceWidget) ──────────────
+    src/Tree/RenderObjects/DockSpaceRO.cpp
+    src/Tree/RenderObjects/DockSpaceWidgetRO.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────
