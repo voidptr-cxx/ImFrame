@@ -238,7 +238,7 @@ private:
  * Rendering::Viewport scene("3d_view");
  * scene.OnRender([](const RenderContext& ctx) { ... });
  * // In Build():
- * return Widget(ViewportWidget(&scene));
+ * return ViewportWidget(&scene);
  * @endcode
  */
 class ViewportWidget {

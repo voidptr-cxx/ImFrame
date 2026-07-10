@@ -41,7 +41,7 @@ namespace ImFrame::Overlay {
  * bool showSettings = false;
  * // ...
  * ButtonWidget("Settings").OnClick([&] { showSettings = true; });
- * ModalWidget("Settings", &showSettings).Content(Widget(Text("Settings content")));
+ * ModalWidget("Settings", &showSettings).Content(Text("Settings content"));
  * @endcode
  */
 class ModalWidget {

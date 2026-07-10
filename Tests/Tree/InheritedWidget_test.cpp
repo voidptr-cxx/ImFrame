@@ -95,7 +95,7 @@ struct ThemeReader {
         } else {
             *lastSeen = "(none)";
         }
-        return Widget(SizedBox{});
+        return SizedBox{};
     }
 };
 
@@ -108,7 +108,7 @@ struct InnerAndOuterReader {
         if (const AppTheme* t = Context::Of<AppTheme>()) {
             *seen = t->name;
         }
-        return Widget(SizedBox{});
+        return SizedBox{};
     }
 };
 
@@ -123,7 +123,7 @@ TEST_CASE("InheritedWidget<T>: Context::Of returns nullptr when no ancestor", "[
 
         Widget Build() const {
             *result = Context::Of<AppTheme>();
-            return Widget(SizedBox{});
+            return SizedBox{};
         }
     };
 
@@ -137,7 +137,7 @@ TEST_CASE("InheritedWidget<T>: Context::Of returns nullptr when no ancestor", "[
 TEST_CASE("InheritedWidget<T>: Context::Of finds nearest ancestor value", "[tree][inherited]") {
     ThemeReader reader;
     Widget child(reader);
-    Widget root = Widget(InheritedWidget<AppTheme>{AppTheme{"Dracula"}, child});
+    Widget root = InheritedWidget<AppTheme>{AppTheme{"Dracula"}, child};
 
     auto elem = root.CreateElement();
     elem->Mount(nullptr, 0, root);
@@ -148,8 +148,8 @@ TEST_CASE("InheritedWidget<T>: Context::Of finds nearest ancestor value", "[tree
 TEST_CASE("InheritedWidget<T>: inner InheritedWidget shadows outer", "[tree][inherited]") {
     InnerAndOuterReader reader;
     // Inner InheritedWidget<AppTheme> wraps reader; outer wraps inner
-    Widget inner = Widget(InheritedWidget<AppTheme>{AppTheme{"Nord"}, Widget(reader)});
-    Widget outer = Widget(InheritedWidget<AppTheme>{AppTheme{"Dracula"}, inner});
+    Widget inner = InheritedWidget<AppTheme>{AppTheme{"Nord"}, reader};
+    Widget outer = InheritedWidget<AppTheme>{AppTheme{"Dracula"}, inner};
 
     auto elem = outer.CreateElement();
     elem->Mount(nullptr, 0, outer);
@@ -165,13 +165,13 @@ TEST_CASE("InheritedWidget<T>: Context::Of returns nullptr for different type T"
 
         Widget Build() const {
             *result = Context::Of<AppLocale>();
-            return Widget(SizedBox{});
+            return SizedBox{};
         }
     };
 
     LocaleReader reader;
     // Only AppTheme is provided — AppLocale lookup must return nullptr
-    Widget root = Widget(InheritedWidget<AppTheme>{AppTheme{"Light"}, Widget(reader)});
+    Widget root = InheritedWidget<AppTheme>{AppTheme{"Light"}, reader};
     auto elem = root.CreateElement();
     elem->Mount(nullptr, 0, root);
 
@@ -181,19 +181,19 @@ TEST_CASE("InheritedWidget<T>: Context::Of returns nullptr for different type T"
 TEST_CASE("InheritedWidget<T>: value change on Update notifies dependent consumers", "[tree][inherited]") {
     ThemeReader reader;
     // Mount with "Dracula"
-    Widget v1 = Widget(InheritedWidget<AppTheme>{AppTheme{"Dracula"}, Widget(reader)});
+    Widget v1 = InheritedWidget<AppTheme>{AppTheme{"Dracula"}, reader};
     auto elem = v1.CreateElement();
     elem->Mount(nullptr, 0, v1);
     REQUIRE(*reader.lastSeen == "Dracula");
     int buildsAfterMount = *reader.buildCount;
 
     // Updating with same value should NOT rebuild the consumer
-    Widget v1b = Widget(InheritedWidget<AppTheme>{AppTheme{"Dracula"}, Widget(reader)});
+    Widget v1b = InheritedWidget<AppTheme>{AppTheme{"Dracula"}, reader};
     elem->Update(v1b);
     CHECK(*reader.buildCount == buildsAfterMount);  // dirty not fired — same value
 
     // Updating with new value SHOULD mark consumer dirty → rebuild
-    Widget v2 = Widget(InheritedWidget<AppTheme>{AppTheme{"Nord"}, Widget(reader)});
+    Widget v2 = InheritedWidget<AppTheme>{AppTheme{"Nord"}, reader};
     elem->Update(v2);
     CHECK(*reader.lastSeen == "Nord");
     CHECK(*reader.buildCount > buildsAfterMount);
@@ -214,19 +214,19 @@ TEST_CASE("InheritedWidget<T>: non-equality-comparable type always notifies on U
             if (const NonComparable* nc = Context::Of<NonComparable>()) {
                 *seen = nc->value;
             }
-            return Widget(SizedBox{});
+            return SizedBox{};
         }
     };
 
     NCReader reader;
-    Widget v1 = Widget(InheritedWidget<NonComparable>{NonComparable{1}, Widget(reader)});
+    Widget v1 = InheritedWidget<NonComparable>{NonComparable{1}, reader};
     auto elem = v1.CreateElement();
     elem->Mount(nullptr, 0, v1);
     REQUIRE(*reader.seen == 1);
     int initialCount = *reader.count;
 
     // Same semantic value, but no operator== — still notifies
-    Widget v2 = Widget(InheritedWidget<NonComparable>{NonComparable{1}, Widget(reader)});
+    Widget v2 = InheritedWidget<NonComparable>{NonComparable{1}, reader};
     elem->Update(v2);
     CHECK(*reader.count > initialCount);
 }
@@ -241,7 +241,7 @@ TEST_CASE("InheritedWidget<T>: full reconciler round-trip via HeadlessBackend", 
     struct Root {
         ThemeReader* reader;
         [[nodiscard]] Widget Build() const {
-            return Widget(InheritedWidget<AppTheme>{AppTheme{"CatppuccinMocha"}, Widget(*reader)});
+            return InheritedWidget<AppTheme>{AppTheme{"CatppuccinMocha"}, *reader};
         }
     };
 
@@ -269,7 +269,7 @@ TEST_CASE("InheritedWidget<T>: dirty cascade via Signal change triggers consumer
             if (seen == 1) {
                 theme = AppTheme{"Nord"};
             }
-            return Widget(InheritedWidget<AppTheme>{theme.Get(), Widget(*reader)});
+            return InheritedWidget<AppTheme>{theme.Get(), *reader};
         }
     };
 

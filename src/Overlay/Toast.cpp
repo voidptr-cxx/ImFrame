@@ -237,27 +237,27 @@ Tree::Widget ToastOverlayWidget::Build() const {
         const Widgets::Vec4  textColor{1.0f, 1.0f, 1.0f, t.Opacity};
 
         std::vector<Tree::Widget> lines;
-        lines.push_back(Tree::Widget(Text(t.Title).Color(textColor)));
+        lines.push_back(Text(t.Title).Color(textColor));
         if (!t.Body.empty()) {
             const Widgets::Vec4 subColor{0.90f, 0.90f, 0.90f, t.Opacity * 0.75f};
-            lines.push_back(Tree::Widget(Text(t.Body).Color(subColor)));
+            lines.push_back(Text(t.Body).Color(subColor));
         }
 
-        toastBoxes.push_back(Tree::Widget(Box()
-                                               .Width(TOAST_W)
-                                               .Padding(Widgets::EdgeInsets::All(TOAST_PAD))
-                                               .Background(bg)
-                                               .Radius(TOAST_R)
-                                               .Child(Tree::Widget(Flex(Flex::Axis::Vertical).Children(std::move(lines))))));
+        toastBoxes.push_back(Box()
+                                  .Width(TOAST_W)
+                                  .Padding(Widgets::EdgeInsets::All(TOAST_PAD))
+                                  .Background(bg)
+                                  .Radius(TOAST_R)
+                                  .Child(Flex(Flex::Axis::Vertical).Children(std::move(lines))));
     }
 
-    Tree::Widget stack = Tree::Widget(Flex(Flex::Axis::Vertical)
-                                           .MainAlign(Flex::MainAlignment::End)
-                                           .CrossAlign(Flex::CrossAlignment::End)
-                                           .Gap(TOAST_PAD)
-                                           .Children(std::move(toastBoxes)));
+    Tree::Widget stack = Flex(Flex::Axis::Vertical)
+                              .MainAlign(Flex::MainAlignment::End)
+                              .CrossAlign(Flex::CrossAlignment::End)
+                              .Gap(TOAST_PAD)
+                              .Children(std::move(toastBoxes));
 
-    return Tree::Widget(Tree::Portal(stack));
+    return Tree::Portal(stack);
 }
 
 } // namespace ImFrame::Overlay

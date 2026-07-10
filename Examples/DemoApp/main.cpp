@@ -170,12 +170,12 @@ struct DemoState {
 /// Buttons demonstrating `ButtonWidget::Icon()` — used inside the raw-ImGui Icons panel.
 struct IconButtonsRoot {
     [[nodiscard]] Widget Build() const {
-        return Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-            Widget(ButtonWidget("Save").Icon(Fa::FloppyDisk).Width(110.0f)),
-            Widget(ButtonWidget("Download").Icon(Fa::Download).Width(110.0f)),
-            Widget(ButtonWidget("Search").Icon(Fa::MagnifyingGlass).Width(110.0f)),
-            Widget(ButtonWidget("Settings").Icon(Fa::Gear).Width(110.0f)),
-        }));
+        return Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+            ButtonWidget("Save").Icon(Fa::FloppyDisk).Width(110.0f),
+            ButtonWidget("Download").Icon(Fa::Download).Width(110.0f),
+            ButtonWidget("Search").Icon(Fa::MagnifyingGlass).Width(110.0f),
+            ButtonWidget("Settings").Icon(Fa::Gear).Width(110.0f),
+        });
     }
 };
 
@@ -183,106 +183,106 @@ struct WidgetsPanelRoot {
     DemoState* state;
 
     [[nodiscard]] Widget Build() const {
-        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
-            Widget(SeparatorWidget().Label("Buttons")),
-            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-                Widget(ButtonWidget("Primary").Width(100.0f)
-                    .OnClick([] { ToastSuccess("Clicked!", "Primary button pressed."); })),
-                Widget(ButtonWidget("Disabled").Width(100.0f).Disabled()),
-            })),
+        return Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            SeparatorWidget().Label("Buttons"),
+            Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                ButtonWidget("Primary").Width(100.0f)
+                    .OnClick([] { ToastSuccess("Clicked!", "Primary button pressed."); }),
+                ButtonWidget("Disabled").Width(100.0f).Disabled(),
+            }),
 
-            Widget(SeparatorWidget().Label("Text Input")),
-            Widget(TextInputWidget<std::string>("##input", &state->inputText)
+            SeparatorWidget().Label("Text Input"),
+            TextInputWidget<std::string>("##input", &state->inputText)
                 .Hint("Type something...")
-                .Width(260.0f)),
+                .Width(260.0f),
 
-            Widget(SeparatorWidget().Label("Slider")),
-            Widget(SliderWidget<float>("Float##sl", &state->sliderVal, 0.0f, 1.0f).Width(260.0f)),
+            SeparatorWidget().Label("Slider"),
+            SliderWidget<float>("Float##sl", &state->sliderVal, 0.0f, 1.0f).Width(260.0f),
 
-            Widget(SeparatorWidget().Label("Checkboxes")),
-            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-                Widget(CheckboxWidget("Feature A", &state->checkA)),
-                Widget(CheckboxWidget("Feature B", &state->checkB)),
-            })),
+            SeparatorWidget().Label("Checkboxes"),
+            Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                CheckboxWidget("Feature A", &state->checkA),
+                CheckboxWidget("Feature B", &state->checkB),
+            }),
 
-            Widget(SeparatorWidget().Label("Combo")),
-            Widget(ComboWidget<std::string>("Pick one", &state->comboSelected,
+            SeparatorWidget().Label("Combo"),
+            ComboWidget<std::string>("Pick one", &state->comboSelected,
                        std::span<const std::string>{DemoState::comboOpts})
-                .Width(180.0f)),
+                .Width(180.0f),
 
-            Widget(SeparatorWidget().Label("Progress")),
-            Widget(ProgressBarWidget(state->sliderVal).Size({-1.0f, 0.0f})),
+            SeparatorWidget().Label("Progress"),
+            ProgressBarWidget(state->sliderVal).Size({-1.0f, 0.0f}),
 
-            Widget(SeparatorWidget().Label("Toasts")),
-            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-                Widget(ButtonWidget("Info").Icon(Fa::CircleInfo)
-                    .OnClick([] { ToastInfo("Info", "This is informational."); })),
-                Widget(ButtonWidget("Success").Icon(Fa::CircleCheck)
-                    .OnClick([] { ToastSuccess("Done", "Operation succeeded."); })),
-                Widget(ButtonWidget("Warn").Icon(Fa::CircleExclamation)
-                    .OnClick([] { ToastWarning("Warn", "Something looks off."); })),
-                Widget(ButtonWidget("Error").Icon(Fa::CircleXmark)
-                    .OnClick([] { ToastError("Error", "Something went wrong!"); })),
-            })),
+            SeparatorWidget().Label("Toasts"),
+            Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                ButtonWidget("Info").Icon(Fa::CircleInfo)
+                    .OnClick([] { ToastInfo("Info", "This is informational."); }),
+                ButtonWidget("Success").Icon(Fa::CircleCheck)
+                    .OnClick([] { ToastSuccess("Done", "Operation succeeded."); }),
+                ButtonWidget("Warn").Icon(Fa::CircleExclamation)
+                    .OnClick([] { ToastWarning("Warn", "Something looks off."); }),
+                ButtonWidget("Error").Icon(Fa::CircleXmark)
+                    .OnClick([] { ToastError("Error", "Something went wrong!"); }),
+            }),
 
-            Widget(SeparatorWidget().Label("Modal")),
-            Widget(ButtonWidget("Open Modal").Icon(Fa::CircleExclamation).Width(140.0f)
-                .OnClick([state = state] { state->showConfirmModal = true; })),
-            Widget(ModalWidget("Confirm##confirm_demo", &state->showConfirmModal)
-                .Content(Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
-                    Widget(Text("Are you sure you want to proceed?").Wrap(true)),
-                    Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-                        Widget(ButtonWidget("Yes").Width(80.0f).OnClick([state = state] {
+            SeparatorWidget().Label("Modal"),
+            ButtonWidget("Open Modal").Icon(Fa::CircleExclamation).Width(140.0f)
+                .OnClick([state = state] { state->showConfirmModal = true; }),
+            ModalWidget("Confirm##confirm_demo", &state->showConfirmModal)
+                .Content(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+                    Text("Are you sure you want to proceed?").Wrap(true),
+                    Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                        ButtonWidget("Yes").Width(80.0f).OnClick([state = state] {
                             state->showConfirmModal = false;
                             ToastSuccess("Confirmed!");
-                        })),
-                        Widget(ButtonWidget("No").Width(80.0f).OnClick([state = state] {
+                        }),
+                        ButtonWidget("No").Width(80.0f).OnClick([state = state] {
                             state->showConfirmModal = false;
-                        })),
-                    })),
-                })))),
-        }));
+                        }),
+                    }),
+                })),
+        });
     }
 };
 
 struct LayoutsPanelRoot {
     [[nodiscard]] Widget Build() const {
-        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
-            Widget(SeparatorWidget().Label("Flex, horizontal (was HStack)")),
-            Widget(Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
-                Widget(ButtonWidget("Left").Width(90.0f)),
-                Widget(ButtonWidget("Center").Width(90.0f)),
-                Widget(ButtonWidget("Right").Width(90.0f)),
-            })),
+        return Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            SeparatorWidget().Label("Flex, horizontal (was HStack)"),
+            Flex(Flex::Axis::Horizontal).Gap(8.0f).Children({
+                ButtonWidget("Left").Width(90.0f),
+                ButtonWidget("Center").Width(90.0f),
+                ButtonWidget("Right").Width(90.0f),
+            }),
 
-            Widget(SeparatorWidget().Label("Flex, vertical (was VStack)")),
-            Widget(Flex(Flex::Axis::Vertical).Gap(4.0f).Children({
-                Widget(ButtonWidget("Row 1").Width(160.0f)),
-                Widget(ButtonWidget("Row 2").Width(160.0f)),
-                Widget(ButtonWidget("Row 3").Width(160.0f)),
-            })),
+            SeparatorWidget().Label("Flex, vertical (was VStack)"),
+            Flex(Flex::Axis::Vertical).Gap(4.0f).Children({
+                ButtonWidget("Row 1").Width(160.0f),
+                ButtonWidget("Row 2").Width(160.0f),
+                ButtonWidget("Row 3").Width(160.0f),
+            }),
 
-            Widget(SeparatorWidget().Label("GridWidget (2 columns)")),
-            Widget(GridWidget(2).Spacing(4.0f).Children({
-                Widget(ButtonWidget("Cell A").Width(110.0f)),
-                Widget(ButtonWidget("Cell B").Width(110.0f)),
-                Widget(ButtonWidget("Cell C").Width(110.0f)),
-                Widget(ButtonWidget("Cell D").Width(110.0f)),
-            })),
+            SeparatorWidget().Label("GridWidget (2 columns)"),
+            GridWidget(2).Spacing(4.0f).Children({
+                ButtonWidget("Cell A").Width(110.0f),
+                ButtonWidget("Cell B").Width(110.0f),
+                ButtonWidget("Cell C").Width(110.0f),
+                ButtonWidget("Cell D").Width(110.0f),
+            }),
 
-            Widget(SeparatorWidget().Label("Box (coloured container, was Panel)")),
-            Widget(Box().Width(200.0f).Height(50.0f)
+            SeparatorWidget().Label("Box (coloured container, was Panel)"),
+            Box().Width(200.0f).Height(50.0f)
                 .BorderColor({1.0f, 1.0f, 1.0f, 1.0f}).BorderWidth(1.0f)
                 .Background({0.2f, 0.4f, 0.8f, 1.0f})
-                .Child(Widget(Text("Inside a coloured box")))),
+                .Child(Text("Inside a coloured box")),
 
-            Widget(SeparatorWidget().Label("VirtualList (scrollable, was ScrollArea)")),
-            Widget(Box().Height(80.0f).Child(Widget(
+            SeparatorWidget().Label("VirtualList (scrollable, was ScrollArea)"),
+            Box().Height(80.0f).Child(
                 VirtualList(20, 20.0f, [](int i) -> Widget {
-                    return Widget(Text("Scrollable row " + std::to_string(i)));
+                    return Text("Scrollable row " + std::to_string(i));
                 })
-            ))),
-        }));
+            ),
+        });
     }
 };
 
@@ -293,18 +293,18 @@ struct AnimationPanelRoot {
         const float tweened = static_cast<float>(
             std::sin(state->tweenClock * std::numbers::pi_v<float>) * 0.5 + 0.5);
 
-        return Widget(Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
-            Widget(SeparatorWidget().Label("AnimatedValue (exponential decay)")),
-            Widget(Text("Current value tracks toward target at speed 5.")),
-            Widget(ProgressBarWidget(state->fadeBar.Value()).Size({-1.0f, 0.0f})),
-            Widget(ButtonWidget("Toggle target").Width(140.0f).OnClick([state = state] {
+        return Flex(Flex::Axis::Vertical).Gap(8.0f).Children({
+            SeparatorWidget().Label("AnimatedValue (exponential decay)"),
+            Text("Current value tracks toward target at speed 5."),
+            ProgressBarWidget(state->fadeBar.Value()).Size({-1.0f, 0.0f}),
+            ButtonWidget("Toggle target").Width(140.0f).OnClick([state = state] {
                 state->fadeTarget = !state->fadeTarget;
                 state->fadeBar.SetTarget(state->fadeTarget ? 1.0f : 0.0f);
-            })),
+            }),
 
-            Widget(SeparatorWidget().Label("Sine oscillator (tweenClock)")),
-            Widget(ProgressBarWidget(tweened).Size({-1.0f, 0.0f})),
-        }));
+            SeparatorWidget().Label("Sine oscillator (tweenClock)"),
+            ProgressBarWidget(tweened).Size({-1.0f, 0.0f}),
+        });
     }
 };
 

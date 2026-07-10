@@ -35,8 +35,8 @@ namespace ImFrame::Layout {
  * @example
  * @code
  * GridWidget(3).Spacing(4.0f).Children({
- *     Widget(ButtonWidget("A")), Widget(ButtonWidget("B")),
- *     Widget(ButtonWidget("C")), Widget(ButtonWidget("D")), // wraps to row 2
+ *     ButtonWidget("A"), ButtonWidget("B"),
+ *     ButtonWidget("C"), ButtonWidget("D"), // wraps to row 2
  * });
  * @endcode
  */

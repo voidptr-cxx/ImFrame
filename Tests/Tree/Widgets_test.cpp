@@ -102,7 +102,7 @@ TEST_CASE("ButtonWidget: renders without error and OnClick fires on click", "[tr
     struct Root {
         bool* clicked;
         [[nodiscard]] Widget Build() const {
-            return Widget(ButtonWidget("Save").OnClick([c = clicked] { *c = true; }));
+            return ButtonWidget("Save").OnClick([c = clicked] { *c = true; });
         }
     } root{&clicked};
 
@@ -123,7 +123,7 @@ TEST_CASE("ButtonWidget: disabled button does not fire OnClick", "[tree][widgets
     struct Root {
         bool* clicked;
         [[nodiscard]] Widget Build() const {
-            return Widget(ButtonWidget("Save").Disabled().OnClick([c = clicked] { *c = true; }));
+            return ButtonWidget("Save").Disabled().OnClick([c = clicked] { *c = true; });
         }
     } root{&clicked};
 
@@ -148,7 +148,7 @@ TEST_CASE("CheckboxWidget: renders without error and toggles the bound value on 
         bool* value;
         bool* onChangeFired;
         [[nodiscard]] Widget Build() const {
-            return Widget(CheckboxWidget("Wireframe", value).OnChange([f = onChangeFired](bool) { *f = true; }));
+            return CheckboxWidget("Wireframe", value).OnChange([f = onChangeFired](bool) { *f = true; });
         }
     } root{&wireframe, &onChangeFired};
 
@@ -170,7 +170,7 @@ TEST_CASE("SliderWidget<float>: renders without error", "[tree][widgets][slider]
     struct Root {
         float* value;
         [[nodiscard]] Widget Build() const {
-            return Widget(SliderWidget<float>("Volume", value, 0.0f, 1.0f).Format("%.2f"));
+            return SliderWidget<float>("Volume", value, 0.0f, 1.0f).Format("%.2f");
         }
     } root{&volume};
 
@@ -184,7 +184,7 @@ TEST_CASE("SliderWidget<int>: renders without error", "[tree][widgets][slider]")
     int level = 3;
     struct Root {
         int* value;
-        [[nodiscard]] Widget Build() const { return Widget(SliderWidget<int>("Level", value, 0, 10)); }
+        [[nodiscard]] Widget Build() const { return SliderWidget<int>("Level", value, 0, 10); }
     } root{&level};
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
@@ -200,7 +200,7 @@ TEST_CASE("TextInputWidget<std::string>: renders without error", "[tree][widgets
     struct Root {
         std::string* value;
         [[nodiscard]] Widget Build() const {
-            return Widget(TextInputWidget<std::string>("Name", value).Hint("Enter your name"));
+            return TextInputWidget<std::string>("Name", value).Hint("Enter your name");
         }
     } root{&name};
 
@@ -219,7 +219,7 @@ TEST_CASE("ComboWidget<std::string>: renders without error", "[tree][widgets][co
     struct Root {
         std::string* value;
         [[nodiscard]] Widget Build() const {
-            return Widget(ComboWidget<std::string>("Filter", value, std::span<const std::string>(modes)));
+            return ComboWidget<std::string>("Filter", value, std::span<const std::string>(modes));
         }
     } root{&selected};
 
@@ -239,14 +239,14 @@ TEST_CASE("TableWidget: only visible rows are built across 5,000 rows", "[tree][
         std::set<int>* builtRows;
         int*           clickedRow;
         [[nodiscard]] Widget Build() const {
-            return Widget(TableWidget(5000, 20.0f)
-                              .Column("Name",
-                                      [b = builtRows](int r) -> std::string {
-                                          b->insert(r);
-                                          return "Row " + std::to_string(r);
-                                      })
-                              .Column("Score", [](int r) -> std::string { return std::to_string(r * 10); })
-                              .OnRowClick([c = clickedRow](int r) { *c = r; }));
+            return TableWidget(5000, 20.0f)
+                       .Column("Name",
+                               [b = builtRows](int r) -> std::string {
+                                   b->insert(r);
+                                   return "Row " + std::to_string(r);
+                               })
+                       .Column("Score", [](int r) -> std::string { return std::to_string(r * 10); })
+                       .OnRowClick([c = clickedRow](int r) { *c = r; });
         }
     } root{&builtRows, &clickedRow};
 
@@ -290,7 +290,7 @@ TEST_CASE("ModalWidget: renders without error whether open or closed", "[tree][w
     struct Root {
         bool* open;
         [[nodiscard]] Widget Build() const {
-            return Widget(Overlay::ModalWidget("Settings", open).Content(Widget(Tree::Primitives::Text("Settings content"))));
+            return Overlay::ModalWidget("Settings", open).Content(Tree::Primitives::Text("Settings content"));
         }
     } root{&open};
 
@@ -304,7 +304,7 @@ TEST_CASE("ModalWidget: renders without error whether open or closed", "[tree][w
 TEST_CASE("ContextMenuWidget: renders without error and fires item action when invoked", "[tree][widgets][contextmenu]") {
     bool deleted = false;
     Overlay::ContextMenuWidget menu =
-        Overlay::ContextMenuWidget(Widget(Tree::Primitives::Text("file.txt"))).Item("Delete", [&deleted] { deleted = true; });
+        Overlay::ContextMenuWidget(Tree::Primitives::Text("file.txt")).Item("Delete", [&deleted] { deleted = true; });
 
     REQUIRE(menu.GetItems().size() == 1);
     menu.GetItems()[0].Action();
@@ -312,9 +312,9 @@ TEST_CASE("ContextMenuWidget: renders without error and fires item action when i
 
     struct Root {
         [[nodiscard]] Widget Build() const {
-            return Widget(Overlay::ContextMenuWidget(Widget(Tree::Primitives::Text("file.txt")))
-                              .Item("Open", [] {})
-                              .Item("Delete", [] {}));
+            return Overlay::ContextMenuWidget(Tree::Primitives::Text("file.txt"))
+                       .Item("Open", [] {})
+                       .Item("Delete", [] {});
         }
     } root;
 
@@ -333,7 +333,7 @@ TEST_CASE("ToastOverlayWidget: renders a snapshot of active toasts without error
 
     struct Root {
         std::vector<Overlay::ToastSnapshot>* toasts;
-        [[nodiscard]] Widget Build() const { return Widget(Overlay::ToastOverlayWidget(*toasts)); }
+        [[nodiscard]] Widget Build() const { return Overlay::ToastOverlayWidget(*toasts); }
     } root{&toasts};
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
@@ -343,7 +343,7 @@ TEST_CASE("ToastOverlayWidget: renders a snapshot of active toasts without error
 
 TEST_CASE("ToastOverlayWidget: empty snapshot renders without error", "[tree][widgets][toast]") {
     struct Root {
-        [[nodiscard]] Widget Build() const { return Widget(Overlay::ToastOverlayWidget({})); }
+        [[nodiscard]] Widget Build() const { return Overlay::ToastOverlayWidget({}); }
     } root;
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(2), TestConfig());
@@ -356,10 +356,10 @@ TEST_CASE("ToastOverlayWidget: empty snapshot renders without error", "[tree][wi
 TEST_CASE("SeparatorWidget: renders without error, plain and labelled", "[tree][widgets][separator]") {
     struct Root {
         [[nodiscard]] Widget Build() const {
-            return Widget(Tree::Primitives::Flex(Tree::Primitives::Flex::Axis::Vertical).Children({
-                Widget(SeparatorWidget()),
-                Widget(SeparatorWidget().Label("Advanced")),
-            }));
+            return Tree::Primitives::Flex(Tree::Primitives::Flex::Axis::Vertical).Children({
+                SeparatorWidget(),
+                SeparatorWidget().Label("Advanced"),
+            });
         }
     } root;
 
@@ -378,8 +378,8 @@ TEST_CASE("ImageWidget: renders without error and OnClick fires when set", "[tre
         bool* clicked;
         [[nodiscard]] Widget Build() const {
             // Texture ID 1 — the font atlas is set to ID 1 in the headless backend.
-            return Widget(ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
-                              .OnClick([c = clicked] { *c = true; }));
+            return ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
+                       .OnClick([c = clicked] { *c = true; });
         }
     } root{&clicked};
 
@@ -396,10 +396,10 @@ TEST_CASE("ImageWidget: renders without error and OnClick fires when set", "[tre
 TEST_CASE("ImageWidget: renders without error and stays non-interactive when OnClick is unset", "[tree][widgets][image]") {
     struct Root {
         [[nodiscard]] Widget Build() const {
-            return Widget(ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
-                              .Tint({1.0f, 1.0f, 1.0f, 0.8f})
-                              .UV0({0.0f, 0.0f})
-                              .UV1({0.5f, 0.5f}));
+            return ImageWidget(reinterpret_cast<void*>(1), Widgets::Vec2{64.0f, 64.0f})
+                       .Tint({1.0f, 1.0f, 1.0f, 0.8f})
+                       .UV0({0.0f, 0.0f})
+                       .UV1({0.5f, 0.5f});
         }
     } root;
 
@@ -412,7 +412,7 @@ TEST_CASE("ImageWidget: renders without error and stays non-interactive when OnC
 
 TEST_CASE("ProgressBarWidget: renders without error", "[tree][widgets][progressbar]") {
     struct Root {
-        [[nodiscard]] Widget Build() const { return Widget(ProgressBarWidget(0.5f).Overlay("Loading...")); }
+        [[nodiscard]] Widget Build() const { return ProgressBarWidget(0.5f).Overlay("Loading..."); }
     } root;
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
@@ -427,7 +427,7 @@ TEST_CASE("ColorEditWidget: renders without error and value round-trips through 
     Widgets::Vec4 tint{1.0f, 0.5f, 0.0f, 1.0f};
     struct Root {
         Widgets::Vec4* value;
-        [[nodiscard]] Widget Build() const { return Widget(ColorEditWidget("Tint", value).Alpha(true)); }
+        [[nodiscard]] Widget Build() const { return ColorEditWidget("Tint", value).Alpha(true); }
     } root{&tint};
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(3), TestConfig());
@@ -445,7 +445,7 @@ TEST_CASE("RadioWidget: renders without error and clicking sets the bound value 
 
     struct Root {
         int* value;
-        [[nodiscard]] Widget Build() const { return Widget(RadioWidget("Linear", value, 0)); }
+        [[nodiscard]] Widget Build() const { return RadioWidget("Linear", value, 0); }
     } root{&mode};
 
     Application app(std::make_unique<FrameLimitedHeadlessBackend>(4), TestConfig());
@@ -463,12 +463,12 @@ TEST_CASE("RadioWidget: renders without error and clicking sets the bound value 
 TEST_CASE("GridWidget: renders without error across multiple wrapped rows", "[tree][widgets][grid]") {
     struct Root {
         [[nodiscard]] Widget Build() const {
-            return Widget(Layout::GridWidget(3).Spacing(4.0f).Children({
-                Widget(Tree::Primitives::Text("A")),
-                Widget(Tree::Primitives::Text("B")),
-                Widget(Tree::Primitives::Text("C")),
-                Widget(Tree::Primitives::Text("D")), // wraps to row 2
-            }));
+            return Layout::GridWidget(3).Spacing(4.0f).Children({
+                Tree::Primitives::Text("A"),
+                Tree::Primitives::Text("B"),
+                Tree::Primitives::Text("C"),
+                Tree::Primitives::Text("D"), // wraps to row 2
+            });
         }
     } root;
 
@@ -479,9 +479,9 @@ TEST_CASE("GridWidget: renders without error across multiple wrapped rows", "[tr
 
 TEST_CASE("GridWidget: exposes its children in insertion order", "[tree][widgets][grid]") {
     Layout::GridWidget grid = Layout::GridWidget(2).Children({
-        Widget(Tree::Primitives::Text("A")),
-        Widget(Tree::Primitives::Text("B")),
-        Widget(Tree::Primitives::Text("C")),
+        Tree::Primitives::Text("A"),
+        Tree::Primitives::Text("B"),
+        Tree::Primitives::Text("C"),
     });
 
     REQUIRE(grid.GetChildren().size() == 3);
@@ -498,10 +498,10 @@ TEST_CASE("PropertyGridWidget: renders without error with rows and a group separ
         std::string* value;
         [[nodiscard]] Widget Build() const {
             std::vector<PropertyGridRow> rows;
-            rows.emplace_back("Name", Widget(TextInputWidget<std::string>("##name", value)));
+            rows.emplace_back("Name", TextInputWidget<std::string>("##name", value));
             rows.push_back(PropertyGridRow::Separator("Transform"));
-            rows.emplace_back("Label", Widget(Tree::Primitives::Text("static")));
-            return Widget(PropertyGridWidget("##props").SplitRatio(0.4f).Rows(std::move(rows)));
+            rows.emplace_back("Label", Tree::Primitives::Text("static"));
+            return PropertyGridWidget("##props").SplitRatio(0.4f).Rows(std::move(rows));
         }
     } root{&name};
 
@@ -513,7 +513,7 @@ TEST_CASE("PropertyGridWidget: renders without error with rows and a group separ
 TEST_CASE("PropertyGridWidget: Build() composes one Flex row per property, split by SplitRatio",
           "[tree][widgets][propertygrid]") {
     PropertyGridWidget grid = PropertyGridWidget("##props").SplitRatio(0.4f).Rows({
-        {"Name", Widget(Tree::Primitives::Text("Alice"))},
+        {"Name", Tree::Primitives::Text("Alice")},
     });
 
     Widget built = grid.Build();

@@ -127,8 +127,8 @@ TEST_CASE("Reconciler: stable tree reuses elements across Update (no new creates
     Counters counters;
 
     Widget root1 = CountingWidget(counters, 1).Children({
-        Widget(CountingWidget(counters, 2)),
-        Widget(CountingWidget(counters, 3)),
+        CountingWidget(counters, 2),
+        CountingWidget(counters, 3),
     });
     auto element = root1.CreateElement();
     element->Mount(nullptr, 0, root1);
@@ -136,8 +136,8 @@ TEST_CASE("Reconciler: stable tree reuses elements across Update (no new creates
     REQUIRE(counters.mounted == 3);
 
     Widget root2 = CountingWidget(counters, 1).Children({
-        Widget(CountingWidget(counters, 2)),
-        Widget(CountingWidget(counters, 3)),
+        CountingWidget(counters, 2),
+        CountingWidget(counters, 3),
     });
     REQUIRE(element->CanUpdate(root2));
     element->Update(root2);
@@ -191,8 +191,8 @@ TEST_CASE("Reconciler: key-based reorder preserves element identity", "[unit]") 
     Counters counters;
 
     Widget root1 = CountingWidget(counters, 100).Children({
-        Widget(CountingWidget(counters, 1).Key(1)),
-        Widget(CountingWidget(counters, 2).Key(2)),
+        CountingWidget(counters, 1).Key(1),
+        CountingWidget(counters, 2).Key(2),
     });
     auto element = root1.CreateElement();
     element->Mount(nullptr, 0, root1);
@@ -203,8 +203,8 @@ TEST_CASE("Reconciler: key-based reorder preserves element identity", "[unit]") 
 
     // Reordered: B first, then A — same keys.
     Widget root2 = CountingWidget(counters, 100).Children({
-        Widget(CountingWidget(counters, 2).Key(2)),
-        Widget(CountingWidget(counters, 1).Key(1)),
+        CountingWidget(counters, 2).Key(2),
+        CountingWidget(counters, 1).Key(1),
     });
     element->Update(root2);
 
@@ -223,8 +223,8 @@ TEST_CASE("Reconciler: 50-level deep nesting reconciles without stack overflow",
     constexpr int kDepth = 50;
 
     std::function<Widget(int)> buildChain = [&](int depth) -> Widget {
-        if (depth == 0) { return Widget(CountingWidget(counters, depth)); }
-        return Widget(CountingWidget(counters, depth).Children({buildChain(depth - 1)}));
+        if (depth == 0) { return CountingWidget(counters, depth); }
+        return CountingWidget(counters, depth).Children({buildChain(depth - 1)});
     };
 
     Widget root = buildChain(kDepth);

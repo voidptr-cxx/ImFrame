@@ -125,7 +125,7 @@ private:
 
 std::unique_ptr<Element> TraceWidget::CreateElement() const { return std::make_unique<TraceElement>(); }
 
-Widget Trace(TraceEvents& events, std::string tag) { return Widget(TraceWidget(events, std::move(tag))); }
+Widget Trace(TraceEvents& events, std::string tag) { return TraceWidget(events, std::move(tag)); }
 
 } // namespace
 
@@ -140,7 +140,7 @@ TEST_CASE("Portal: child renders after main tree content regardless of declarati
             return Flex(Flex::Axis::Vertical)
                 .Children({
                     Trace(*events, "before-portal"),
-                    Widget(Portal(Trace(*events, "portal-child"))),
+                    Portal(Trace(*events, "portal-child")),
                     Trace(*events, "after-portal"),
                 });
         }
@@ -170,8 +170,8 @@ TEST_CASE("Portal: two portals render in registration order", "[tree][portal]") 
         [[nodiscard]] Widget Build() const {
             return Flex(Flex::Axis::Vertical)
                 .Children({
-                    Widget(Portal(Trace(*events, "portalA"))),
-                    Widget(Portal(Trace(*events, "portalB"))),
+                    Portal(Trace(*events, "portalA")),
+                    Portal(Trace(*events, "portalB")),
                 });
         }
     } root{&events};
@@ -196,8 +196,8 @@ TEST_CASE("Portal: child is unmounted when its structural parent unmounts", "[tr
         TraceEvents* events;
         bool*        showPortal;
         [[nodiscard]] Widget Build() const {
-            if (*showPortal) { return Widget(Portal(Trace(*events, "conditional"))); }
-            return Widget(SizedBox{});
+            if (*showPortal) { return Portal(Trace(*events, "conditional")); }
+            return SizedBox{};
         }
     } root{&events, &showPortal};
 

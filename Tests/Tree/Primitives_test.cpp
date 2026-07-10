@@ -91,10 +91,10 @@ TEST_CASE("Flex with Stack and SizedBox children renders without error", "[unit]
             return Flex(Flex::Axis::Horizontal)
                 .Gap(4.0f)
                 .Children({
-                    Widget(SizedBox().Width(10.0f).Height(10.0f)),
-                    Widget(Stack().Children({Widget(Text("a")), Widget(Text("b"))})),
-                    Widget(Spacer()),
-                    Widget(Expanded(Text("c")).Factor(1)),
+                    SizedBox().Width(10.0f).Height(10.0f),
+                    Stack().Children({Text("a"), Text("b")}),
+                    Spacer(),
+                    Expanded(Text("c")).Factor(1),
                 });
         }
     } root;
