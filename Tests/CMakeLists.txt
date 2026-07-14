@@ -757,3 +757,18 @@ if(MSVC)
     target_compile_options(ImFrame_Tests_Tree_DockSpaceWidget PRIVATE /utf-8)
 endif()
 catch_discover_tests(ImFrame_Tests_Tree_DockSpaceWidget PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Tree_WidgetTestDriver
+    Tree/WidgetTestDriver_test.cpp
+)
+target_include_directories(ImFrame_Tests_Tree_WidgetTestDriver PRIVATE
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(ImFrame_Tests_Tree_WidgetTestDriver
+    PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Tree_WidgetTestDriver PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Tree_WidgetTestDriver PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Tree_WidgetTestDriver PROPERTIES LABELS unit)
