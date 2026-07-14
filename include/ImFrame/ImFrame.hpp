@@ -135,6 +135,7 @@
 #include "ImFrame/Tree/InheritedWidget.hpp"
 #include "ImFrame/Tree/Portal.hpp"
 #include "ImFrame/Tree/VirtualList.hpp"
+#include "ImFrame/Tree/WidgetTestDriver.hpp"
 
 /**
  * @namespace ImFrame
