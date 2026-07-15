@@ -8,6 +8,7 @@ include(Catch)
 if(IMF_BACKEND_GLFW_OPENGL3)
     add_executable(ImFrame_Tests_Backends
         Backends/GLFWOpenGL3_test.cpp
+        Backends/OpenGL3Conformance_test.cpp
     )
 
     target_link_libraries(ImFrame_Tests_Backends

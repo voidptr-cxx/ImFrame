@@ -280,6 +280,21 @@ void GLFWOpenGL3Backend::EndFrame(WindowHandle /*handle*/)
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
+    // Captured now, before the swap — the default framebuffer becomes the
+    // *next* frame's stale back buffer immediately after glfwSwapBuffers().
+    _pixelBuffer.assign(static_cast<std::size_t>(displayW) * displayH * 4, std::byte{0});
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, displayW, displayH, GL_RGBA, GL_UNSIGNED_BYTE, _pixelBuffer.data());
+
+    // OpenGL's readback origin is bottom-left; flip rows so index 0 is the
+    // top-left pixel, matching the Vulkan/DX12/WebGPU/Headless convention.
+    const std::size_t rowBytes = static_cast<std::size_t>(displayW) * 4;
+    for (int y = 0; y < displayH / 2; ++y) {
+        auto* top = _pixelBuffer.data() + static_cast<std::size_t>(y) * rowBytes;
+        auto* bot = _pixelBuffer.data() + static_cast<std::size_t>(displayH - 1 - y) * rowBytes;
+        std::swap_ranges(top, top + rowBytes, bot);
+    }
+
     if (_viewportsEnabled) {
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
@@ -287,6 +302,11 @@ void GLFWOpenGL3Backend::EndFrame(WindowHandle /*handle*/)
     }
 
     glfwSwapBuffers(_window);
+}
+
+std::vector<std::byte> GLFWOpenGL3Backend::ReadPixels() const
+{
+    return _pixelBuffer;
 }
 
 // ─── Shutdown ─────────────────────────────────────────────────────────────────
