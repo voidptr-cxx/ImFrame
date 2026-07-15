@@ -20,6 +20,7 @@
 
 #include "ImFrame/Backends/BackendInfo.hpp"
 
+#include <cstddef>
 #include <unordered_map>
 #include <vector>
 
@@ -186,6 +187,21 @@ public:
     std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
         std::uint32_t width, std::uint32_t height) override;
 
+    // ─── Conformance testing (not part of IBackend) ───────────────────────────
+
+    /**
+     * @brief    Returns the primary window's most recently rendered frame as tightly-packed RGBA8.
+     *
+     * Captured during `EndFrame()`, before `glfwSwapBuffers()` — reading the
+     * default framebuffer after a swap would return the *next* frame's stale
+     * back buffer, not what was just drawn. Rows are flipped so index 0 is the
+     * top-left pixel, matching the Vulkan/DX12/WebGPU/Headless backends'
+     * `ReadPixels()` convention (OpenGL's own convention is bottom-left origin).
+     *
+     * @return   `width * height * 4` bytes; empty if `EndFrame()` has not run yet.
+     */
+    [[nodiscard]] std::vector<std::byte> ReadPixels() const;
+
 private:
     // ─── GLFW callback thunks ─────────────────────────────────────────────────
     // Static functions retrieve the backend pointer via glfwGetWindowUserPointer
@@ -217,6 +233,7 @@ private:
     bool         _viewportsEnabled = false;   ///< Whether multi-viewport is active.
     bool         _initialised      = false;   ///< Guards against double-init/shutdown.
     double       _lastPollTime     = 0.0;     ///< glfwGetTime() at last Poll().
+    std::vector<std::byte> _pixelBuffer;      ///< Captured by EndFrame(); see ReadPixels().
     double       _lastMouseX       = 0.0;     ///< Cursor X from last move event.
     double       _lastMouseY       = 0.0;     ///< Cursor Y from last move event.
     bool         _firstMouseEvent  = true;    ///< True until first cursor-pos callback.

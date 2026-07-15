@@ -22,31 +22,65 @@
  */
 
 #include "Backends/DawnWebGPU/DawnWebGPUBackend.hpp"
+#include "ConformanceApp.hpp"
+
+#include "ImFrame/Theme/Themes/CatppuccinMocha.hpp"
+#include "ImFrame/Theme/Themes/Dracula.hpp"
+#include "ImFrame/Theme/Themes/Light.hpp"
+#include "ImFrame/Theme/Themes/Nord.hpp"
 
 #include <imgui.h>
 
+#include <algorithm>
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
+#include <utility>
+#include <vector>
 
 using namespace ImFrame;
 using namespace ImFrame::Internal;
+using namespace ImFrame::ConformanceTest;
 
 namespace {
 
 constexpr int WIDTH  = 128;
 constexpr int HEIGHT = 128;
 
-WindowConfig ConformanceWindowConfig() {
+WindowConfig ConformanceWindowConfig(int width = WIDTH, int height = HEIGHT) {
     WindowConfig cfg{};
     cfg.Title  = "WebGPUConformance_test";
-    cfg.Width  = WIDTH;
-    cfg.Height = HEIGHT;
+    cfg.Width  = width;
+    cfg.Height = height;
     return cfg;
 }
 
 std::size_t PixelOffset(int x, int y, int width) {
     return (static_cast<std::size_t>(y) * width + x) * 4;
+}
+
+/// True if every sampled point is byte-identical (i.e. nothing was drawn beyond the clear color).
+bool IsUniform(const std::vector<std::byte>& pixels, int width, int height) {
+    auto sample = [&](int x, int y) {
+        std::size_t off = PixelOffset(x, y, width);
+        return std::array<std::byte, 4>{pixels[off], pixels[off + 1], pixels[off + 2], pixels[off + 3]};
+    };
+    auto first = sample(0, 0);
+    for (int y = 0; y < height; y += std::max(1, height / 8)) {
+        for (int x = 0; x < width; x += std::max(1, width / 8)) {
+            if (sample(x, y) != first) { return false; }
+        }
+    }
+    return true;
+}
+
+bool IsFullyOpaque(const std::vector<std::byte>& pixels, int width, int height) {
+    for (int y = 0; y < height; y += std::max(1, height / 8)) {
+        for (int x = 0; x < width; x += std::max(1, width / 8)) {
+            if (pixels[PixelOffset(x, y, width) + 3] != std::byte{255}) { return false; }
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -157,4 +191,59 @@ TEST_CASE("DawnWebGPUBackend headless ReadPixels de-strides a width whose row is
     }
 
     backend.Shutdown();
+}
+
+// ─── Widget-tree conformance (Phase 30.6) ──────────────────────────────────────
+//
+// Expands this file to cover the full widget tree, per PHASE_30_PROPOSAL.md's
+// "Backend Conformance Tests" section. See VulkanConformance_test.cpp's file
+// comment and ConformanceApp.hpp's file comment for why this remains a
+// self-consistency check rather than a true cross-backend pixel-diff against
+// a reference image — that remains blocked on Phase 36's SoftwareRenderer.
+
+TEST_CASE("DawnWebGPUBackend renders the full ConformanceApp widget tree across all built-in themes", "[webgpu]")
+{
+    DawnWebGPUBackend backend(/*headless=*/true);
+    REQUIRE(backend.Init(ConformanceWindowConfig()).has_value());
+
+    const std::array<const Theme::Theme*, 4> themes{
+        &Themes::Dracula, &Themes::Nord, &Themes::CatppuccinMocha, &Themes::Light,
+    };
+
+    for (const Theme::Theme* theme : themes) {
+        backend.Poll();
+        backend.BeginFrame();
+        theme->Apply();
+        REQUIRE_NOTHROW(RenderConformanceApp(WIDTH, HEIGHT));
+        backend.EndFrame();
+
+        auto pixels = backend.ReadPixels();
+        REQUIRE(pixels.size() == static_cast<std::size_t>(WIDTH) * HEIGHT * 4);
+        REQUIRE_FALSE(IsUniform(pixels, WIDTH, HEIGHT)); // the widget tree drew something
+        REQUIRE(IsFullyOpaque(pixels, WIDTH, HEIGHT));
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("DawnWebGPUBackend renders the full ConformanceApp widget tree across several layout sizes", "[webgpu]")
+{
+    constexpr std::array<std::pair<int, int>, 3> sizes{{{128, 128}, {256, 192}, {400, 300}}};
+
+    for (auto [width, height] : sizes) {
+        DawnWebGPUBackend backend(/*headless=*/true);
+        REQUIRE(backend.Init(ConformanceWindowConfig(width, height)).has_value());
+
+        backend.Poll();
+        backend.BeginFrame();
+        REQUIRE_NOTHROW(RenderConformanceApp(width, height));
+        backend.EndFrame();
+
+        auto pixels = backend.ReadPixels();
+        REQUIRE(pixels.size() == static_cast<std::size_t>(width) * height * 4);
+        REQUIRE_FALSE(IsUniform(pixels, width, height));
+        REQUIRE(IsFullyOpaque(pixels, width, height));
+
+        backend.Shutdown();
+    }
 }
