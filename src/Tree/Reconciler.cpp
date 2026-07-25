@@ -35,14 +35,24 @@ void Reconciler::Show(const Tree::Widget& rootWidget) {
 
     const RootWindowInfo info = BeginRootWindow();
     (void)_rootElement->Layout(Tree::BoxConstraints::Loose(info.AvailableSize));
-    _rootElement->Paint(info.CursorScreenPos);
+
+    _commandBuffer.Reset();
+    _rootElement->Paint(_commandBuffer, info.CursorScreenPos);
 
     // Portals registered themselves during the Mount/Update pass above; draining and
     // rendering them last (still inside the same root window) puts portal content
     // after all non-portal draw calls, so it always renders on top.
     for (PortalElement* portal : DrainPortals()) {
-        portal->RenderDeferred(info.AvailableSize, info.CursorScreenPos);
+        portal->RenderDeferred(_commandBuffer, info.AvailableSize, info.CursorScreenPos);
     }
+
+    // One replay for the whole frame's accumulated Box/Text commands, still
+    // inside the root window (ImGuiCompatRenderer::Render() draws onto
+    // ImGui::GetWindowDrawList()). Elements that open their own nested ImGui
+    // window (e.g. VirtualListElement) flush their own local buffer before
+    // closing that window instead of pushing into this one — see
+    // VirtualListRO.cpp's Paint() comment.
+    _renderer.Render(_commandBuffer);
 
     EndRootWindow();
 }

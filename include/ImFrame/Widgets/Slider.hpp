@@ -140,7 +140,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 position) override {
         BeginControlPaint(this, position);
 
         T* value = _config.GetValue();

@@ -43,7 +43,7 @@ public:
     }
 
     /// Ignores `position` — opens/closes the dockspace host window at the main viewport's work area.
-    void Paint(Widgets::Vec2 /*position*/) override {
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 /*position*/) override {
         // Distinct window/dockspace-id names from App::DockSpace's "##DockSpace"/
         // "MainDockSpace" — Application::RunOneFrame() always drives the automatic
         // App::DockSpace too, so a SetRoot() tree using DockSpaceWidget runs both

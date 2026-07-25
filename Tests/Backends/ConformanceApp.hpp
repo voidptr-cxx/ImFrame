@@ -43,6 +43,7 @@
 #include "ImFrame/Layout/Grid.hpp"
 #include "ImFrame/Tree/Element.hpp"
 #include "ImFrame/Tree/Primitives/Box.hpp"
+#include "src/Rendering/Renderers/ImGuiCompatRenderer.hpp"
 #include "ImFrame/Tree/Primitives/Expanded.hpp"
 #include "ImFrame/Tree/Primitives/Flex.hpp"
 #include "ImFrame/Tree/Primitives/Text.hpp"
@@ -135,7 +136,11 @@ inline void RenderConformanceApp(int width, int height) {
     ImGui::Begin("ConformanceApp", nullptr,
                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
     (void)element->Layout(Tree::BoxConstraints::Loose({static_cast<float>(width), static_cast<float>(height)}));
-    element->Paint({ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y});
+
+    Rendering::CommandBuffer cmd;
+    element->Paint(cmd, {ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y});
+    Internal::ImGuiCompatRenderer{}.Render(cmd);
+
     ImGui::End();
 
     element->Unmount();

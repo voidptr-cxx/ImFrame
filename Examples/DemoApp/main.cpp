@@ -32,6 +32,7 @@
 #include "ImFrame/ImFrame.hpp"
 #include "ImFrame/Icons/Icons.hpp"
 #include "GLFWOpenGL3Backend.hpp"
+#include "Rendering/Renderers/ImGuiCompatRenderer.hpp"
 
 #include <imgui.h>
 
@@ -84,11 +85,16 @@ public:
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         (void)_root->Layout(BoxConstraints::Loose({avail.x, avail.y}));
         const ImVec2 cursor = ImGui::GetCursorScreenPos();
-        _root->Paint({cursor.x, cursor.y});
+
+        _commandBuffer.Reset();
+        _root->Paint(_commandBuffer, {cursor.x, cursor.y});
+        _renderer.Render(_commandBuffer);
     }
 
 private:
-    std::unique_ptr<Element> _root;
+    std::unique_ptr<Element>            _root;
+    Rendering::CommandBuffer            _commandBuffer;
+    Internal::ImGuiCompatRenderer       _renderer;
 };
 
 // ─── Synthetic table data ─────────────────────────────────────────────────────

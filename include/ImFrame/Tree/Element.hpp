@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "ImFrame/Rendering/CommandBuffer.hpp"
 #include "ImFrame/Tree/Key.hpp"
 #include "ImFrame/Widgets/Types.hpp"
 
@@ -118,10 +119,21 @@ public:
     [[nodiscard]] virtual Widgets::Vec2 Layout(BoxConstraints constraints) = 0;
 
     /**
-     * @brief    Emit ImGui draw calls / cursor placement for this element's subtree.
-     * @param[in] position  Absolute screen position for this element's top-left corner.
+     * @brief    Emit draw commands / cursor placement for this element's subtree.
+     *
+     * Since Phase 31, drawing-only `Element`s (currently `Box`/`Text`) record
+     * `Rendering::Command` values into `cmd` instead of calling ImGui
+     * directly; a renderer (`Internal::ImGuiCompatRenderer`, today) replays
+     * the fully-recorded buffer once at the end of the frame. `Element`s
+     * whose drawing is inseparable from ImGui's own widget/interaction state
+     * (`GestureRegion`, `VirtualList`, every `Widgets::*`/`Overlay::*`
+     * interactive element) still call ImGui directly here — they receive
+     * `cmd` only to forward it, unchanged, to any child's `Paint()`.
+     *
+     * @param[in,out] cmd       This frame's command buffer.
+     * @param[in]     position  Absolute screen position for this element's top-left corner.
      */
-    virtual void Paint(Widgets::Vec2 position) = 0;
+    virtual void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) = 0;
 
     /**
      * @brief    Whether `newWidget` can reconfigure this element in place.

@@ -46,7 +46,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 /*position*/) override {
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 /*position*/) override {
         bool* openPtr = _config.GetOpen();
         const bool wantsOpen = openPtr && *openPtr;
 
@@ -68,7 +68,7 @@ public:
                 const ImVec2 avail = ImGui::GetContentRegionAvail();
                 (void)_child->Layout(Tree::BoxConstraints::Loose({avail.x, avail.y}));
                 const ImVec2 pos = ImGui::GetCursorScreenPos();
-                _child->Paint({pos.x, pos.y});
+                _child->Paint(cmd, {pos.x, pos.y});
             }
             if (closeFlag && !showCloseDummy && openPtr) {
                 *openPtr = false; // × button clicked

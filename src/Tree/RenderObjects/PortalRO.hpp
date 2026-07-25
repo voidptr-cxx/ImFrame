@@ -66,21 +66,26 @@ public:
     }
 
     /// Draws nothing at its structural position — see `RenderDeferred()`.
-    void Paint(Widgets::Vec2 /*position*/) override {}
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 /*position*/) override {}
 
     /**
      * @brief    Lays out and paints this portal's child at root scope.
      *
      * Called by `Reconciler::Show()` once per frame, after the main tree has
-     * painted, for every portal drained from the registry.
+     * painted, for every portal drained from the registry. Pushes into the
+     * same frame-wide buffer the main tree used — this still runs before
+     * `Reconciler::Show()`'s single end-of-frame render, and stays inside the
+     * same (root) window, so no local flush is needed here (contrast
+     * `VirtualListElement`, which opens its own nested child window).
      *
-     * @param[in] availableSize  Root window's available content size.
-     * @param[in] position       Root window's cursor screen position.
+     * @param[in,out] cmd            This frame's command buffer.
+     * @param[in]     availableSize  Root window's available content size.
+     * @param[in]     position       Root window's cursor screen position.
      */
-    void RenderDeferred(Widgets::Vec2 availableSize, Widgets::Vec2 position) {
+    void RenderDeferred(Rendering::CommandBuffer& cmd, Widgets::Vec2 availableSize, Widgets::Vec2 position) {
         if (!_child) { return; }
         (void)_child->Layout(Tree::BoxConstraints::Loose(availableSize));
-        _child->Paint(position);
+        _child->Paint(cmd, position);
     }
 
 private:

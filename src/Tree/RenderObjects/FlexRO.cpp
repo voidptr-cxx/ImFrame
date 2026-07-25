@@ -149,9 +149,9 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
         for (std::size_t i = 0; i < _children.size(); ++i) {
-            _children[i]->Paint({position.x + _offsets[i].x, position.y + _offsets[i].y});
+            _children[i]->Paint(cmd, {position.x + _offsets[i].x, position.y + _offsets[i].y});
         }
     }
 

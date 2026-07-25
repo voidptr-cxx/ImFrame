@@ -99,8 +99,8 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
-        for (auto& child : _children) { child->Paint(position); }
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
+        for (auto& child : _children) { child->Paint(cmd, position); }
     }
 
 private:
@@ -161,7 +161,7 @@ public:
     }
     void Update(const Widget& newWidget) override { RecordWidgetMeta(newWidget); }
     [[nodiscard]] Widgets::Vec2 Layout(BoxConstraints) override { return {0.0f, 0.0f}; }
-    void Paint(Widgets::Vec2) override {}
+    void Paint(Rendering::CommandBuffer&, Widgets::Vec2) override {}
 };
 
 std::unique_ptr<Element> OtherWidget::CreateElement() const { return std::make_unique<OtherElement>(); }
@@ -233,7 +233,8 @@ TEST_CASE("Reconciler: 50-level deep nesting reconciles without stack overflow",
     REQUIRE(counters.created == kDepth + 1);
 
     REQUIRE_NOTHROW(element->Layout(BoxConstraints::Loose({800.0f, 600.0f})));
-    REQUIRE_NOTHROW(element->Paint({0.0f, 0.0f}));
+    Rendering::CommandBuffer cmd;
+    REQUIRE_NOTHROW(element->Paint(cmd, {0.0f, 0.0f}));
     REQUIRE_NOTHROW(element->Unmount());
     REQUIRE(counters.unmounted == kDepth + 1);
 }

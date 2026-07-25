@@ -276,7 +276,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 position) override {
         Rendering::Viewport3D* viewport = _config.GetViewport();
         if (!viewport) { return; }
         ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});

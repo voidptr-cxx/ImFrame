@@ -14,6 +14,7 @@
 
 #include "ImFrame/Tree/VirtualList.hpp"
 #include "../ElementInternal.hpp"
+#include "../../Rendering/Renderers/ImGuiCompatRenderer.hpp"
 
 #include <imgui.h>
 
@@ -54,7 +55,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 position) override {
         if (!_config) { return; }
         const int   itemCount  = _config->GetItemCount();
         const float itemHeight = _config->GetItemHeight();
@@ -82,6 +83,14 @@ public:
                 }
             }
 
+            // Rows record into a buffer scoped to THIS child window, flushed
+            // below before EndChild() closes it. Pushing into the caller's
+            // frame-wide buffer instead would defer replay until the single
+            // end-of-frame ImGuiCompatRenderer::Render() call in
+            // Reconciler::Show() — by which point this child window (and its
+            // own clip rect/draw list) no longer exists, so rows would
+            // replay onto the wrong draw list with no scroll-region clipping.
+            Rendering::CommandBuffer rowCommands;
             const BoxConstraints itemConstraints = BoxConstraints::Tight({_size.x, itemHeight});
             for (int i = firstIdx; i <= lastIdx; ++i) {
                 Widget                    itemWidget = _config->GetBuilder()(i);
@@ -96,8 +105,9 @@ public:
                 (void)slot->Layout(itemConstraints);
                 ImGui::SetCursorPosY(static_cast<float>(i) * itemHeight);
                 const ImVec2 rowPos = ImGui::GetCursorScreenPos();
-                slot->Paint({rowPos.x, rowPos.y});
+                slot->Paint(rowCommands, {rowPos.x, rowPos.y});
             }
+            ImGuiCompatRenderer{}.Render(rowCommands);
 
             // Reserve the full (unvirtualized) scroll extent regardless of rows actually painted.
             ImGui::SetCursorPosY(static_cast<float>(itemCount) * itemHeight);

@@ -2,6 +2,13 @@ cmake_minimum_required(VERSION 3.25)
 
 add_executable(DemoApp main.cpp)
 
+# ImFrame's own src/ is PRIVATE on the ImFrame target (not exposed to real
+# consumers) — added here only so TreePanel (a local helper working around
+# SetRoot()'s single-fixed-window limitation) can reach Internal::
+# ImGuiCompatRenderer to replay the CommandBuffer its Paint() calls record.
+# There is no public API for this yet; see .claude/DECISIONS.md, Phase 31.3.
+target_include_directories(DemoApp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+
 target_link_libraries(DemoApp
     PRIVATE
         ImFrame

@@ -29,6 +29,7 @@
 
 #include "ImFrame/Tree/Element.hpp"
 #include "ImFrame/Tree/Widget.hpp"
+#include "../Rendering/Renderers/ImGuiCompatRenderer.hpp"
 
 #include <memory>
 
@@ -44,6 +45,14 @@ public:
 
 private:
     std::unique_ptr<Tree::Element> _rootElement;
+
+    /// Reused frame-to-frame (see `Rendering::CommandBuffer`'s own file comment on why this
+    /// is a single reused buffer, not a literal pool, in this single-threaded render loop).
+    Rendering::CommandBuffer _commandBuffer;
+
+    /// Fixed for now — Phase 32's `NativeRenderer` swap becomes an `Application`-level
+    /// `unique_ptr<IRenderer>` choice once there is a second implementation to choose between.
+    ImGuiCompatRenderer _renderer;
 };
 
 } // namespace ImFrame::Internal

@@ -49,7 +49,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
         ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
         ImGui::PushID(this);
         ImGui::InvisibleButton("##gesture", ImVec2{std::max(_size.x, 1.0f), std::max(_size.y, 1.0f)});
@@ -91,7 +91,7 @@ public:
             }
         }
 
-        if (_child) { _child->Paint(position); }
+        if (_child) { _child->Paint(cmd, position); }
     }
 
 private:
