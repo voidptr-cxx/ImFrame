@@ -131,7 +131,8 @@ public:
      */
     void LayoutAndPaint(BoxConstraints constraints = BoxConstraints::Loose({800.0f, 600.0f})) {
         (void)_root->Layout(constraints);
-        _root->Paint({0.0f, 0.0f});
+        Rendering::CommandBuffer cmd; // logic-mode only — no renderer consumes this, see file comment
+        _root->Paint(cmd, {0.0f, 0.0f});
     }
 
     /// The most recent `Build()` output, for structural assertions via `Widget::As<SomeType>()`.

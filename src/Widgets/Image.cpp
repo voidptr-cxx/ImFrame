@@ -45,7 +45,7 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 position) override {
         ImGui::SetCursorScreenPos(ImVec2{position.x, position.y});
         ImGui::PushID(this);
 

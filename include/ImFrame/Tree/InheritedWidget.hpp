@@ -107,8 +107,8 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
-        if (_child) { _child->Paint(position); }
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
+        if (_child) { _child->Paint(cmd, position); }
     }
 
     [[nodiscard]] const void* GetInheritedValue(std::type_index typeId) const noexcept override {

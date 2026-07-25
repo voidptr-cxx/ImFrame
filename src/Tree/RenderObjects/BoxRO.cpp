@@ -13,10 +13,7 @@
  */
 
 #include "ImFrame/Tree/Primitives/Box.hpp"
-#include "ColorUtil.hpp"
 #include "../ElementInternal.hpp"
-
-#include <imgui.h>
 
 #include <algorithm>
 
@@ -81,22 +78,23 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
-        ImDrawList*  dl   = ImGui::GetWindowDrawList();
-        const ImVec2 pMin{position.x, position.y};
-        const ImVec2 pMax{position.x + _size.x, position.y + _size.y};
-
-        const Widgets::Vec4 bg = _config.GetBackground();
-        if (bg.w > 0.0f) { dl->AddRectFilled(pMin, pMax, ToImU32(bg), _config.GetRadius()); }
-
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
+        const Widgets::Vec4 bg     = _config.GetBackground();
         const Widgets::Vec4 border = _config.GetBorderColor();
-        if (border.w > 0.0f && _config.GetBorderWidth() > 0.0f) {
-            dl->AddRect(pMin, pMax, ToImU32(border), _config.GetRadius(), 0, _config.GetBorderWidth());
+        if (bg.w > 0.0f || (border.w > 0.0f && _config.GetBorderWidth() > 0.0f)) {
+            cmd.Push(Rendering::DrawRect{
+                .Position    = position,
+                .Size        = _size,
+                .Radii       = Rendering::CornerRadii::All(_config.GetRadius()),
+                .FillColor   = bg,
+                .StrokeColor = border,
+                .StrokeWidth = _config.GetBorderWidth(),
+            });
         }
 
         if (_child) {
             const Widgets::EdgeInsets padding = _config.GetPadding();
-            _child->Paint({position.x + padding.Left, position.y + padding.Top});
+            _child->Paint(cmd, {position.x + padding.Left, position.y + padding.Top});
         }
     }
 

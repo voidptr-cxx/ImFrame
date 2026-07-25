@@ -11,6 +11,10 @@ if(IMF_BACKEND_GLFW_OPENGL3)
         Backends/OpenGL3Conformance_test.cpp
     )
 
+    target_include_directories(ImFrame_Tests_Backends PRIVATE
+        ${CMAKE_SOURCE_DIR}
+    )
+
     target_link_libraries(ImFrame_Tests_Backends
         PRIVATE
             ImFrame

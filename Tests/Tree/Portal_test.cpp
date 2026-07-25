@@ -117,7 +117,9 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 /*position*/) override { _config.GetEvents().paintOrder.push_back(_config.GetTag()); }
+    void Paint(Rendering::CommandBuffer& /*cmd*/, Widgets::Vec2 /*position*/) override {
+        _config.GetEvents().paintOrder.push_back(_config.GetTag());
+    }
 
 private:
     TraceWidget _config;

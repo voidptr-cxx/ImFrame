@@ -13,7 +13,6 @@
  */
 
 #include "ImFrame/Tree/Primitives/Text.hpp"
-#include "ColorUtil.hpp"
 
 #include <imgui.h>
 
@@ -51,11 +50,9 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
-        ImDrawList* dl       = ImGui::GetWindowDrawList();
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
         ImFont*     font     = ImGui::GetFont();
         const float fontSize = _config.GetFontSize() > 0.0f ? _config.GetFontSize() : ImGui::GetFontSize();
-        const ImU32 col      = ToImU32(_config.GetColor());
 
         const char* begin = _config.GetContent().data();
         const char* end   = begin + _config.GetContent().size();
@@ -70,7 +67,13 @@ public:
             }
         }
 
-        dl->AddText(font, fontSize, ImVec2{startX, position.y}, col, begin, end, _wrapWidth);
+        cmd.Push(Rendering::DrawText{
+            .Position = {startX, position.y},
+            .Text     = _config.GetContent(),
+            .FontSize = fontSize,
+            .Color    = _config.GetColor(),
+            .MaxWidth = _wrapWidth,
+        });
     }
 
 private:

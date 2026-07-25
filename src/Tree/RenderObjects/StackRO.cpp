@@ -54,8 +54,8 @@ public:
         return _size;
     }
 
-    void Paint(Widgets::Vec2 position) override {
-        for (auto& child : _children) { child->Paint(position); }
+    void Paint(Rendering::CommandBuffer& cmd, Widgets::Vec2 position) override {
+        for (auto& child : _children) { child->Paint(cmd, position); }
     }
 
 private:
