@@ -569,6 +569,18 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_Camera2D PROPERTIES LABELS unit)
 
+add_executable(ImFrame_Tests_Rendering_CommandBuffer
+    Rendering/CommandBuffer_test.cpp
+)
+target_link_libraries(ImFrame_Tests_Rendering_CommandBuffer
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_CommandBuffer PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_CommandBuffer PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_CommandBuffer PROPERTIES LABELS unit)
+
 add_executable(ImFrame_Tests_Rendering_Canvas2D
     Rendering/Canvas2D_test.cpp
 )
