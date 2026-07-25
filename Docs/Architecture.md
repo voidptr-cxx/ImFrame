@@ -14,9 +14,9 @@ above it.
 │  (b) Tree core                                                  │
 │      Tree::Widget (immutable description) · Tree::Element        │
 │      (live, stateful node) · Internal::Reconciler · State/Signal │
-│      /Computed/InheritedWidget (reactive data)                   │
-│      src/Tree/RenderObjects/*.cpp — the only code permitted to   │
-│      call raw ImGui functions                                    │
+│      /Computed/InheritedWidget (reactive data) · Rendering::      │
+│      CommandBuffer + Internal::IRenderer/ImGuiCompatRenderer      │
+│      (Box/Text only — everything else still calls ImGui directly)│
 ├─────────────────────────────────────────────────────────────────┤
 │  (a) Backend abstraction                                        │
 │      Internal::IBackend · WindowConfig · NativeGraphicsContext   │
@@ -61,9 +61,9 @@ This is the layer that gives ImFrame its declarative model.
   `CreateElement()`, `CanUpdate(other)`, `As<T>()`.
 - **`Tree::Element`** (`Tree/Element.hpp`) — the abstract, stateful,
   *persists-across-frames* counterpart. `Mount()`/`Update()`/`Unmount()` drive
-  its lifecycle; `Layout(BoxConstraints) -> Vec2` and `Paint(position)` drive
-  measurement and drawing, using the same single-pass "parent narrows, child
-  returns size" protocol Flutter uses.
+  its lifecycle; `Layout(BoxConstraints) -> Vec2` and `Paint(Rendering::
+  CommandBuffer&, position)` drive measurement and drawing, using the same
+  single-pass "parent narrows, child returns size" protocol Flutter uses.
 - **`Component` concept** — any type with `Build() const` returning something
   convertible to `Widget`. Not a base class; no virtual dispatch, no
   allocation beyond the one `Widget` the call produces.
@@ -74,16 +74,34 @@ This is the layer that gives ImFrame its declarative model.
   `Tree::VirtualList`, `Tree::InheritedWidget<T>`, `App::DockSpaceWidget`,
   `Layout::GridWidget`, the `Rendering::*Widget` wrappers).
 - **`Internal::Reconciler`** (`src/Tree/Reconciler.hpp`, not a public header)
-  — owns the single root `Element`. Its one method, `Show(rootWidget)`,
+  — owns the single root `Element` plus a reused `Rendering::CommandBuffer`
+  and a fixed `Internal::ImGuiCompatRenderer`. Its one method, `Show(rootWidget)`,
   reconciles the freshly-built root against the existing element (update in
-  place if `CanUpdate()`, otherwise destroy and recreate), then runs one
-  `Layout()` + `Paint()` pass inside a dedicated host window.
-- **`RenderObjects` layer** (`src/Tree/RenderObjects/*.cpp`) — every concrete
-  `Element` subclass that owns real layout math and emits raw ImGui calls
-  lives here, in `ImFrame::Internal::`. This is the *only* code in the
-  project permitted to call raw ImGui functions — a primitive's public header
-  never includes `<imgui.h>`, it only declares `CreateElement()` and
-  documents "defined in `XxxRO.cpp`".
+  place if `CanUpdate()`, otherwise destroy and recreate), runs one `Layout()`
+  pass, resets the buffer, runs `Paint()` (and drains/paints any `Portal`s
+  into the same buffer), then replays the whole frame's recorded commands
+  through the renderer once — all inside a dedicated host window.
+- **`Rendering::CommandBuffer` / `Internal::IRenderer`** (Phase 31) — an
+  abstract drawing language sitting between `Element::Paint()` and ImGui.
+  `Box`/`Text` are the only two primitives whose `Paint()` records `Command`
+  values (`DrawRect`/`DrawText`/...) instead of calling ImGui directly;
+  `Internal::ImGuiCompatRenderer` (the only `IRenderer` implementation today)
+  translates the buffer to real `ImDrawList` calls once per frame. Every
+  other `Element` — including `GestureRegion`, `VirtualList`, and every
+  `Widgets::*`/`Overlay::*` interactive widget's own `Element` — still calls
+  ImGui directly, because their drawing is inseparable from ImGui's own
+  hit-testing/window/scroll state (e.g. `ImGui::Button()` handles click
+  detection and drawing as one opaque call). This is a deliberate, narrow
+  migration, not a partial one left incomplete — see `.claude/DECISIONS.md`
+  (Phase 31.1–31.3) for the full survey findings.
+- **`RenderObjects` layer** (`src/Tree/RenderObjects/*.cpp`, plus every
+  `Element` in `src/Widgets/*.cpp`/`src/Overlay/*.cpp`/`src/Rendering/*.cpp`)
+  — every concrete `Element` subclass lives here, in `ImFrame::Internal::`.
+  A primitive's public header never includes `<imgui.h>`, it only declares
+  `CreateElement()` and documents "defined in `XxxRO.cpp`". Since Phase 31,
+  `src/Rendering/Renderers/ImGuiCompatRenderer.cpp` is a second, equally
+  legitimate ImGui call site — it exists specifically to be where `Box`/
+  `Text`'s recorded commands turn into real draw calls.
 - **Reactive state** — `State<T>`, `Signal<T>`, `Computed<T>`, and
   `InheritedWidget<T>` all share one underlying mechanism: a
   `thread_local` "current dirty-registrar" installed around each
@@ -94,11 +112,18 @@ This is the layer that gives ImFrame its declarative model.
 ## (c) Public widget/layout/theme library
 
 Everything under `include/ImFrame/Widgets/`, `include/ImFrame/Layout/`, and
-the theme engine is built *on top of* layer (b) — composed from the eight
-core primitives (plus `Portal`/`VirtualList`/`InheritedWidget` where needed),
-with no special-cased access to the tree core. A `ButtonWidget` is a
-`GestureRegion` wrapping a `Box`; a `TableWidget` is a `VirtualList`. See the
-[Widget Reference](WidgetReference.md) for the full catalog.
+the theme engine sits on top of layer (b), but the two take different shapes:
+`TableWidget` genuinely is a `Component` composed from `VirtualList` — it has
+no `Element` of its own. Most interactive widgets (`ButtonWidget`,
+`CheckboxWidget`, `SliderWidget<T>`, and the rest) are **not** compositions —
+each defines its own `PrimitiveWidget`/`Element` pair in `src/Widgets/*.cpp`
+that calls the matching native ImGui widget function directly (e.g.
+`ButtonElement::Paint()` calls `ImGui::Button()`). This is deliberate: a
+native ImGui widget call handles hit-testing, styling, and drawing as one
+opaque unit, and `GestureRegion` has no way to express that without losing
+the interaction logic — see `.claude/DECISIONS.md` (Phase 31.3) for why this
+also means these widgets are not candidates for `CommandBuffer` migration.
+See the [Widget Reference](WidgetReference.md) for the full catalog.
 
 ## Why this shape
 
