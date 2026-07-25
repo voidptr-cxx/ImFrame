@@ -230,6 +230,9 @@ add_library(ImFrame STATIC
     # ── Phase 30.3: DockSpace reimplementation (DockSpaceWidget) ──────────────
     src/Tree/RenderObjects/DockSpaceRO.cpp
     src/Tree/RenderObjects/DockSpaceWidgetRO.cpp
+
+    # ── Phase 31.2: IRenderer / ImGuiCompatRenderer ───────────────────────────
+    src/Rendering/Renderers/ImGuiCompatRenderer.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────

@@ -581,6 +581,23 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_CommandBuffer PROPERTIES LABELS unit)
 
+if(IMF_BACKEND_GLFW_OPENGL3)
+    add_executable(ImFrame_Tests_Rendering_ImGuiCompatRenderer
+        Rendering/ImGuiCompatRenderer_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_ImGuiCompatRenderer PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_ImGuiCompatRenderer
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_ImGuiCompatRenderer PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_ImGuiCompatRenderer PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Rendering_ImGuiCompatRenderer PROPERTIES LABELS unit)
+endif()
+
 add_executable(ImFrame_Tests_Rendering_Canvas2D
     Rendering/Canvas2D_test.cpp
 )
