@@ -585,6 +585,55 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_CommandBuffer PROPERTIES LABELS unit)
 
+# ─── Phase 32.1: NativeRenderer core types ───────────────────────────────────
+# BatchBuilder/TextureAtlas/ClipStack are pure CPU-side data structures with no
+# GPU or ImGui dependency — unlike ImGuiCompatRenderer_test below, they need no
+# backend and are not gated behind IMF_BACKEND_GLFW_OPENGL3.
+add_executable(ImFrame_Tests_Rendering_BatchBuilder
+    Rendering/BatchBuilder_test.cpp
+)
+target_include_directories(ImFrame_Tests_Rendering_BatchBuilder PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ImFrame_Tests_Rendering_BatchBuilder
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_BatchBuilder PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_BatchBuilder PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_BatchBuilder PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Rendering_TextureAtlas
+    Rendering/TextureAtlas_test.cpp
+)
+target_include_directories(ImFrame_Tests_Rendering_TextureAtlas PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ImFrame_Tests_Rendering_TextureAtlas
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_TextureAtlas PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_TextureAtlas PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_TextureAtlas PROPERTIES LABELS unit)
+
+add_executable(ImFrame_Tests_Rendering_ClipStack
+    Rendering/ClipStack_test.cpp
+)
+target_include_directories(ImFrame_Tests_Rendering_ClipStack PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(ImFrame_Tests_Rendering_ClipStack
+    PRIVATE ImFrame Catch2::Catch2WithMain
+)
+target_compile_features(ImFrame_Tests_Rendering_ClipStack PRIVATE cxx_std_23)
+if(MSVC)
+    target_compile_options(ImFrame_Tests_Rendering_ClipStack PRIVATE /utf-8)
+endif()
+catch_discover_tests(ImFrame_Tests_Rendering_ClipStack PROPERTIES LABELS unit)
+
 if(IMF_BACKEND_GLFW_OPENGL3)
     add_executable(ImFrame_Tests_Rendering_ImGuiCompatRenderer
         Rendering/ImGuiCompatRenderer_test.cpp
