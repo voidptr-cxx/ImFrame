@@ -233,6 +233,11 @@ add_library(ImFrame STATIC
 
     # ── Phase 31.2: IRenderer / ImGuiCompatRenderer ───────────────────────────
     src/Rendering/Renderers/ImGuiCompatRenderer.cpp
+
+    # ── Phase 32.1: NativeRenderer core types (BatchBuilder/TextureAtlas/ClipStack) ──
+    src/Rendering/Renderers/BatchBuilder.cpp
+    src/Rendering/Renderers/TextureAtlas.cpp
+    src/Rendering/Renderers/ClipStack.cpp
 )
 
 # ── Phase 17: Developer tooling (conditional) ─────────────────────────────────
