@@ -88,6 +88,17 @@
           ]
         }
       ]
+    },
+    "native-renderer": {
+      "description": "NativeRenderer build-time shader pipeline: GLSL -> SPIR-V via glslang (Phase 32.2)",
+      "dependencies": [
+        {
+          "name": "glslang",
+          "features": [
+            "tools"
+          ]
+        }
+      ]
     }
   }
 }

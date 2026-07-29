@@ -634,6 +634,21 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_ClipStack PROPERTIES LABELS unit)
 
+# ─── Phase 32.2: shader pipeline smoke test (only when the generated headers exist) ──────────
+if(IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Rendering_ShaderPipeline
+        Rendering/ShaderPipeline_test.cpp
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_ShaderPipeline
+        PRIVATE ImFrame_Shaders Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_ShaderPipeline PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_ShaderPipeline PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Rendering_ShaderPipeline PROPERTIES LABELS unit)
+endif()
+
 if(IMF_BACKEND_GLFW_OPENGL3)
     add_executable(ImFrame_Tests_Rendering_ImGuiCompatRenderer
         Rendering/ImGuiCompatRenderer_test.cpp

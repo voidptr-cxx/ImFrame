@@ -35,6 +35,17 @@ if(IMF_BUILD_WEBGPU_BACKEND)
     list(APPEND VCPKG_MANIFEST_FEATURES "webgpu-backend")
 endif()
 
+# IMF_BUILD_NATIVE_RENDERER must be read before project() for the same reason as the backend
+# options above. Gates Phase 32's NativeRenderer shader build pipeline (glslang[tools] is a real
+# build-time toolchain dependency, not a lightweight header — see .claude/DECISIONS.md, Phase 32.2)
+# behind an explicit opt-in, matching how the GPU backends themselves are opt-in. NativeRenderer is
+# entirely optional today (Application::UseNativeRenderer() has no callers yet outside its own
+# tests) — a default `cmake -B build` should not silently grow a new toolchain requirement for it.
+option(IMF_BUILD_NATIVE_RENDERER "Build Phase 32's NativeRenderer shader pipeline (requires glslang)" OFF)
+if(IMF_BUILD_NATIVE_RENDERER)
+    list(APPEND VCPKG_MANIFEST_FEATURES "native-renderer")
+endif()
+
 project(ImFrame
     VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
@@ -274,6 +285,27 @@ if(WIN32)
 endif()
 
 target_compile_features(ImFrame PUBLIC cxx_std_23)
+
+# ─── Phase 32.2: NativeRenderer shader pipeline (opt-in) ──────────────────────
+# Compiles Shaders/*.glsl to SPIR-V at build time via glslang and embeds the result as
+# generated C++ headers — see cmake/CompileShader.cmake. No target links against
+# ImFrame_Shaders yet (NativeRenderer itself doesn't exist until a later 32.x sub-phase);
+# this section exists purely to prove the pipeline compiles real, valid shaders.
+if(IMF_BUILD_NATIVE_RENDERER)
+    include(cmake/CompileShader.cmake)
+
+    set(IMF_SHADER_HEADERS "")
+    foreach(IMF_SHADER_NAME Rect Image Path)
+        compile_shader("${CMAKE_SOURCE_DIR}/Shaders/${IMF_SHADER_NAME}.glsl" vert ${IMF_SHADER_NAME}
+            OUT_HEADER IMF_SHADER_VERT_HEADER)
+        compile_shader("${CMAKE_SOURCE_DIR}/Shaders/${IMF_SHADER_NAME}.glsl" frag ${IMF_SHADER_NAME}
+            OUT_HEADER IMF_SHADER_FRAG_HEADER)
+        list(APPEND IMF_SHADER_HEADERS "${IMF_SHADER_VERT_HEADER}" "${IMF_SHADER_FRAG_HEADER}")
+    endforeach()
+
+    add_library(ImFrame_Shaders INTERFACE ${IMF_SHADER_HEADERS})
+    target_include_directories(ImFrame_Shaders INTERFACE ${IMF_SHADER_GENERATED_DIR}/..)
+endif()
 
 # ─── Backends ─────────────────────────────────────────────────────────────────
 if(IMF_BACKEND_GLFW_OPENGL3)
