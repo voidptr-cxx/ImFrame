@@ -19,29 +19,18 @@
 
 namespace ImFrame::Internal {
 
-namespace {
-
-/// Builds the four corner vertices of an axis-aligned quad; `DrawRect`'s radii/stroke are not tessellated in 32.1
-/// (no shader consumes this geometry yet — `Rect.glsl` receives per-corner radii directly in a later sub-phase).
-[[nodiscard]] std::array<Vertex, 4> QuadCorners(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 color,
-                                                 Widgets::Vec2 uvMin, Widgets::Vec2 uvMax) {
-    return {
-        Vertex{.Position = {position.x, position.y}, .Uv = {uvMin.x, uvMin.y}, .Color = color},
-        Vertex{.Position = {position.x + size.x, position.y}, .Uv = {uvMax.x, uvMin.y}, .Color = color},
-        Vertex{.Position = {position.x + size.x, position.y + size.y}, .Uv = {uvMax.x, uvMax.y}, .Color = color},
-        Vertex{.Position = {position.x, position.y + size.y}, .Uv = {uvMin.x, uvMax.y}, .Color = color},
-    };
-}
-
-} // namespace
-
 void BatchBuilder::Reset() {
     _batches.clear();
     _stats = BatchStats{};
     _hasOpen = false;
     _openTexture = Rendering::TextureId{};
-    _openVertices.clear();
+    _openRectVertices.clear();
+    _openImageVertices.clear();
     _openIndices.clear();
+}
+
+std::size_t BatchBuilder::OpenVertexCount() const noexcept {
+    return _openKind == BatchKind::Rect ? _openRectVertices.size() : _openImageVertices.size();
 }
 
 void BatchBuilder::FlushOpen(BatchFlushReason reason) {
@@ -50,41 +39,125 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
     Batch batch;
     batch.Kind = _openKind;
     batch.Texture = _openTexture;
-    batch.Vertices = std::move(_openVertices);
     batch.Indices = std::move(_openIndices);
 
+    std::size_t vertexCount = 0;
+    if (_openKind == BatchKind::Rect) {
+        vertexCount = _openRectVertices.size();
+        batch.Vertices = std::move(_openRectVertices);
+    } else {
+        vertexCount = _openImageVertices.size();
+        batch.Vertices = std::move(_openImageVertices);
+    }
+
     _stats.DrawCallCount += 1;
-    _stats.VertexCount += static_cast<std::uint32_t>(batch.Vertices.size());
+    _stats.VertexCount += static_cast<std::uint32_t>(vertexCount);
     _stats.FlushReasonCounts[static_cast<std::size_t>(reason)] += 1;
 
     _batches.push_back(std::move(batch));
 
     _hasOpen = false;
-    _openVertices.clear();
+    _openRectVertices.clear();
+    _openImageVertices.clear();
     _openIndices.clear();
 }
 
-void BatchBuilder::AppendQuad(BatchKind kind, Rendering::TextureId texture, const std::array<Vertex, 4>& corners) {
-    const bool kindChanged = _hasOpen && _openKind != kind;
-    const bool textureChanged = _hasOpen && !(_openTexture == texture);
+void BatchBuilder::BeginBatch(BatchKind kind, Rendering::TextureId texture) {
+    _hasOpen = true;
+    _openKind = kind;
+    _openTexture = texture;
+}
+
+void BatchBuilder::AppendRect(const Rendering::DrawRect& cmd) {
+    const bool kindChanged = _hasOpen && _openKind != BatchKind::Rect;
+    const bool textureChanged = _hasOpen && !(_openTexture == Rendering::TextureId{});
+
+    if (kindChanged) {
+        FlushOpen(BatchFlushReason::CommandTypeChange);
+    } else if (textureChanged) {
+        // Rect batches never carry a texture — this only trips if a prior Rect batch was somehow
+        // opened with a non-default texture, which AppendRect itself never does; kept for symmetry
+        // with AppendImage's equivalent check and as a defensive invariant.
+        FlushOpen(BatchFlushReason::TextureChange);
+    } else if (_hasOpen && OpenVertexCount() + 4 > kMaxBatchVertices) {
+        FlushOpen(BatchFlushReason::BufferFull);
+    }
+
+    if (!_hasOpen) { BeginBatch(BatchKind::Rect, Rendering::TextureId{}); }
+
+    const Widgets::Vec2 center{cmd.Position.x + cmd.Size.x * 0.5f, cmd.Position.y + cmd.Size.y * 0.5f};
+    const Widgets::Vec2 halfSize{cmd.Size.x * 0.5f, cmd.Size.y * 0.5f};
+
+    const Widgets::Vec2 corners[4] = {
+        {cmd.Position.x, cmd.Position.y},
+        {cmd.Position.x + cmd.Size.x, cmd.Position.y},
+        {cmd.Position.x + cmd.Size.x, cmd.Position.y + cmd.Size.y},
+        {cmd.Position.x, cmd.Position.y + cmd.Size.y},
+    };
+
+    const auto base = static_cast<std::uint32_t>(_openRectVertices.size());
+    for (const Widgets::Vec2& corner : corners) {
+        _openRectVertices.push_back(RectVertex{
+            .Position = corner,
+            .Local = {corner.x - center.x, corner.y - center.y},
+            .HalfSize = halfSize,
+            .Radii = cmd.Radii,
+            .FillColor = cmd.FillColor,
+            .StrokeColor = cmd.StrokeColor,
+            .StrokeWidth = cmd.StrokeWidth,
+        });
+    }
+
+    _openIndices.push_back(base + 0);
+    _openIndices.push_back(base + 1);
+    _openIndices.push_back(base + 2);
+    _openIndices.push_back(base + 0);
+    _openIndices.push_back(base + 2);
+    _openIndices.push_back(base + 3);
+}
+
+void BatchBuilder::AppendImage(const Rendering::DrawImage& cmd) {
+    const bool kindChanged = _hasOpen && _openKind != BatchKind::Image;
+    const bool textureChanged = _hasOpen && !(_openTexture == cmd.Texture);
 
     if (kindChanged) {
         FlushOpen(BatchFlushReason::CommandTypeChange);
     } else if (textureChanged) {
         FlushOpen(BatchFlushReason::TextureChange);
-    } else if (_hasOpen && _openVertices.size() + 4 > kMaxBatchVertices) {
+    } else if (_hasOpen && OpenVertexCount() + 4 > kMaxBatchVertices) {
         FlushOpen(BatchFlushReason::BufferFull);
     }
 
-    if (!_hasOpen) {
-        _hasOpen = true;
-        _openKind = kind;
-        _openTexture = texture;
+    if (!_hasOpen) { BeginBatch(BatchKind::Image, cmd.Texture); }
+
+    const Widgets::Vec2 center{cmd.Position.x + cmd.Size.x * 0.5f, cmd.Position.y + cmd.Size.y * 0.5f};
+    const Widgets::Vec2 halfSize{cmd.Size.x * 0.5f, cmd.Size.y * 0.5f};
+
+    const Widgets::Vec2 corners[4] = {
+        {cmd.Position.x, cmd.Position.y},
+        {cmd.Position.x + cmd.Size.x, cmd.Position.y},
+        {cmd.Position.x + cmd.Size.x, cmd.Position.y + cmd.Size.y},
+        {cmd.Position.x, cmd.Position.y + cmd.Size.y},
+    };
+    const Widgets::Vec2 uvs[4] = {
+        {cmd.UvMin.x, cmd.UvMin.y},
+        {cmd.UvMax.x, cmd.UvMin.y},
+        {cmd.UvMax.x, cmd.UvMax.y},
+        {cmd.UvMin.x, cmd.UvMax.y},
+    };
+
+    const auto base = static_cast<std::uint32_t>(_openImageVertices.size());
+    for (int i = 0; i < 4; ++i) {
+        _openImageVertices.push_back(ImageVertex{
+            .Position = corners[i],
+            .Local = {corners[i].x - center.x, corners[i].y - center.y},
+            .HalfSize = halfSize,
+            .Radii = cmd.Radii,
+            .Uv = uvs[i],
+            .TintColor = cmd.TintColor,
+        });
     }
 
-    const auto base = static_cast<std::uint32_t>(_openVertices.size());
-    for (const Vertex& v : corners) { _openVertices.push_back(v); }
-    // Two triangles per quad, matching standard CCW-wound UI-quad indexing.
     _openIndices.push_back(base + 0);
     _openIndices.push_back(base + 1);
     _openIndices.push_back(base + 2);
@@ -102,12 +175,9 @@ void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
                 using T = std::decay_t<decltype(cmd)>;
 
                 if constexpr (std::is_same_v<T, Rendering::DrawRect>) {
-                    const auto corners =
-                        QuadCorners(cmd.Position, cmd.Size, cmd.FillColor, {0.0f, 0.0f}, {1.0f, 1.0f});
-                    AppendQuad(BatchKind::Rect, Rendering::TextureId{}, corners);
+                    AppendRect(cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawImage>) {
-                    const auto corners = QuadCorners(cmd.Position, cmd.Size, cmd.TintColor, cmd.UvMin, cmd.UvMax);
-                    AppendQuad(BatchKind::Image, cmd.Texture, corners);
+                    AppendImage(cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawPath> || std::is_same_v<T, Rendering::DrawText> ||
                                       std::is_same_v<T, Rendering::DrawShadow>) {
                     FlushOpen(BatchFlushReason::NonBatchable);
