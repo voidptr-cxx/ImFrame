@@ -666,6 +666,24 @@ if(IMF_BACKEND_GLFW_OPENGL3)
     catch_discover_tests(ImFrame_Tests_Rendering_ImGuiCompatRenderer PROPERTIES LABELS unit)
 endif()
 
+# ─── Phase 32.4: NativeRendererGL3 real-pixel tests ──────────────────────────────────────────
+if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Rendering_NativeRendererGL3
+        Rendering/NativeRendererGL3_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_NativeRendererGL3 PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_NativeRendererGL3
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 glad::glad Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_NativeRendererGL3 PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_NativeRendererGL3 PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererGL3 PROPERTIES LABELS unit)
+endif()
+
 add_executable(ImFrame_Tests_Rendering_Canvas2D
     Rendering/Canvas2D_test.cpp
 )
