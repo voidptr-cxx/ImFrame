@@ -17,8 +17,11 @@
 #include "ImFrame/Core/Error.hpp"
 
 #include <glad/glad.h>
+#include <imgui.h>
 
 #include <cstddef>
+#include <memory>
+#include <vector>
 
 namespace ImFrame::Internal {
 
@@ -126,7 +129,18 @@ void main() {
     return program;
 }
 
+/// Heap-owned snapshot handed to `ImDrawList::AddCallback()` as userdata for `RenderMode::
+/// DeferredReplay` — owns its own copy of the batches so a subsequent `Render()` call within the
+/// same frame (rebuilding `_batchBuilder`'s internal storage) cannot invalidate a callback that
+/// hasn't fired yet. Freed by `NativeRendererGL3::ExecuteDeferredDraw()` after it runs.
+struct PendingDraw {
+    NativeRendererGL3*  Self;
+    std::vector<Batch>  Batches;
+};
+
 } // namespace
+
+NativeRendererGL3::NativeRendererGL3(RenderMode mode) : _mode(mode) {}
 
 NativeRendererGL3::~NativeRendererGL3() { Shutdown(); }
 
@@ -193,13 +207,12 @@ void NativeRendererGL3::RenderRectBatch(const Batch& batch) {
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(batch.Indices.size()), GL_UNSIGNED_INT, nullptr);
 }
 
-void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
-    EnsureInitialized();
-
+void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
     // Save GL state this call touches so a caller mixing NativeRendererGL3 output with other GL/ImGui
-    // drawing in the same frame gets it back unchanged — the Phase 32.1 "how does NativeRenderer output
-    // composite with direct ImGui calls in the same frame" question (see .claude/DECISIONS.md) is still
-    // open, but leaving GL state dirty would make that question strictly worse, not just unresolved.
+    // drawing in the same frame gets it back unchanged. In RenderMode::DeferredReplay this runs
+    // inside an ImDrawList callback invoked by ImGui_ImplOpenGL3_RenderDrawData() — that function
+    // also emits its own ImDrawCallback_ResetRenderState entry right after ours (see RenderDeferred()),
+    // but restoring here too keeps DrawBatches() correct standalone, independent of what follows it.
     int previousProgram = 0;
     glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
     int previousVao = 0;
@@ -211,12 +224,14 @@ void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
     glGetIntegerv(GL_BLEND_SRC_ALPHA, &previousBlendSrcAlpha);
     glGetIntegerv(GL_BLEND_DST_ALPHA, &previousBlendDstAlpha);
 
+    // Read fresh at draw time (not cached from Render()'s call site) — in RenderMode::DeferredReplay
+    // the current viewport is whatever ImGui_ImplOpenGL3_RenderDrawData() has just set up for the
+    // draw_data being rendered (correct even for a secondary platform window under multi-viewport),
+    // not necessarily what was current when Render() queued this batch.
     int viewport[4] = {0, 0, 0, 0};
     glGetIntegerv(GL_VIEWPORT, viewport);
     const auto viewportWidth = static_cast<float>(viewport[2]);
     const auto viewportHeight = static_cast<float>(viewport[3]);
-
-    _batchBuilder.Build(buffer);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -225,7 +240,7 @@ void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
     glUniform2f(_rectViewportSizeLoc, viewportWidth, viewportHeight);
     glBindVertexArray(_vao);
 
-    for (const Batch& batch : _batchBuilder.Batches()) {
+    for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             RenderRectBatch(batch);
         } else {
@@ -241,6 +256,39 @@ void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
                          static_cast<unsigned int>(previousBlendSrcAlpha),
                          static_cast<unsigned int>(previousBlendDstAlpha));
     if (!blendWasEnabled) { glDisable(GL_BLEND); }
+}
+
+void NativeRendererGL3::RenderImmediate() { DrawBatches(_batchBuilder.Batches()); }
+
+void NativeRendererGL3::ExecuteDeferredDraw(const ImDrawList* /*parentList*/, const ImDrawCmd* cmd) {
+    // Takes ownership back and frees it on return — ImGui invokes this callback exactly once,
+    // when it rasterizes the draw command this callback was attached to (see RenderDeferred()).
+    std::unique_ptr<PendingDraw> pending(static_cast<PendingDraw*>(cmd->UserCallbackData));
+    pending->Self->DrawBatches(pending->Batches);
+}
+
+void NativeRendererGL3::RenderDeferred() {
+    // Owns a copy of the batches, not a reference into _batchBuilder — the next Render() call
+    // (next frame) rebuilds _batchBuilder's internal storage in place, which would otherwise race
+    // against this callback if it hadn't fired yet (see PendingDraw's own comment).
+    auto* pending  = new PendingDraw{this, _batchBuilder.Batches()};
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    drawList->AddCallback(&NativeRendererGL3::ExecuteDeferredDraw, pending);
+    // Tells ImGui_ImplOpenGL3_RenderDrawData() to re-bind its own shader/VAO/blend state after our
+    // callback runs, so the ImGui draw commands that follow in this same window are unaffected by
+    // whatever DrawBatches() just bound.
+    drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+}
+
+void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
+    EnsureInitialized();
+    _batchBuilder.Build(buffer);
+
+    if (_mode == RenderMode::DeferredReplay) {
+        RenderDeferred();
+    } else {
+        RenderImmediate();
+    }
 }
 
 } // namespace ImFrame::Internal

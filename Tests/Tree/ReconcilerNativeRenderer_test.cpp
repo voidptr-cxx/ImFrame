@@ -1,36 +1,38 @@
 /**
  * @file     ReconcilerNativeRenderer_test.cpp
- * @brief    Proves NativeRendererGL3 draws correctly from within a real Reconciler::Show() call (Phase 32.5)
+ * @brief    Proves NativeRendererGL3::RenderMode::DeferredReplay fixes the Phase 32.5 compositing bug
  *
  * @internal
  * Drives `Internal::Reconciler::Show()` — the actual production call site, via
  * `RootBridge::BeginRootWindow()`, exactly as `Application::Run()`'s frame
  * tick does — with `Internal::NativeRendererGL3` swapped in via
- * `SetRenderer()`, through a real `GLFWOpenGL3Backend`. Confirms the
- * `Position`/viewport coordinate math, the real immediate GL draw call, and
- * this sub-phase's clear-timing fix (`glClear()` moved from `EndFrame()` to
- * `BeginFrame()` — see `.claude/DECISIONS.md`, Phase 32.5) are all correct,
- * by reading the framebuffer's pixels **immediately after `Show()` returns**
- * via a direct `glReadPixels()` call — not through
- * `GLFWOpenGL3Backend::EndFrame()`/`ReadPixels()`.
+ * `SetRenderer()`, through a real `GLFWOpenGL3Backend`, running the *complete*
+ * `BeginFrame() -> Show() -> EndFrame()` frame lifecycle (unlike this file's
+ * Phase 32.5 version, which deliberately read pixels mid-frame to sidestep
+ * the bug it was documenting rather than fixing).
  *
- * That "immediately after" qualifier is load-bearing and is the deeper
- * discovery of this sub-phase: `RootBridge::BeginRootWindow()`'s
- * `ImGui::Begin()` call *queues* the root window's own background into
- * ImGui's draw list, but ImGui only *rasterizes* that queued draw list later,
- * in `EndFrame()`'s `ImGui::Render()` + `ImGui_ImplOpenGL3_RenderDrawData()`.
- * `NativeRendererGL3::Render()`, by contrast, draws **immediately** when
- * called. The result: calling `backend.EndFrame()` after `Show()` and reading
- * pixels *then* (as this test originally tried) shows the window's own
- * background painted over the `Box`, regardless of `Show()`/`Render()` having
- * run "first" in program order — deferred content always rasterizes after
- * immediate content within the same frame, inverting the intended z-order.
- * This is a real, deeper architectural gap than the clear-timing issue this
- * sub-phase fixed, and is **not** resolved here — see `.claude/DECISIONS.md`,
- * Phase 32.5, for the full analysis and what a real fix requires.
+ * Phase 32.5 discovered: `RootBridge::BeginRootWindow()`'s `ImGui::Begin()`
+ * only *queues* the root window's own background into ImGui's draw list —
+ * ImGui does not *rasterize* that queued content until `EndFrame()`'s
+ * `ImGui::Render()` + `ImGui_ImplOpenGL3_RenderDrawData()`. A
+ * `RenderMode::Immediate` draw (issued synchronously, mid-frame, inside
+ * `Show()`) always rasterizes *before* that deferred background, so the
+ * background silently paints over it by the time `EndFrame()` finishes —
+ * regardless of `Show()` having run "first" in program order. The first
+ * `TEST_CASE` below reproduces exactly that: read pixels after the full
+ * `EndFrame()`, and the `Immediate`-mode Box is gone.
+ *
+ * `RenderMode::DeferredReplay` (Phase 32.6) fixes this by queuing an
+ * `ImDrawList::AddCallback()` on the root window's own draw list instead of
+ * drawing synchronously — `ImGui_ImplOpenGL3_RenderDrawData()` then invokes
+ * that callback at the exact point in the draw list where it was recorded,
+ * i.e. *after* the window's own (also-deferred) background, giving the
+ * correct z-order automatically. The second `TEST_CASE` below proves this:
+ * the same Box, same full frame lifecycle, same post-`EndFrame()` pixel read
+ * — but this time it survives.
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
- * @date     2026-07-27
+ * @date     2026-08-02
  * @version  3.0.0
  *
  * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
@@ -44,12 +46,8 @@
 
 #include "ImFrame/Tree/Primitives/Box.hpp"
 
-#include <glad/glad.h>
-
 #include <catch2/catch_test_macros.hpp>
-#include <cstddef>
 #include <memory>
-#include <vector>
 
 using namespace ImFrame;
 using namespace ImFrame::Internal;
@@ -67,66 +65,73 @@ WindowConfig TestWindowConfig() {
 
 struct Pixel { int r, g, b, a; };
 
-/// Reads the currently-bound framebuffer directly — deliberately not `GLFWOpenGL3Backend::
-/// ReadPixels()`, which only reflects state as of the *last* `EndFrame()` call. See this file's
-/// header comment for why reading immediately, mid-frame, is the point of this test.
-std::vector<unsigned char> ReadCurrentFramebuffer(int width, int height) {
-    std::vector<unsigned char> pixels(static_cast<std::size_t>(width) * height * 4);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-    // OpenGL's readback origin is bottom-left; flip rows so index 0 is top-left, matching every
-    // other backend's ReadPixels() convention in this codebase.
-    std::vector<unsigned char> flipped(pixels.size());
-    const std::size_t rowBytes = static_cast<std::size_t>(width) * 4;
-    for (int y = 0; y < height; ++y) {
-        std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(rowBytes * (height - 1 - y)), rowBytes,
-                    flipped.begin() + static_cast<std::ptrdiff_t>(rowBytes * y));
-    }
-    return flipped;
+Pixel Sample(const std::vector<std::byte>& pixels, int x, int y, int width) {
+    const std::size_t off = (static_cast<std::size_t>(y) * width + x) * 4;
+    return {
+        static_cast<int>(pixels[off + 0]),
+        static_cast<int>(pixels[off + 1]),
+        static_cast<int>(pixels[off + 2]),
+        static_cast<int>(pixels[off + 3]),
+    };
 }
 
-Pixel Sample(const std::vector<unsigned char>& pixels, int x, int y, int width) {
-    const std::size_t off = (static_cast<std::size_t>(y) * width + x) * 4;
-    return {pixels[off + 0], pixels[off + 1], pixels[off + 2], pixels[off + 3]};
-}
+bool LooksGreen(const Pixel& p) { return p.g > 200 && p.g > p.r && p.a > 200; }
 
 } // namespace
 
-TEST_CASE("Reconciler + NativeRendererGL3: a Box's fill colour is drawn at the correct position "
-          "immediately when Show() runs",
+TEST_CASE("Reconciler + NativeRendererGL3::RenderMode::Immediate: the root window's deferred "
+          "background still erases the Box by the time EndFrame() finishes (Phase 32.5's bug, "
+          "reproduced end-to-end rather than sidestepped)",
           "[unit]") {
     GLFWOpenGL3Backend backend;
     REQUIRE(backend.Init(TestWindowConfig()).has_value());
-    // The real framebuffer size can differ from WindowConfig's requested size (this machine
-    // enforces a wider minimum window width) — query it rather than assume.
     const WindowExtent extent = backend.WindowSize();
 
     backend.Poll();
-    backend.BeginFrame(); // clears the framebuffer here (Phase 32.5) — before Show() draws into it
+    backend.BeginFrame();
 
     Reconciler reconciler;
-    reconciler.SetRenderer(std::make_unique<NativeRendererGL3>());
+    reconciler.SetRenderer(std::make_unique<NativeRendererGL3>(NativeRendererGL3::RenderMode::Immediate));
 
     const Tree::Widget root = Box().Width(64.0f).Height(64.0f).Background({0.0f, 1.0f, 0.0f, 1.0f});
     reconciler.Show(root);
 
-    // Read immediately — before EndFrame()'s deferred ImGui rasterization repaints the root
-    // window's own (queued-at-Begin, rasterized-at-EndFrame) background over what Show() just
-    // drew. See this file's header comment.
-    auto pixels = ReadCurrentFramebuffer(extent.Width, extent.Height);
+    backend.EndFrame();
+    auto pixels = backend.ReadPixels();
 
     // The root window's content region starts a few pixels in from (0,0) (default ImGui window
     // padding) — (20, 20) is safely inside a 64x64 Box anchored at the content region's origin.
     const Pixel inside = Sample(pixels, 20, 20, extent.Width);
-    REQUIRE(inside.g > 200);
-    REQUIRE(inside.g > inside.r);
-    REQUIRE(inside.a > 200);
+    REQUIRE_FALSE(LooksGreen(inside)); // the documented bug: background painted over it
 
-    // Well outside the 64x64 Box, still inside the window — should be the clear colour, not green.
+    backend.Shutdown();
+}
+
+TEST_CASE("Reconciler + NativeRendererGL3::RenderMode::DeferredReplay: the Box survives the root "
+          "window's deferred rasterization and is visible after a full EndFrame()",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(TestWindowConfig()).has_value());
+    const WindowExtent extent = backend.WindowSize();
+
+    backend.Poll();
+    backend.BeginFrame();
+
+    Reconciler reconciler;
+    reconciler.SetRenderer(std::make_unique<NativeRendererGL3>(NativeRendererGL3::RenderMode::DeferredReplay));
+
+    const Tree::Widget root = Box().Width(64.0f).Height(64.0f).Background({0.0f, 1.0f, 0.0f, 1.0f});
+    reconciler.Show(root);
+
+    backend.EndFrame();
+    auto pixels = backend.ReadPixels();
+
+    const Pixel inside = Sample(pixels, 20, 20, extent.Width);
+    REQUIRE(LooksGreen(inside)); // fixed: correctly composited on top of the deferred background
+
+    // Well outside the 64x64 Box, still inside the window — should be the window background, not green.
     const Pixel outside = Sample(pixels, extent.Width - 5, extent.Height - 5, extent.Width);
-    const bool outsideLooksGreen = (outside.g > 200) && (outside.g > outside.r);
-    REQUIRE_FALSE(outsideLooksGreen);
+    REQUIRE_FALSE(LooksGreen(outside));
 
-    backend.EndFrame(); // must still be called to keep ImGui's frame state balanced
     backend.Shutdown();
 }
