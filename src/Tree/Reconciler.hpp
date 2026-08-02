@@ -43,6 +43,20 @@ public:
      */
     void Show(const Tree::Widget& rootWidget);
 
+    /**
+     * @brief    Swaps the renderer used to replay each frame's `CommandBuffer`.
+     * @param[in] renderer  Must not be null. Defaults to an `ImGuiCompatRenderer`.
+     *
+     * @internal
+     * `Internal`-only — there is no public `Application::UseNativeRenderer()` yet.
+     * Exposing renderer selection publicly needs a public (non-`Internal::`) handle
+     * type (`Application.hpp` may never name `Internal::IRenderer` directly — see
+     * `.claude/CLAUDE.md`'s "never expose `Internal::` in public headers" invariant),
+     * which is real, undesigned API surface, not attempted in Phase 32.5. See
+     * `.claude/DECISIONS.md`.
+     */
+    void SetRenderer(std::unique_ptr<IRenderer> renderer);
+
 private:
     std::unique_ptr<Tree::Element> _rootElement;
 
@@ -50,9 +64,11 @@ private:
     /// is a single reused buffer, not a literal pool, in this single-threaded render loop).
     Rendering::CommandBuffer _commandBuffer;
 
-    /// Fixed for now — Phase 32's `NativeRenderer` swap becomes an `Application`-level
-    /// `unique_ptr<IRenderer>` choice once there is a second implementation to choose between.
-    ImGuiCompatRenderer _renderer;
+    /// Defaults to `ImGuiCompatRenderer` — promoted from a fixed member to a swappable
+    /// pointer in Phase 32.5, now that a second real `IRenderer` implementation
+    /// (`NativeRendererGL3`) exists to select between (see Phase 31.3's `DECISIONS.md`
+    /// row, which named this exact promotion point).
+    std::unique_ptr<IRenderer> _renderer = std::make_unique<ImGuiCompatRenderer>();
 };
 
 } // namespace ImFrame::Internal

@@ -777,6 +777,24 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Tree_ReconcilerPerformance PROPERTIES LABELS unit)
 
+# ─── Phase 32.5: Reconciler + NativeRendererGL3 end-to-end real-pixel test ───────────────────
+if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Tree_ReconcilerNativeRenderer
+        Tree/ReconcilerNativeRenderer_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Tree_ReconcilerNativeRenderer PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Tree_ReconcilerNativeRenderer
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 glad::glad Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Tree_ReconcilerNativeRenderer PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Tree_ReconcilerNativeRenderer PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Tree_ReconcilerNativeRenderer PROPERTIES LABELS unit)
+endif()
+
 add_executable(ImFrame_Tests_Tree_Primitives
     Tree/Primitives_test.cpp
 )

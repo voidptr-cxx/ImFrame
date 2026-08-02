@@ -258,6 +258,20 @@ FrameInfo GLFWOpenGL3Backend::Poll()
 void GLFWOpenGL3Backend::BeginFrame(WindowHandle /*handle*/)
 {
     IMF_ASSERT(_initialised);
+
+    // Clearing here (rather than at the top of EndFrame(), as before Phase 32.4) means the
+    // default framebuffer is ready for real GL draw calls issued *during* the frame — e.g.
+    // Internal::NativeRendererGL3::Render(), called from Reconciler::Show() between BeginFrame()
+    // and EndFrame() — not just for ImGui_ImplOpenGL3_RenderDrawData()'s own draw at the very end.
+    // Previously, any such mid-frame direct GL draw would have survived only until EndFrame()'s
+    // own glClear() erased it. See .claude/DECISIONS.md, Phase 32.5.
+    int displayW = 0;
+    int displayH = 0;
+    glfwGetFramebufferSize(_window, &displayW, &displayH);
+    glViewport(0, 0, displayW, displayH);
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -274,9 +288,6 @@ void GLFWOpenGL3Backend::EndFrame(WindowHandle /*handle*/)
     int displayW = 0;
     int displayH = 0;
     glfwGetFramebufferSize(_window, &displayW, &displayH);
-    glViewport(0, 0, displayW, displayH);
-    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
 
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
