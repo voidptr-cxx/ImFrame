@@ -45,6 +45,12 @@
 #include "Rendering/Renderers/BatchBuilder.hpp"
 #include "Rendering/Renderers/IRenderer.hpp"
 
+// Forward-declared (not included) to keep <imgui.h> out of this header — only NativeRendererGL3.cpp
+// needs it. Both are structs in the global namespace in Dear ImGui (matches the `ImFont*`/
+// `ImFontAtlas*` forward-declare precedent in IconFont.hpp — see .claude/DECISIONS.md, Phase 9).
+struct ImDrawList;
+struct ImDrawCmd;
+
 namespace ImFrame::Internal {
 
 /**
@@ -58,16 +64,48 @@ namespace ImFrame::Internal {
  * so constructing an instance never requires a context to already exist.
  *
  * The target framebuffer/viewport is whatever is currently bound and reported by
- * `glGetIntegerv(GL_VIEWPORT, ...)` at `Render()` time — `IRenderer::Render()`'s signature is
+ * `glGetIntegerv(GL_VIEWPORT, ...)` at draw time — `IRenderer::Render()`'s signature is
  * unchanged from Phase 31 (no viewport-size parameter added), matching how every other
  * GL-viewport-dependent call in this codebase already expects the caller to have set the
  * viewport/framebuffer binding correctly beforehand.
+ *
+ * `RenderMode::DeferredReplay` (Phase 32.6) fixes the compositing bug discovered in Phase 32.5:
+ * `RootBridge::BeginRootWindow()`'s `ImGui::Begin()` only *queues* the root window's own
+ * background into ImGui's draw list — ImGui does not *rasterize* that queued content until
+ * `ImGui::Render()`/`ImGui_ImplOpenGL3_RenderDrawData()` run later, in `EndFrame()`. A
+ * `RenderMode::Immediate` draw issued in between (the only mode Phase 32.4/32.5 had) always
+ * rasterizes to the framebuffer *before* that deferred background, so the background silently
+ * paints over it regardless of program order. `DeferredReplay` instead records the batches and
+ * pushes a `ImDrawList::AddCallback()` entry onto the *current* ImGui window's own draw list
+ * (obtained via `ImGui::GetWindowDrawList()` — this mode therefore requires an active ImGui
+ * window, i.e. must be called between `ImGui::Begin()`/`ImGui::End()`, exactly where
+ * `Reconciler::Show()` calls it). `ImGui_ImplOpenGL3_RenderDrawData()` then invokes that
+ * callback at the exact point in the draw list where it was recorded, so the native draw
+ * rasterizes in the correct position relative to the window's own (deferred) content — after
+ * the background, not before it. A trailing `ImDrawCallback_ResetRenderState` entry tells
+ * `ImGui_ImplOpenGL3_RenderDrawData()` to re-bind its own GL state afterward, so subsequent
+ * ImGui draw commands in the same list are unaffected.
+ *
+ * `RenderMode::Immediate` is retained (and remains the default) because it needs no active
+ * ImGui window/frame at all — `NativeRendererGL3_test.cpp`'s direct-FBO tests construct a
+ * renderer and call `Render()` with no ImGui frame in progress, which `DeferredReplay` cannot
+ * support (`ImGui::GetWindowDrawList()` asserts outside `Begin()/End()`).
  *
  * @since    3.0.0
  */
 class NativeRendererGL3 final : public IRenderer {
 public:
-    NativeRendererGL3() = default;
+    /// Selects how `Render()` turns batches into GL draw calls — see this class's own comment.
+    enum class RenderMode : unsigned char {
+        Immediate,      ///< Draws synchronously inside `Render()` (Phase 32.4 behaviour). Default.
+        DeferredReplay, ///< Queues an `ImDrawList` callback on the current ImGui window (Phase 32.6).
+    };
+
+    /**
+     * @brief    Constructs a renderer in the given mode.
+     * @param[in] mode  `RenderMode::Immediate` (default) or `RenderMode::DeferredReplay`.
+     */
+    explicit NativeRendererGL3(RenderMode mode = RenderMode::Immediate);
     ~NativeRendererGL3() override;
 
     NativeRendererGL3(const NativeRendererGL3&) = delete;
@@ -80,9 +118,16 @@ public:
 
 private:
     void EnsureInitialized();
+    void RenderImmediate();
+    void RenderDeferred();
+    void DrawBatches(const std::vector<Batch>& batches);
     void RenderRectBatch(const Batch& batch);
 
-    bool _initialized = false;
+    /// `ImDrawList::AddCallback()` trampoline for `RenderMode::DeferredReplay` — see NativeRendererGL3.cpp.
+    static void ExecuteDeferredDraw(const ImDrawList* parentList, const ImDrawCmd* cmd);
+
+    bool       _initialized = false;
+    RenderMode _mode;
 
     unsigned int _rectProgram          = 0; ///< GLuint linked shader program for BatchKind::Rect.
     int          _rectViewportSizeLoc  = -1; ///< glGetUniformLocation("uViewportSize") cache.
