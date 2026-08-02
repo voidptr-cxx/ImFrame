@@ -22,7 +22,14 @@
 #include "RenderObjects/PortalRO.hpp"
 #include "RenderObjects/RootBridge.hpp"
 
+#include "ImFrame/Core/Error.hpp"
+
 namespace ImFrame::Internal {
+
+void Reconciler::SetRenderer(std::unique_ptr<IRenderer> renderer) {
+    IMF_ASSERT(renderer != nullptr);
+    _renderer = std::move(renderer);
+}
 
 void Reconciler::Show(const Tree::Widget& rootWidget) {
     if (_rootElement && _rootElement->CanUpdate(rootWidget)) {
@@ -47,12 +54,13 @@ void Reconciler::Show(const Tree::Widget& rootWidget) {
     }
 
     // One replay for the whole frame's accumulated Box/Text commands, still
-    // inside the root window (ImGuiCompatRenderer::Render() draws onto
-    // ImGui::GetWindowDrawList()). Elements that open their own nested ImGui
-    // window (e.g. VirtualListElement) flush their own local buffer before
-    // closing that window instead of pushing into this one — see
-    // VirtualListRO.cpp's Paint() comment.
-    _renderer.Render(_commandBuffer);
+    // inside the root window (the default ImGuiCompatRenderer draws onto
+    // ImGui::GetWindowDrawList(); a swapped-in NativeRendererGL3 issues real GL
+    // draw calls against whatever framebuffer is current — see SetRenderer()).
+    // Elements that open their own nested ImGui window (e.g. VirtualListElement)
+    // flush their own local buffer before closing that window instead of pushing
+    // into this one — see VirtualListRO.cpp's Paint() comment.
+    _renderer->Render(_commandBuffer);
 
     EndRootWindow();
 }
