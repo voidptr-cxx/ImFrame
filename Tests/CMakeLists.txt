@@ -798,6 +798,25 @@ if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
     catch_discover_tests(ImFrame_Tests_Tree_ReconcilerNativeRenderer PROPERTIES LABELS unit)
 endif()
 
+# ─── Phase 32.8: Reconciler + ImageWidget end-to-end real-pixel test (default ImGuiCompatRenderer,
+# no NativeRendererGL3 involved — gated on the backend only, not IMF_BUILD_NATIVE_RENDERER) ────────
+if(IMF_BACKEND_GLFW_OPENGL3)
+    add_executable(ImFrame_Tests_Tree_ReconcilerImage
+        Tree/ReconcilerImage_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Tree_ReconcilerImage PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Tree_ReconcilerImage
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 glad::glad Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Tree_ReconcilerImage PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Tree_ReconcilerImage PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Tree_ReconcilerImage PROPERTIES LABELS unit)
+endif()
+
 add_executable(ImFrame_Tests_Tree_Primitives
     Tree/Primitives_test.cpp
 )
