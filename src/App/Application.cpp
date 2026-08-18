@@ -87,6 +87,11 @@ Application& Application::WithMenuBar(bool enabled) {
     return *this;
 }
 
+Application& Application::UseRenderer(std::unique_ptr<Internal::IRenderer> renderer) {
+    _reconciler->SetRenderer(std::move(renderer));
+    return *this;
+}
+
 // ─── Run ──────────────────────────────────────────────────────────────────────
 
 VoidResult Application::Run() {

@@ -194,6 +194,9 @@ catch_discover_tests(ImFrame_Tests_Utility_Config PROPERTIES LABELS unit)
 add_executable(ImFrame_Tests_App_Application
     App/Application_test.cpp
 )
+target_include_directories(ImFrame_Tests_App_Application PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+)
 target_link_libraries(ImFrame_Tests_App_Application
     PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
 )
