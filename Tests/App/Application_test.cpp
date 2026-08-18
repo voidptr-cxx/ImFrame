@@ -24,14 +24,40 @@
  */
 
 #include "HeadlessBackend.hpp"
+#include "Rendering/Renderers/IRenderer.hpp"
 
 #include "ImFrame/App/Application.hpp"
+#include "ImFrame/Tree/Primitives/Box.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 using ImFrame::App::Application;
 using ImFrame::App::FontConfig;
 using ImFrame::Tests::TestHeadlessBackend;
+
+namespace {
+
+/// A minimal `Internal::IRenderer` spy — counts `Render()` calls instead of drawing anything, to
+/// prove `Application::UseRenderer()` actually reaches the frame loop's renderer, not just that
+/// it compiles/stores a pointer.
+class SpyRenderer : public ImFrame::Internal::IRenderer {
+public:
+    explicit SpyRenderer(int* renderCount) : _renderCount(renderCount) {}
+
+    void Render(const ImFrame::Rendering::CommandBuffer& /*buffer*/) override { ++(*_renderCount); }
+    void Shutdown() override {}
+
+private:
+    int* _renderCount;
+};
+
+/// Trivial `Tree::Component` — content doesn't matter, only that `Reconciler::Show()` runs and
+/// therefore invokes whichever `Internal::IRenderer` is currently installed.
+struct EmptyRootComponent {
+    [[nodiscard]] ImFrame::Tree::Widget Build() const { return ImFrame::Tree::Primitives::Box(); }
+};
+
+} // namespace
 
 // ─── OnUpdate ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +96,26 @@ TEST_CASE("OnUi is called exactly once per frame", "[unit]") {
 
     REQUIRE(result.has_value());
     REQUIRE(uiCount == 3);
+}
+
+// ─── UseRenderer ──────────────────────────────────────────────────────────────
+
+TEST_CASE("UseRenderer swaps the renderer Reconciler::Show() replays through each frame",
+          "[unit]") {
+    auto backend = std::make_unique<TestHeadlessBackend>(3);
+
+    Application app(std::move(backend));
+
+    int renderCount = 0;
+    app.UseRenderer(std::make_unique<SpyRenderer>(&renderCount));
+
+    EmptyRootComponent root;
+    app.SetRoot(root);
+
+    auto result = app.Run();
+
+    REQUIRE(result.has_value());
+    REQUIRE(renderCount == 3); // once per frame, matching TestHeadlessBackend's 3-frame budget
 }
 
 // ─── OnClose veto ─────────────────────────────────────────────────────────────

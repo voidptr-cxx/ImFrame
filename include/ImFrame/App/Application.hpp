@@ -57,6 +57,7 @@ namespace ImFrame::Theme       { struct Theme;            }
 namespace ImFrame::Rendering  { class  Viewport;          }
 namespace ImFrame::Internal   { class  ViewportRegistry;  }
 namespace ImFrame::Internal   { class  Reconciler;        }
+namespace ImFrame::Internal   { class  IRenderer;         }
 
 namespace ImFrame::App {
 
@@ -189,6 +190,22 @@ public:
      * @return   Reference to this Application for chaining.
      */
     Application& WithMenuBar(bool enabled = true);
+
+    /**
+     * @brief    Swap the renderer used to replay each frame's recorded draw commands.
+     *
+     * Defaults to `Internal::ImGuiCompatRenderer` (draws via ImGui's own draw lists)
+     * if never called. Pass a concrete `Internal::IRenderer` from the backend you
+     * linked — e.g. `std::make_unique<Internal::NativeRendererGL3>(Internal::
+     * NativeRendererGL3::RenderMode::DeferredReplay)` from `NativeRendererGL3.hpp`
+     * (opt-in, requires the `IMF_BUILD_NATIVE_RENDERER` CMake option) — exactly the
+     * same "user constructs the concrete `Internal::` type their linked backend
+     * provides" pattern already used for the `IBackend` constructor parameter above.
+     *
+     * @param[in]  renderer  Must not be null.
+     * @return   Reference to this Application for chaining.
+     */
+    Application& UseRenderer(std::unique_ptr<Internal::IRenderer> renderer);
 
     // ─── Run ──────────────────────────────────────────────────────────────────
 
