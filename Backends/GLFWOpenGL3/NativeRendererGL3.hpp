@@ -6,12 +6,17 @@
  * The first real `NativeRenderer` backend (Phase 32.4) — unlike
  * `Internal::ImGuiCompatRenderer`, this issues genuine `glDrawElements()`
  * calls against a hand-written shader, not `ImDrawList` calls. Scoped to
- * `Internal::BatchKind::Rect` only: `DrawImage`/`DrawPath` have no live
- * producer anywhere in the tree yet (same reasoning as Phase 32.3's
- * `BatchBuilder` scoping — see `.claude/DECISIONS.md`, Phase 32.4), so
- * building GL texture-upload/path-tesselation support now would be
- * speculative. An `Image`-kind batch trips an `IMF_ASSERT` rather than being
- * silently dropped or silently mis-rendered.
+ * `Internal::BatchKind::Rect` only. `DrawPath` still has no live producer
+ * anywhere in the tree, so CPU polyline tesselation stays speculative.
+ * `DrawImage` is a different story since Phase 32.8: `Widgets::Image`'s
+ * non-interactive `Paint()` path now pushes real `DrawImage` commands, so an
+ * `Image`-kind batch here is a genuinely reachable runtime path today (e.g.
+ * `app.UseRenderer(make_unique<NativeRendererGL3>(...))` plus any
+ * non-interactive `ImageWidget` in the tree), not a hypothetical one — it
+ * still trips an `IMF_ASSERT` rather than being silently dropped or
+ * silently mis-rendered, because no GL texture-upload/registry path exists
+ * yet to render it correctly (that remains real, undesigned follow-on work —
+ * see `.claude/DECISIONS.md`, Phase 32.8).
  *
  * Lives in `Backends/GLFWOpenGL3/`, not `src/Rendering/Renderers/Backends/`
  * as `PHASE_32_PROPOSAL.md`'s literal "New Files" list states — it needs

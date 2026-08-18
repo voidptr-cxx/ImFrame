@@ -244,8 +244,8 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
         if (batch.Kind == BatchKind::Rect) {
             RenderRectBatch(batch);
         } else {
-            // BatchKind::Image has no live producer yet (see this file's header comment) —
-            // loud in test/debug builds rather than silently dropping the batch.
+            // BatchKind::Image is GL-unsupported, not producer-less, since Phase 32.8 (see this
+            // file's header comment) — loud in test/debug builds rather than silently dropping it.
             IMF_ASSERT(false && "NativeRendererGL3: Image batches are not yet supported (Phase 32.4 scope)");
         }
     }
