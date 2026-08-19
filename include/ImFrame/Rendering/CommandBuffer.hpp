@@ -46,12 +46,19 @@ namespace ImFrame::Rendering {
 
 /**
  * @class    TextureId
- * @brief    Opaque, renderer-interpreted texture handle
+ * @brief    Opaque texture handle interpreted as a raw platform texture handle
  *
- * Each renderer gives this value its own meaning: `ImGuiCompatRenderer`
- * treats it as an `ImTextureID`; a future native renderer (Phase 32) treats
- * it as an index into its own texture registry. Never construct one
- * directly — obtain it from `ImageLoader::Load()` or `Viewport::TextureId()`.
+ * As of Phase 32.9, every renderer that supports `DrawImage` gives this
+ * value the same meaning: a reinterpreted native texture handle for the
+ * active graphics API — an `ImTextureID` for `ImGuiCompatRenderer` and a raw
+ * GL texture name (`GLuint`) for `NativeRendererGL3`, which for OpenGL are
+ * already the same bit pattern (`(GLuint)(intptr_t)id`). It is not currently
+ * an index into any texture-atlas/registry indirection — `Widgets::Image`
+ * (the widget-level producer) constructs one directly from its own
+ * `Widgets::TextureHandle` via `reinterpret_cast`, which is the intended way
+ * to obtain one today. A future texture-management subsystem (loader, atlas)
+ * may introduce a real registry-index interpretation later; until one
+ * exists and a renderer actually consumes it, treat this as a raw handle.
  *
  * @since    3.0.0
  */

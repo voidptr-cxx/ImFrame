@@ -99,6 +99,68 @@ void main() {
 }
 )GLSL";
 
+// Hand-written #version 330 core equivalent of Shaders/Image.glsl (Phase 32.9) — same deviation
+// reasoning as the Rect shaders above. `uTexture` uses a plain `uniform sampler2D` (not
+// `layout(binding=1)`, unavailable in 330 core without an extension) — bound to texture unit 0
+// explicitly via glUniform1i() at draw time, matching uViewportSize's glGetUniformLocation() cache.
+
+const char* kImageVertexSource = R"GLSL(
+#version 330 core
+
+layout (location = 0) in vec2 inPosition;
+layout (location = 1) in vec2 inLocal;
+layout (location = 2) in vec2 inHalfSize;
+layout (location = 3) in vec4 inRadii;
+layout (location = 4) in vec2 inUv;
+layout (location = 5) in vec4 inTintColor;
+
+uniform vec2 uViewportSize;
+
+out vec2 vLocal;
+out vec2 vHalfSize;
+out vec4 vRadii;
+out vec2 vUv;
+out vec4 vTintColor;
+
+void main() {
+    vec2 ndc = (inPosition / uViewportSize) * 2.0 - 1.0;
+    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+
+    vLocal = inLocal;
+    vHalfSize = inHalfSize;
+    vRadii = inRadii;
+    vUv = inUv;
+    vTintColor = inTintColor;
+}
+)GLSL";
+
+const char* kImageFragmentSource = R"GLSL(
+#version 330 core
+
+in vec2 vLocal;
+in vec2 vHalfSize;
+in vec4 vRadii;
+in vec2 vUv;
+in vec4 vTintColor;
+
+uniform sampler2D uTexture;
+
+out vec4 outColor;
+
+float RoundedBoxSdf(vec2 p, vec2 b, vec4 r) {
+    r.xy = (p.x > 0.0) ? r.xy : r.zw;
+    r.x = (p.y > 0.0) ? r.x : r.y;
+    vec2 q = abs(p) - b + r.x;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2(0.0))) - r.x;
+}
+
+void main() {
+    vec4 r = vec4(vRadii.y, vRadii.z, vRadii.x, vRadii.w);
+    float mask = 1.0 - smoothstep(-1.0, 1.0, RoundedBoxSdf(vLocal, vHalfSize, r));
+    outColor = texture(uTexture, vUv) * vTintColor * mask;
+}
+)GLSL";
+
 [[nodiscard]] unsigned int CompileShaderStage(unsigned int type, const char* source) {
     const unsigned int shader = glCreateShader(type);
     glShaderSource(shader, 1, &source, nullptr);
@@ -149,6 +211,12 @@ void NativeRendererGL3::Shutdown() {
     if (_ebo != 0) { glDeleteBuffers(1, &_ebo); _ebo = 0; }
     if (_vao != 0) { glDeleteVertexArrays(1, &_vao); _vao = 0; }
     if (_rectProgram != 0) { glDeleteProgram(_rectProgram); _rectProgram = 0; }
+
+    if (_imageVbo != 0) { glDeleteBuffers(1, &_imageVbo); _imageVbo = 0; }
+    if (_imageEbo != 0) { glDeleteBuffers(1, &_imageEbo); _imageEbo = 0; }
+    if (_imageVao != 0) { glDeleteVertexArrays(1, &_imageVao); _imageVao = 0; }
+    if (_imageProgram != 0) { glDeleteProgram(_imageProgram); _imageProgram = 0; }
+
     _initialized = false;
 }
 
@@ -189,6 +257,40 @@ void NativeRendererGL3::EnsureInitialized() {
 
     glBindVertexArray(0);
 
+    _imageProgram = LinkProgram(kImageVertexSource, kImageFragmentSource);
+    _imageViewportSizeLoc = glGetUniformLocation(_imageProgram, "uViewportSize");
+    _imageTextureLoc      = glGetUniformLocation(_imageProgram, "uTexture");
+
+    glGenVertexArrays(1, &_imageVao);
+    glGenBuffers(1, &_imageVbo);
+    glGenBuffers(1, &_imageEbo);
+
+    glBindVertexArray(_imageVao);
+    glBindBuffer(GL_ARRAY_BUFFER, _imageVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _imageEbo);
+
+    constexpr auto imageStride = static_cast<GLsizei>(sizeof(ImageVertex));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, Position)));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, Local)));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, HalfSize)));
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, Radii)));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 2, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, Uv)));
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, imageStride,
+                           reinterpret_cast<void*>(offsetof(ImageVertex, TintColor)));
+
+    glBindVertexArray(0);
+
     _initialized = true;
 }
 
@@ -196,11 +298,46 @@ void NativeRendererGL3::RenderRectBatch(const Batch& batch) {
     const auto& vertices = std::get<std::vector<RectVertex>>(batch.Vertices);
     if (vertices.empty()) { return; }
 
+    glBindVertexArray(_vao);
+    glUseProgram(_rectProgram);
+
+    int viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glUniform2f(_rectViewportSizeLoc, static_cast<float>(viewport[2]), static_cast<float>(viewport[3]));
+
     glBindBuffer(GL_ARRAY_BUFFER, _vbo);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(RectVertex)), vertices.data(),
                  GL_STREAM_DRAW);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(batch.Indices.size() * sizeof(std::uint32_t)),
+                 batch.Indices.data(), GL_STREAM_DRAW);
+
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(batch.Indices.size()), GL_UNSIGNED_INT, nullptr);
+}
+
+void NativeRendererGL3::RenderImageBatch(const Batch& batch) {
+    const auto& vertices = std::get<std::vector<ImageVertex>>(batch.Vertices);
+    if (vertices.empty()) { return; }
+
+    glBindVertexArray(_imageVao);
+    glUseProgram(_imageProgram);
+
+    int viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glUniform2f(_imageViewportSizeLoc, static_cast<float>(viewport[2]), static_cast<float>(viewport[3]));
+
+    // batch.Texture's value is a raw GL texture name, not a registry index — see this file's
+    // header comment.
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<unsigned int>(batch.Texture.Value()));
+    glUniform1i(_imageTextureLoc, 0);
+
+    glBindBuffer(GL_ARRAY_BUFFER, _imageVbo);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices.size() * sizeof(ImageVertex)), vertices.data(),
+                 GL_STREAM_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _imageEbo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(batch.Indices.size() * sizeof(std::uint32_t)),
                  batch.Indices.data(), GL_STREAM_DRAW);
 
@@ -223,33 +360,29 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
     glGetIntegerv(GL_BLEND_DST_RGB, &previousBlendDstRgb);
     glGetIntegerv(GL_BLEND_SRC_ALPHA, &previousBlendSrcAlpha);
     glGetIntegerv(GL_BLEND_DST_ALPHA, &previousBlendDstAlpha);
-
-    // Read fresh at draw time (not cached from Render()'s call site) — in RenderMode::DeferredReplay
-    // the current viewport is whatever ImGui_ImplOpenGL3_RenderDrawData() has just set up for the
-    // draw_data being rendered (correct even for a secondary platform window under multi-viewport),
-    // not necessarily what was current when Render() queued this batch.
-    int viewport[4] = {0, 0, 0, 0};
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    const auto viewportWidth = static_cast<float>(viewport[2]);
-    const auto viewportHeight = static_cast<float>(viewport[3]);
+    int previousActiveTexture = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    int previousTexture0 = 0;
+    glActiveTexture(GL_TEXTURE0);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture0);
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    glUseProgram(_rectProgram);
-    glUniform2f(_rectViewportSizeLoc, viewportWidth, viewportHeight);
-    glBindVertexArray(_vao);
-
+    // Batches can interleave Rect/Image (BatchBuilder flushes on command-type change), so each
+    // Render*Batch() binds its own program/VAO/viewport uniform rather than this loop assuming
+    // one kind for the whole buffer, the way it could when only BatchKind::Rect existed.
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             RenderRectBatch(batch);
         } else {
-            // BatchKind::Image is GL-unsupported, not producer-less, since Phase 32.8 (see this
-            // file's header comment) — loud in test/debug builds rather than silently dropping it.
-            IMF_ASSERT(false && "NativeRendererGL3: Image batches are not yet supported (Phase 32.4 scope)");
+            RenderImageBatch(batch);
         }
     }
 
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, static_cast<unsigned int>(previousTexture0));
+    glActiveTexture(static_cast<unsigned int>(previousActiveTexture));
     glBindVertexArray(static_cast<unsigned int>(previousVao));
     glUseProgram(static_cast<unsigned int>(previousProgram));
     glBlendFuncSeparate(static_cast<unsigned int>(previousBlendSrcRgb), static_cast<unsigned int>(previousBlendDstRgb),
