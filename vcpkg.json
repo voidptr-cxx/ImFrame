@@ -99,6 +99,13 @@
           ]
         }
       ]
+    },
+    "text-msdf": {
+      "description": "MSDF text pipeline: HarfBuzz shaping + msdfgen atlas generation (Phase 33)",
+      "dependencies": [
+        "harfbuzz",
+        "msdfgen"
+      ]
     }
   }
 }
