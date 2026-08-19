@@ -46,6 +46,16 @@ if(IMF_BUILD_NATIVE_RENDERER)
     list(APPEND VCPKG_MANIFEST_FEATURES "native-renderer")
 endif()
 
+# IMF_BUILD_TEXT_MSDF must be read before project() for the same reason as the options above.
+# Gates Phase 33's MSDF text pipeline (harfbuzz + msdfgen are real build-time toolchain
+# dependencies, not lightweight headers) behind an explicit opt-in, matching every other
+# optional-subsystem option in this file. Still experimental as of Phase 33.1 — a default
+# `cmake -B build` should not silently grow two new toolchain requirements for it.
+option(IMF_BUILD_TEXT_MSDF "Build Phase 33's MSDF text pipeline (requires harfbuzz, msdfgen)" OFF)
+if(IMF_BUILD_TEXT_MSDF)
+    list(APPEND VCPKG_MANIFEST_FEATURES "text-msdf")
+endif()
+
 project(ImFrame
     VERSION 2.0.0
     DESCRIPTION "Immediate-mode UI framework wrapping Dear ImGui"
