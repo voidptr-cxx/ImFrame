@@ -5,18 +5,20 @@
  * @internal
  * The first real `NativeRenderer` backend (Phase 32.4) — unlike
  * `Internal::ImGuiCompatRenderer`, this issues genuine `glDrawElements()`
- * calls against a hand-written shader, not `ImDrawList` calls. Scoped to
- * `Internal::BatchKind::Rect` only. `DrawPath` still has no live producer
- * anywhere in the tree, so CPU polyline tesselation stays speculative.
- * `DrawImage` is a different story since Phase 32.8: `Widgets::Image`'s
- * non-interactive `Paint()` path now pushes real `DrawImage` commands, so an
- * `Image`-kind batch here is a genuinely reachable runtime path today (e.g.
- * `app.UseRenderer(make_unique<NativeRendererGL3>(...))` plus any
- * non-interactive `ImageWidget` in the tree), not a hypothetical one — it
- * still trips an `IMF_ASSERT` rather than being silently dropped or
- * silently mis-rendered, because no GL texture-upload/registry path exists
- * yet to render it correctly (that remains real, undesigned follow-on work —
- * see `.claude/DECISIONS.md`, Phase 32.8).
+ * calls against hand-written shaders, not `ImDrawList` calls. Supports
+ * `BatchKind::Rect` (Phase 32.4) and `BatchKind::Image` (Phase 32.9).
+ * `DrawPath` still has no live producer anywhere in the tree, so CPU
+ * polyline tesselation stays speculative and there is no `BatchKind::Path`.
+ *
+ * `BatchKind::Image` treats `Rendering::TextureId::Value()` as a raw GL
+ * texture name (`GLuint`) — the same interpretation `ImGuiCompatRenderer`
+ * and ImGui's own OpenGL3 backend already give the identical bit pattern
+ * (both ultimately do `glBindTexture(GL_TEXTURE_2D, (GLuint)(intptr_t)id)`).
+ * This is not a registry-index scheme (no `TextureAtlas`/`ImageLoader`
+ * indirection) — `Widgets::Image` (the only live `DrawImage` producer as of
+ * Phase 32.8) already constructs its `TextureId` as a reinterpreted raw GL
+ * texture name, so that is the only interpretation consistent with reality
+ * today. See `.claude/DECISIONS.md`, Phase 32.9.
  *
  * Lives in `Backends/GLFWOpenGL3/`, not `src/Rendering/Renderers/Backends/`
  * as `PHASE_32_PROPOSAL.md`'s literal "New Files" list states — it needs
@@ -60,7 +62,7 @@ namespace ImFrame::Internal {
 
 /**
  * @class    NativeRendererGL3
- * @brief    Renders `Rendering::DrawRect` batches via real OpenGL 3.3 draw calls
+ * @brief    Renders `Rendering::DrawRect`/`DrawImage` batches via real OpenGL 3.3 draw calls
  *
  * @internal
  * Must be called with an OpenGL 3.3+ core-profile context current on the calling thread
@@ -127,6 +129,7 @@ private:
     void RenderDeferred();
     void DrawBatches(const std::vector<Batch>& batches);
     void RenderRectBatch(const Batch& batch);
+    void RenderImageBatch(const Batch& batch);
 
     /// `ImDrawList::AddCallback()` trampoline for `RenderMode::DeferredReplay` — see NativeRendererGL3.cpp.
     static void ExecuteDeferredDraw(const ImDrawList* parentList, const ImDrawCmd* cmd);
@@ -140,6 +143,14 @@ private:
     unsigned int _vao = 0;
     unsigned int _vbo = 0;
     unsigned int _ebo = 0;
+
+    unsigned int _imageProgram         = 0;  ///< GLuint linked shader program for BatchKind::Image.
+    int          _imageViewportSizeLoc = -1;  ///< glGetUniformLocation("uViewportSize") cache.
+    int          _imageTextureLoc      = -1;  ///< glGetUniformLocation("uTexture") cache.
+
+    unsigned int _imageVao = 0;
+    unsigned int _imageVbo = 0;
+    unsigned int _imageEbo = 0;
 
     BatchBuilder _batchBuilder;
 };

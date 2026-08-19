@@ -1,6 +1,6 @@
 /**
  * @file     NativeRendererGL3_test.cpp
- * @brief    Real-pixel tests for NativeRendererGL3's DrawRect rendering (Phase 32.4)
+ * @brief    Real-pixel tests for NativeRendererGL3's DrawRect (Phase 32.4) and DrawImage (Phase 32.9) rendering
  *
  * @internal
  * Renders into a small offscreen FBO created directly by this test, not via
@@ -31,6 +31,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 using namespace ImFrame;
@@ -110,6 +111,36 @@ private:
     unsigned int _colorTex = 0;
     int          _width;
     int          _height;
+};
+
+/// A small, solid opaque-blue GL texture — known content to assert against after compositing.
+/// `NativeRendererGL3` treats `DrawImage::Texture`'s value as a raw GL texture name (see
+/// `NativeRendererGL3.hpp`'s own file comment), so this real texture's GLuint is what gets pushed.
+class ScratchTexture {
+public:
+    ScratchTexture() {
+        glGenTextures(1, &_id);
+        glBindTexture(GL_TEXTURE_2D, _id);
+
+        constexpr int kSize = 8;
+        std::vector<unsigned char> pixels(static_cast<std::size_t>(kSize) * kSize * 4);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i + 0] = 0; pixels[i + 1] = 0; pixels[i + 2] = 255; pixels[i + 3] = 255;
+        }
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, kSize, kSize, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    }
+
+    ~ScratchTexture() { glDeleteTextures(1, &_id); }
+
+    ScratchTexture(const ScratchTexture&) = delete;
+    ScratchTexture& operator=(const ScratchTexture&) = delete;
+
+    [[nodiscard]] TextureId Id() const { return TextureId(static_cast<std::uint64_t>(_id)); }
+
+private:
+    unsigned int _id = 0;
 };
 
 } // namespace
@@ -253,6 +284,123 @@ TEST_CASE("NativeRendererGL3 renders multiple batches (separated by a clip bound
         REQUIRE(topLeft.g > 200);
         REQUIRE(bottomRight.g > 200);
         REQUIRE(bottomRight.b > 200);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 draws a DrawImage at the recorded position, sampling the bound "
+          "GL texture and applying TintColor",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        ScratchTexture texture;
+
+        CommandBuffer buffer;
+        buffer.Push(DrawImage{
+            .Position  = {0.0f, 0.0f},
+            .Size      = {64.0f, 64.0f},
+            .Texture   = texture.Id(),
+            .TintColor = {0.5f, 1.0f, 1.0f, 1.0f}, // multiplies the texture's solid blue
+        });
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel inside  = Sample(pixels, 32, 32, WIDTH);
+        const Pixel outside = Sample(pixels, WIDTH - 4, HEIGHT - 4, WIDTH);
+
+        REQUIRE(inside.b > 200);
+        REQUIRE(inside.r < 150);  // TintColor.r == 0.5 darkens the source texture's zero red further
+        REQUIRE(inside.a > 200);
+        REQUIRE(outside.a == 0); // untouched — still the FBO's transparent clear colour
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 renders a DrawImage with rounded corners: the extreme corner "
+          "pixel stays outside the mask",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        ScratchTexture texture;
+
+        CommandBuffer buffer;
+        buffer.Push(DrawImage{
+            .Position = {0.0f, 0.0f},
+            .Size     = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .Texture  = texture.Id(),
+            .Radii    = CornerRadii::All(24.0f),
+        });
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel corner     = Sample(pixels, 1, 1, WIDTH);          // just inside the rounded-away corner
+        const Pixel middleEdge = Sample(pixels, WIDTH / 2, 1, WIDTH);  // flat top edge, outside any radius
+
+        REQUIRE(corner.a < 100);
+        REQUIRE(middleEdge.a > 200);
+        REQUIRE(middleEdge.b > 200); // still sampling the texture's blue, not just an opaque mask
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 renders interleaved Rect and Image batches, each with the "
+          "correct kind's geometry and texture",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        ScratchTexture texture;
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {32.0f, 32.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawImage{
+            .Position = {96.0f, 96.0f}, .Size = {32.0f, 32.0f}, .Texture = texture.Id()});
+
+        BatchBuilder verifyBatching;
+        verifyBatching.Build(buffer);
+        REQUIRE(verifyBatching.Batches().size() == 2);
+        REQUIRE(verifyBatching.Batches()[0].Kind == BatchKind::Rect);
+        REQUIRE(verifyBatching.Batches()[1].Kind == BatchKind::Image);
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel rectPixel  = Sample(pixels, 16, 16, WIDTH);
+        const Pixel imagePixel = Sample(pixels, 112, 112, WIDTH);
+
+        REQUIRE(rectPixel.r > 200);
+        REQUIRE(rectPixel.b < 50);
+        REQUIRE(imagePixel.b > 200);
+        REQUIRE(imagePixel.r < 50);
 
         renderer.Shutdown();
     }
