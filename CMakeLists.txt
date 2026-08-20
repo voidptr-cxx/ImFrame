@@ -284,6 +284,7 @@ if(IMF_BUILD_TEXT_MSDF)
     target_sources(ImFrame PRIVATE
         src/Rendering/Text/FontFace.cpp
         src/Rendering/Text/FontRegistry.cpp
+        src/Rendering/Text/TextShaper.cpp
     )
     target_link_libraries(ImFrame PRIVATE Freetype::Freetype harfbuzz::harfbuzz)
 endif()

@@ -655,6 +655,35 @@ if(IMF_BUILD_TEXT_MSDF)
             "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_FontRegistry>/Assets/Fonts/fa-solid-900.ttf"
         COMMENT "Copying FA6 solid font to test output directory"
     )
+
+    # ─── Phase 33.3: TextShaper tests ──────────────────────────────────────────────────────────
+    add_executable(ImFrame_Tests_Rendering_TextShaper
+        Rendering/TextShaper_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_TextShaper PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_TextShaper
+        PRIVATE ImFrame Freetype::Freetype harfbuzz::harfbuzz Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_TextShaper PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_TextShaper PRIVATE /utf-8)
+    endif()
+    # See ImFrame_Tests_Rendering_FontRegistry's identical WORKING_DIRECTORY comment above.
+    catch_discover_tests(ImFrame_Tests_Rendering_TextShaper
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextShaper>"
+        PROPERTIES LABELS unit
+    )
+
+    add_custom_command(TARGET ImFrame_Tests_Rendering_TextShaper POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextShaper>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextShaper>/Assets/Fonts/fa-solid-900.ttf"
+        COMMENT "Copying FA6 solid font to test output directory"
+    )
 endif()
 
 add_executable(ImFrame_Tests_Rendering_ClipStack
