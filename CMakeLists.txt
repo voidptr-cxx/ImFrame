@@ -90,6 +90,10 @@ find_package(glfw3     CONFIG REQUIRED)
 find_package(glad      CONFIG REQUIRED)
 find_package(freetype  CONFIG REQUIRED)
 
+if(IMF_BUILD_TEXT_MSDF)
+    find_package(harfbuzz CONFIG REQUIRED)
+endif()
+
 # SDL3 is not used on Emscripten at all (Backends/DawnWebGPU/CMakeLists.txt's
 # EMSCRIPTEN branch uses DOM events directly — see the Phase 23 proposal's
 # Input section), so it is skipped there even when IMF_BUILD_WEBGPU_BACKEND=ON.
@@ -269,6 +273,19 @@ if(IMF_DEV_TOOLS)
         src/DevTools/ThemeHotReload.cpp
     )
     target_compile_definitions(ImFrame PUBLIC IMF_DEV_TOOLS)
+endif()
+
+# ── Phase 33.2: MSDF text pipeline — FontFace/FontRegistry (opt-in) ───────────
+# freetype is already found unconditionally above (ImGui's own atlas already uses it via
+# its "freetype" feature), but ImFrame's own src/ code has never linked/called it directly
+# before this — gated behind IMF_BUILD_TEXT_MSDF so it stays optional, matching every other
+# optional subsystem in this file.
+if(IMF_BUILD_TEXT_MSDF)
+    target_sources(ImFrame PRIVATE
+        src/Rendering/Text/FontFace.cpp
+        src/Rendering/Text/FontRegistry.cpp
+    )
+    target_link_libraries(ImFrame PRIVATE Freetype::Freetype harfbuzz::harfbuzz)
 endif()
 
 target_include_directories(ImFrame
