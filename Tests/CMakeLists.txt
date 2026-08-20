@@ -622,6 +622,41 @@ if(MSVC)
 endif()
 catch_discover_tests(ImFrame_Tests_Rendering_TextureAtlas PROPERTIES LABELS unit)
 
+# ─── Phase 33.2: FontRegistry/FontFace tests ──────────────────────────────────────────────────
+if(IMF_BUILD_TEXT_MSDF)
+    add_executable(ImFrame_Tests_Rendering_FontRegistry
+        Rendering/FontRegistry_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_FontRegistry PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_FontRegistry
+        PRIVATE ImFrame Freetype::Freetype harfbuzz::harfbuzz Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_FontRegistry PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_FontRegistry PRIVATE /utf-8)
+    endif()
+    # WORKING_DIRECTORY is required here: ctest's own default CWD for a discovered test does not
+    # reliably match the copy step's target directory below, so the relative "Assets/Fonts/..."
+    # path in FontRegistry_test.cpp resolves only when ctest is told explicitly where to run from.
+    catch_discover_tests(ImFrame_Tests_Rendering_FontRegistry
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_FontRegistry>"
+        PROPERTIES LABELS unit
+    )
+
+    # Reuses the FA6 solid font already vendored for ImFrame_Tests_Icons_IconFont — see that
+    # target's own copy step above for why a real font file (not a synthetic one) is needed.
+    add_custom_command(TARGET ImFrame_Tests_Rendering_FontRegistry POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_FontRegistry>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_FontRegistry>/Assets/Fonts/fa-solid-900.ttf"
+        COMMENT "Copying FA6 solid font to test output directory"
+    )
+endif()
+
 add_executable(ImFrame_Tests_Rendering_ClipStack
     Rendering/ClipStack_test.cpp
 )

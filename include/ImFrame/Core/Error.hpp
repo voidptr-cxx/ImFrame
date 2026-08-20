@@ -75,6 +75,10 @@ enum class Error {
     /// The requested operation is not available on this backend/platform
     /// (e.g. multi-window or FileWatcher on the Emscripten backend, Phase 23).
     NotSupported,
+
+    /// A font file exists but FreeType/HarfBuzz could not load it (corrupt data,
+    /// unsupported format, or library initialisation failure) — Phase 33.
+    FontLoadFailed,
 };
 
 } // namespace ImFrame::Core
