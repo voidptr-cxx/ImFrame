@@ -684,6 +684,41 @@ if(IMF_BUILD_TEXT_MSDF)
             "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextShaper>/Assets/Fonts/fa-solid-900.ttf"
         COMMENT "Copying FA6 solid font to test output directory"
     )
+
+    # ─── Phase 33.4: GlyphAtlas tests ───────────────────────────────────────────────────────────
+    # GlyphAtlas.hpp itself never names msdfgen types (confined to GlyphAtlas.cpp), so this target
+    # doesn't need msdfgen's headers -- but it must still link msdfgen::msdfgen-ext directly: linking
+    # the static ImFrame.lib alone left GlyphAtlas.obj's msdfgen symbol references unresolved at the
+    # final executable link step (ImFrame's own link to msdfgen-ext is PRIVATE and does not
+    # propagate through a static library the way an INTERFACE usage requirement would).
+    add_executable(ImFrame_Tests_Rendering_GlyphAtlas
+        Rendering/GlyphAtlas_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_GlyphAtlas PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_GlyphAtlas
+        PRIVATE ImFrame Freetype::Freetype harfbuzz::harfbuzz
+            msdfgen::msdfgen-ext msdfgen::msdfgen-core Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_GlyphAtlas PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_GlyphAtlas PRIVATE /utf-8)
+    endif()
+    # See ImFrame_Tests_Rendering_FontRegistry's identical WORKING_DIRECTORY comment above.
+    catch_discover_tests(ImFrame_Tests_Rendering_GlyphAtlas
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_GlyphAtlas>"
+        PROPERTIES LABELS unit
+    )
+
+    add_custom_command(TARGET ImFrame_Tests_Rendering_GlyphAtlas POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_GlyphAtlas>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_GlyphAtlas>/Assets/Fonts/fa-solid-900.ttf"
+        COMMENT "Copying FA6 solid font to test output directory"
+    )
 endif()
 
 add_executable(ImFrame_Tests_Rendering_ClipStack
