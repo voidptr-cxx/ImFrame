@@ -92,6 +92,7 @@ find_package(freetype  CONFIG REQUIRED)
 
 if(IMF_BUILD_TEXT_MSDF)
     find_package(harfbuzz CONFIG REQUIRED)
+    find_package(msdfgen  CONFIG REQUIRED)
 endif()
 
 # SDL3 is not used on Emscripten at all (Backends/DawnWebGPU/CMakeLists.txt's
@@ -285,8 +286,13 @@ if(IMF_BUILD_TEXT_MSDF)
         src/Rendering/Text/FontFace.cpp
         src/Rendering/Text/FontRegistry.cpp
         src/Rendering/Text/TextShaper.cpp
+        src/Rendering/Text/GlyphAtlas.cpp
     )
-    target_link_libraries(ImFrame PRIVATE Freetype::Freetype harfbuzz::harfbuzz)
+    # msdfgen-ext for its FreeType-integrated adoptFreetypeFont()/loadGlyph() (GlyphAtlas, Phase 33.4,
+    # reuses FontRegistry's own FT_Face directly, no separate FreeType load) -- msdfgen-core is also
+    # required directly: Shape/Projection/generateMTSDF/etc. live there, not in msdfgen-ext itself.
+    target_link_libraries(ImFrame PRIVATE Freetype::Freetype harfbuzz::harfbuzz
+        msdfgen::msdfgen-ext msdfgen::msdfgen-core)
 endif()
 
 target_include_directories(ImFrame
