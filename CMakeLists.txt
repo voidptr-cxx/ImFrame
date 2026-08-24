@@ -329,7 +329,7 @@ if(IMF_BUILD_NATIVE_RENDERER)
     include(cmake/CompileShader.cmake)
 
     set(IMF_SHADER_HEADERS "")
-    foreach(IMF_SHADER_NAME Rect Image Path)
+    foreach(IMF_SHADER_NAME Rect Image Path MSDFText)
         compile_shader("${CMAKE_SOURCE_DIR}/Shaders/${IMF_SHADER_NAME}.glsl" vert ${IMF_SHADER_NAME}
             OUT_HEADER IMF_SHADER_VERT_HEADER)
         compile_shader("${CMAKE_SOURCE_DIR}/Shaders/${IMF_SHADER_NAME}.glsl" frag ${IMF_SHADER_NAME}

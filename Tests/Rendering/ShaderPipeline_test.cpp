@@ -25,6 +25,8 @@
 #include "Shaders/Image.frag.hpp"
 #include "Shaders/Path.vert.hpp"
 #include "Shaders/Path.frag.hpp"
+#include "Shaders/MSDFText.vert.hpp"
+#include "Shaders/MSDFText.frag.hpp"
 
 #include <cstring>
 
@@ -54,6 +56,14 @@ TEST_CASE("ShaderPipeline: every generated header has non-empty source and non-e
     REQUIRE(std::strlen(kPathFragmentSource) > 0);
     REQUIRE(kPathFragmentSpirvByteCount > 0);
     REQUIRE(sizeof(kPathFragmentSpirv) == kPathFragmentSpirvByteCount);
+
+    REQUIRE(std::strlen(kMSDFTextVertexSource) > 0);
+    REQUIRE(kMSDFTextVertexSpirvByteCount > 0);
+    REQUIRE(sizeof(kMSDFTextVertexSpirv) == kMSDFTextVertexSpirvByteCount);
+
+    REQUIRE(std::strlen(kMSDFTextFragmentSource) > 0);
+    REQUIRE(kMSDFTextFragmentSpirvByteCount > 0);
+    REQUIRE(sizeof(kMSDFTextFragmentSpirv) == kMSDFTextFragmentSpirvByteCount);
 }
 
 TEST_CASE("ShaderPipeline: every embedded SPIR-V module starts with the SPIR-V magic number", "[unit]") {
@@ -68,4 +78,6 @@ TEST_CASE("ShaderPipeline: every embedded SPIR-V module starts with the SPIR-V m
     REQUIRE(std::memcmp(kImageFragmentSpirv, kMagic, 4) == 0);
     REQUIRE(std::memcmp(kPathVertexSpirv, kMagic, 4) == 0);
     REQUIRE(std::memcmp(kPathFragmentSpirv, kMagic, 4) == 0);
+    REQUIRE(std::memcmp(kMSDFTextVertexSpirv, kMagic, 4) == 0);
+    REQUIRE(std::memcmp(kMSDFTextFragmentSpirv, kMagic, 4) == 0);
 }
