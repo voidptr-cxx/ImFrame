@@ -22,6 +22,33 @@ using namespace ImFrame;
 using namespace ImFrame::Internal;
 using Catch::Approx;
 
+namespace {
+
+/// Test double for `ITextLayoutProvider` (Phase 33.6) — no real `FontRegistry`/`TextShaper`/
+/// `GlyphAtlas` involved. `cmd.Font.Value() == 0` simulates "unknown font" (returns an invalid
+/// `TextureId`, no quads); otherwise it returns one synthetic quad and treats `cmd.Font.Value()`
+/// itself as the resolved glyph-atlas `TextureId`, so tests can force a texture change simply by
+/// using a different `Font` between two `DrawText` commands.
+class FakeTextLayoutProvider final : public ITextLayoutProvider {
+public:
+    Rendering::TextureId LayoutText(const Rendering::DrawText& cmd, std::vector<GlyphQuad>& outQuads) override {
+        ++CallCount;
+        if (cmd.Font.Value() == 0) { return Rendering::TextureId{}; }
+
+        outQuads.push_back(GlyphQuad{
+            .Min = cmd.Position,
+            .Max = {cmd.Position.x + 8.0f, cmd.Position.y + 12.0f},
+            .UvMin = {0.1f, 0.2f},
+            .UvMax = {0.3f, 0.4f},
+        });
+        return Rendering::TextureId(cmd.Font.Value());
+    }
+
+    int CallCount = 0;
+};
+
+} // namespace
+
 TEST_CASE("BatchBuilder: adjacent DrawRects with no intervening state change form one batch", "[unit]") {
     Rendering::CommandBuffer buffer;
     buffer.Push(Rendering::DrawRect{.Position = {0.0f, 0.0f}, .Size = {10.0f, 10.0f}});
@@ -155,6 +182,88 @@ TEST_CASE("BatchBuilder: DrawText between two DrawRects flushes as non-batchable
 
     REQUIRE(builder.Batches().size() == 2);
     REQUIRE(builder.Stats().FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::NonBatchable)] == 1);
+}
+
+TEST_CASE("BatchBuilder: DrawText with a set ITextLayoutProvider produces a Text batch of atlas-backed quads",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawText{
+        .Position = {5.0f, 6.0f}, .Text = "hi", .Font = Rendering::FontId(1), .Color = {0.1f, 0.2f, 0.3f, 0.4f}});
+
+    FakeTextLayoutProvider provider;
+    BatchBuilder builder;
+    builder.SetTextLayoutProvider(&provider);
+    builder.Build(buffer);
+
+    REQUIRE(provider.CallCount == 1);
+    REQUIRE(builder.Batches().size() == 1);
+    REQUIRE(builder.Batches().front().Kind == BatchKind::Text);
+    REQUIRE(builder.Batches().front().Texture == Rendering::TextureId(1));
+
+    const auto& vertices = std::get<std::vector<TextVertex>>(builder.Batches().front().Vertices);
+    REQUIRE(vertices.size() == 4);
+    REQUIRE(builder.Batches().front().Indices.size() == 6);
+
+    REQUIRE(vertices[0].Position.x == Approx(5.0f)); // top-left uses quad.Min
+    REQUIRE(vertices[0].Position.y == Approx(6.0f));
+    REQUIRE(vertices[0].Uv.x == Approx(0.1f)); // top-left uses UvMin
+    REQUIRE(vertices[2].Uv.x == Approx(0.3f)); // bottom-right uses UvMax
+    REQUIRE(vertices[2].Uv.y == Approx(0.4f));
+    REQUIRE(vertices[0].Color.x == Approx(0.1f)); // cmd.Color propagated to every vertex
+    REQUIRE(vertices[0].Color.w == Approx(0.4f));
+}
+
+TEST_CASE("BatchBuilder: a set ITextLayoutProvider returning an invalid texture skips the DrawText "
+          "(non-batchable, same as when no provider is set)",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::DrawText{.Text = "hi", .Font = Rendering::FontId{}}); // Font.Value()==0 -> fake returns invalid
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+
+    FakeTextLayoutProvider provider;
+    BatchBuilder builder;
+    builder.SetTextLayoutProvider(&provider);
+    builder.Build(buffer);
+
+    REQUIRE(provider.CallCount == 1);
+    REQUIRE(builder.Batches().size() == 2);
+    REQUIRE(builder.Stats().FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::NonBatchable)] == 1);
+}
+
+TEST_CASE("BatchBuilder: a successfully-laid-out DrawText between two DrawRects flushes on command-type "
+          "change on both sides",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::DrawText{.Text = "hi", .Font = Rendering::FontId(1)});
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+
+    FakeTextLayoutProvider provider;
+    BatchBuilder builder;
+    builder.SetTextLayoutProvider(&provider);
+    builder.Build(buffer);
+
+    REQUIRE(builder.Batches().size() == 3);
+    REQUIRE(builder.Batches()[0].Kind == BatchKind::Rect);
+    REQUIRE(builder.Batches()[1].Kind == BatchKind::Text);
+    REQUIRE(builder.Batches()[2].Kind == BatchKind::Rect);
+    REQUIRE(builder.Stats().FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::CommandTypeChange)] == 2);
+}
+
+TEST_CASE("BatchBuilder: two DrawTexts resolving to different glyph-atlas textures flush on texture change",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawText{.Text = "a", .Font = Rendering::FontId(1)});
+    buffer.Push(Rendering::DrawText{.Text = "b", .Font = Rendering::FontId(2)});
+
+    FakeTextLayoutProvider provider;
+    BatchBuilder builder;
+    builder.SetTextLayoutProvider(&provider);
+    builder.Build(buffer);
+
+    REQUIRE(builder.Batches().size() == 2);
+    REQUIRE(builder.Stats().FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::TextureChange)] == 1);
 }
 
 TEST_CASE("BatchBuilder: DrawPath is treated as non-batchable (no CPU tesselator/live producer yet)", "[unit]") {
