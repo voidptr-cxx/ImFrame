@@ -26,11 +26,17 @@ void BatchBuilder::Reset() {
     _openTexture = Rendering::TextureId{};
     _openRectVertices.clear();
     _openImageVertices.clear();
+    _openTextVertices.clear();
     _openIndices.clear();
 }
 
 std::size_t BatchBuilder::OpenVertexCount() const noexcept {
-    return _openKind == BatchKind::Rect ? _openRectVertices.size() : _openImageVertices.size();
+    switch (_openKind) {
+        case BatchKind::Rect:  return _openRectVertices.size();
+        case BatchKind::Image: return _openImageVertices.size();
+        case BatchKind::Text:  return _openTextVertices.size();
+    }
+    return 0;
 }
 
 void BatchBuilder::FlushOpen(BatchFlushReason reason) {
@@ -42,12 +48,19 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
     batch.Indices = std::move(_openIndices);
 
     std::size_t vertexCount = 0;
-    if (_openKind == BatchKind::Rect) {
-        vertexCount = _openRectVertices.size();
-        batch.Vertices = std::move(_openRectVertices);
-    } else {
-        vertexCount = _openImageVertices.size();
-        batch.Vertices = std::move(_openImageVertices);
+    switch (_openKind) {
+        case BatchKind::Rect:
+            vertexCount = _openRectVertices.size();
+            batch.Vertices = std::move(_openRectVertices);
+            break;
+        case BatchKind::Image:
+            vertexCount = _openImageVertices.size();
+            batch.Vertices = std::move(_openImageVertices);
+            break;
+        case BatchKind::Text:
+            vertexCount = _openTextVertices.size();
+            batch.Vertices = std::move(_openTextVertices);
+            break;
     }
 
     _stats.DrawCallCount += 1;
@@ -59,6 +72,7 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
     _hasOpen = false;
     _openRectVertices.clear();
     _openImageVertices.clear();
+    _openTextVertices.clear();
     _openIndices.clear();
 }
 
@@ -166,6 +180,56 @@ void BatchBuilder::AppendImage(const Rendering::DrawImage& cmd) {
     _openIndices.push_back(base + 3);
 }
 
+void BatchBuilder::AppendText(const Rendering::DrawText& cmd) {
+    if (_textLayoutProvider == nullptr) {
+        FlushOpen(BatchFlushReason::NonBatchable);
+        return;
+    }
+
+    std::vector<ITextLayoutProvider::GlyphQuad> quads;
+    const Rendering::TextureId texture = _textLayoutProvider->LayoutText(cmd, quads);
+    if (!texture.IsValid() || quads.empty()) {
+        FlushOpen(BatchFlushReason::NonBatchable);
+        return;
+    }
+
+    // Per-quad, not per-command, so a single very-long DrawText run still force-flushes partway
+    // through rather than overshooting kMaxBatchVertices by an unbounded amount (unlike
+    // AppendRect/AppendImage's per-command check, safe there only because those always add
+    // exactly 4 vertices per command).
+    for (const ITextLayoutProvider::GlyphQuad& quad : quads) {
+        const bool kindChanged = _hasOpen && _openKind != BatchKind::Text;
+        const bool textureChanged = _hasOpen && !(_openTexture == texture);
+
+        if (kindChanged) {
+            FlushOpen(BatchFlushReason::CommandTypeChange);
+        } else if (textureChanged) {
+            FlushOpen(BatchFlushReason::TextureChange);
+        } else if (_hasOpen && OpenVertexCount() + 4 > kMaxBatchVertices) {
+            FlushOpen(BatchFlushReason::BufferFull);
+        }
+
+        if (!_hasOpen) { BeginBatch(BatchKind::Text, texture); }
+
+        const auto base = static_cast<std::uint32_t>(_openTextVertices.size());
+        _openTextVertices.push_back(TextVertex{
+            .Position = {quad.Min.x, quad.Min.y}, .Uv = {quad.UvMin.x, quad.UvMin.y}, .Color = cmd.Color});
+        _openTextVertices.push_back(TextVertex{
+            .Position = {quad.Max.x, quad.Min.y}, .Uv = {quad.UvMax.x, quad.UvMin.y}, .Color = cmd.Color});
+        _openTextVertices.push_back(TextVertex{
+            .Position = {quad.Max.x, quad.Max.y}, .Uv = {quad.UvMax.x, quad.UvMax.y}, .Color = cmd.Color});
+        _openTextVertices.push_back(TextVertex{
+            .Position = {quad.Min.x, quad.Max.y}, .Uv = {quad.UvMin.x, quad.UvMax.y}, .Color = cmd.Color});
+
+        _openIndices.push_back(base + 0);
+        _openIndices.push_back(base + 1);
+        _openIndices.push_back(base + 2);
+        _openIndices.push_back(base + 0);
+        _openIndices.push_back(base + 2);
+        _openIndices.push_back(base + 3);
+    }
+}
+
 void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
     Reset();
 
@@ -178,7 +242,9 @@ void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
                     AppendRect(cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawImage>) {
                     AppendImage(cmd);
-                } else if constexpr (std::is_same_v<T, Rendering::DrawPath> || std::is_same_v<T, Rendering::DrawText> ||
+                } else if constexpr (std::is_same_v<T, Rendering::DrawText>) {
+                    AppendText(cmd);
+                } else if constexpr (std::is_same_v<T, Rendering::DrawPath> ||
                                       std::is_same_v<T, Rendering::DrawShadow>) {
                     FlushOpen(BatchFlushReason::NonBatchable);
                 } else if constexpr (std::is_same_v<T, Rendering::PushClipRect> ||

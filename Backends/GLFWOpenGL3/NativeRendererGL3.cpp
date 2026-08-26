@@ -369,14 +369,26 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Batches can interleave Rect/Image (BatchBuilder flushes on command-type change), so each
+    // Batches can interleave Rect/Image/Text (BatchBuilder flushes on command-type change), so each
     // Render*Batch() binds its own program/VAO/viewport uniform rather than this loop assuming
     // one kind for the whole buffer, the way it could when only BatchKind::Rect existed.
     for (const Batch& batch : batches) {
-        if (batch.Kind == BatchKind::Rect) {
-            RenderRectBatch(batch);
-        } else {
-            RenderImageBatch(batch);
+        switch (batch.Kind) {
+            case BatchKind::Rect:
+                RenderRectBatch(batch);
+                break;
+            case BatchKind::Image:
+                RenderImageBatch(batch);
+                break;
+            case BatchKind::Text:
+                // No text-batch producer exists yet -- _batchBuilder is never given a
+                // ITextLayoutProvider (see BatchBuilder::SetTextLayoutProvider()), so
+                // BatchKind::Text is never actually produced here today. A real
+                // RenderTextBatch() (MSDF shader + glyph-atlas GL texture) is a later
+                // sub-phase's job -- this branch exists so a stray Text batch is silently
+                // dropped rather than misrouted into RenderImageBatch() and crashing via
+                // std::get<vector<ImageVertex>> on a std::vector<TextVertex>.
+                break;
         }
     }
 
