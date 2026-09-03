@@ -57,6 +57,11 @@ public:
      */
     void SetRenderer(std::unique_ptr<IRenderer> renderer);
 
+    /// The currently active renderer — never null (defaults to `ImGuiCompatRenderer`). Used by
+    /// `Application::Run()` (Phase 33.8) to reach `IRenderer::LoadFont()` generically, without
+    /// `Application` ever needing to know which concrete `IRenderer` is active.
+    [[nodiscard]] IRenderer* GetRenderer() noexcept { return _renderer.get(); }
+
 private:
     std::unique_ptr<Tree::Element> _rootElement;
 

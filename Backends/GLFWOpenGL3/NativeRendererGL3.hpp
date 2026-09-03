@@ -84,6 +84,9 @@ public:
 
     /// Issues the real GL draw call(s) for one closed `BatchKind::Text` batch.
     virtual void RenderTextBatch(const Batch& batch) = 0;
+
+    /// See `IRenderer::LoadFont()` — `NativeRendererGL3::LoadFont()` forwards to this directly.
+    [[nodiscard]] virtual Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) = 0;
 };
 
 /**
@@ -145,6 +148,9 @@ public:
     NativeRendererGL3& operator=(const NativeRendererGL3&) = delete;
 
     void Render(const Rendering::CommandBuffer& buffer) override;
+
+    /// Forwards to the attached `ITextRenderer::LoadFont()`, or `Error::FontLoadFailed` if none is attached.
+    [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) override;
 
     /// Releases all GL resources. Safe to call multiple times, including before any `Render()` call.
     void Shutdown() override;
