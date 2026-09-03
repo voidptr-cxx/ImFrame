@@ -786,6 +786,41 @@ if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
     catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererGL3 PROPERTIES LABELS unit)
 endif()
 
+# ─── Phase 33.7: TextRendererGL3 real-pixel tests (needs the backend, the native-renderer shader
+# pipeline, AND the harfbuzz/msdfgen text pipeline -- see Backends/GLFWOpenGL3/CMakeLists.txt's own
+# comment for why these three gates are independent, not implied by one another) ─────────────────
+if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER AND IMF_BUILD_TEXT_MSDF)
+    add_executable(ImFrame_Tests_Rendering_TextRendererGL3
+        Rendering/TextRendererGL3_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_TextRendererGL3 PRIVATE
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_TextRendererGL3
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 glad::glad
+            Freetype::Freetype harfbuzz::harfbuzz msdfgen::msdfgen-ext msdfgen::msdfgen-core
+            Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_TextRendererGL3 PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_TextRendererGL3 PRIVATE /utf-8)
+    endif()
+    # See ImFrame_Tests_Rendering_FontRegistry's identical WORKING_DIRECTORY comment (Phase 33.2).
+    catch_discover_tests(ImFrame_Tests_Rendering_TextRendererGL3
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextRendererGL3>"
+        PROPERTIES LABELS unit
+    )
+
+    add_custom_command(TARGET ImFrame_Tests_Rendering_TextRendererGL3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextRendererGL3>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_TextRendererGL3>/Assets/Fonts/fa-solid-900.ttf"
+        COMMENT "Copying FA6 solid font to test output directory"
+    )
+endif()
+
 add_executable(ImFrame_Tests_Rendering_Canvas2D
     Rendering/Canvas2D_test.cpp
 )

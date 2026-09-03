@@ -61,6 +61,32 @@ struct ImDrawCmd;
 namespace ImFrame::Internal {
 
 /**
+ * @class    ITextRenderer
+ * @brief    Pluggable GL3 text-rendering capability `NativeRendererGL3` delegates `BatchKind::Text` to
+ *
+ * @internal
+ * `NativeRendererGL3` itself has zero dependency on `FontRegistry`/`TextShaper`/`GlyphAtlas` — it
+ * builds and passes every test with `IMF_BUILD_NATIVE_RENDERER=ON` alone, `IMF_BUILD_TEXT_MSDF`
+ * left `OFF` (verified directly across Phase 33.5/33.6). This interface is the seam that makes
+ * that possible: the concrete implementation (`TextRendererGL3`, compiled only when both
+ * `IMF_BUILD_NATIVE_RENDERER` and `IMF_BUILD_TEXT_MSDF` are enabled) owns the real font pipeline,
+ * the glyph-atlas GL texture, and the `MSDFText` GL3 shader; `NativeRendererGL3` only ever calls
+ * through this abstract pointer. See `.claude/DECISIONS.md`, Phase 33.7.
+ *
+ * @since    3.0.0
+ */
+class ITextRenderer {
+public:
+    virtual ~ITextRenderer() noexcept = default;
+
+    /// The `ITextLayoutProvider` `NativeRendererGL3` should hand its `BatchBuilder` before each `Build()`.
+    [[nodiscard]] virtual ITextLayoutProvider* LayoutProvider() noexcept = 0;
+
+    /// Issues the real GL draw call(s) for one closed `BatchKind::Text` batch.
+    virtual void RenderTextBatch(const Batch& batch) = 0;
+};
+
+/**
  * @class    NativeRendererGL3
  * @brief    Renders `Rendering::DrawRect`/`DrawImage` batches via real OpenGL 3.3 draw calls
  *
@@ -123,6 +149,14 @@ public:
     /// Releases all GL resources. Safe to call multiple times, including before any `Render()` call.
     void Shutdown() override;
 
+    /**
+     * @brief    Attaches (or clears, with `nullptr`) the `BatchKind::Text` rendering delegate.
+     * @param[in] textRenderer  Non-owning; must outlive this `NativeRendererGL3` while attached.
+     *                          Unattached (the default) makes `DrawText` behave exactly as it did
+     *                          before Phase 33.7 — laid out by nothing, non-batchable, dropped.
+     */
+    void AttachTextRenderer(ITextRenderer* textRenderer) noexcept { _textRenderer = textRenderer; }
+
 private:
     void EnsureInitialized();
     void RenderImmediate();
@@ -153,6 +187,9 @@ private:
     unsigned int _imageEbo = 0;
 
     BatchBuilder _batchBuilder;
+
+    /// See `AttachTextRenderer()`/`ITextRenderer`. Not owned.
+    ITextRenderer* _textRenderer = nullptr;
 };
 
 } // namespace ImFrame::Internal
