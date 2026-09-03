@@ -47,6 +47,11 @@ public:
     void Render(const ImFrame::Rendering::CommandBuffer& /*buffer*/) override { ++(*_renderCount); }
     void Shutdown() override {}
 
+    [[nodiscard]] ImFrame::Result<ImFrame::Rendering::FontId> LoadFont(const ImFrame::Utility::Path& /*path*/,
+                                                                        float /*sizePixels*/) override {
+        return std::unexpected(ImFrame::Error::FontLoadFailed);
+    }
+
 private:
     int* _renderCount;
 };
@@ -159,4 +164,20 @@ TEST_CASE("WithFont with empty path does not crash", "[unit]") {
     auto result = app.Run();
 
     REQUIRE(result.has_value());
+}
+
+TEST_CASE("WithFont with a real font path resolves a valid LoadedFontId via the default renderer", "[unit]") {
+    // Uses the default ImGuiCompatRenderer (no UseRenderer() call) -- IRenderer::LoadFont() (Phase
+    // 33.8) is called generically regardless of which renderer is active; this test exercises the
+    // always-available compat path. The real GL3/MSDF path is covered separately in
+    // TextRendererGL3_test.cpp (gated behind IMF_BUILD_NATIVE_RENDERER + IMF_BUILD_TEXT_MSDF).
+    auto backend = std::make_unique<TestHeadlessBackend>(1);
+
+    Application app(std::move(backend));
+    app.WithFont(FontConfig{.path = ImFrame::Utility::Path("Assets/Fonts/fa-solid-900.ttf"), .size = 16.0f});
+
+    auto result = app.Run();
+
+    REQUIRE(result.has_value());
+    REQUIRE(app.LoadedFontId(0).IsValid());
 }

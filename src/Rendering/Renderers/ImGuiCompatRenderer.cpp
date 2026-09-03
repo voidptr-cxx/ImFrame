@@ -18,9 +18,10 @@
  * target ImGui's immediate-mode draw list doesn't provide, and nothing
  * produces these commands yet — see `.claude/DECISIONS.md`, Phase 31.2.
  *
- * `Rendering::FontId` is not yet mapped to real font metrics (Phase 33's
- * text-rendering system owns that registry) — every `DrawText` today renders
- * with `ImGui::GetFont()`, the active default font, regardless of `Font`.
+ * `Rendering::FontId` is resolved via `ResolveFont()` (Phase 33.8) against
+ * `LoadFont()`'s own `_fontsById` map — an invalid or unknown `FontId` still
+ * falls back to `ImGui::GetFont()`, the active default font (pre-Phase-33.8
+ * behaviour, preserved for every `DrawText` producer that never sets `Font`).
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-07-16
@@ -32,6 +33,8 @@
  */
 
 #include "ImGuiCompatRenderer.hpp"
+
+#include "ImFrame/Utility/File.hpp"
 
 #include <imgui.h>
 
@@ -82,8 +85,7 @@ void Translate(ImDrawList* dl, const Rendering::DrawRect& rect) {
     }
 }
 
-void Translate(ImDrawList* dl, const Rendering::DrawText& text) {
-    ImFont*     font     = ImGui::GetFont(); // Font not yet wired to a registry (Phase 33)
+void Translate(ImDrawList* dl, const Rendering::DrawText& text, ImFont* font) {
     const float fontSize = text.FontSize > 0.0f ? text.FontSize : ImGui::GetFontSize();
     const float wrapWidth = text.MaxWidth > 0.0f ? text.MaxWidth : 0.0f;
     const ImVec2 pos{text.Position.x, text.Position.y};
@@ -173,17 +175,34 @@ void Translate(ImDrawList* dl, const Rendering::PushClipRect& clip) {
 
 } // namespace
 
+ImFont* ImGuiCompatRenderer::ResolveFont(Rendering::FontId id) const {
+    if (!id.IsValid()) { return ImGui::GetFont(); }
+    const auto it = _fontsById.find(id.Value());
+    return it != _fontsById.end() ? it->second : ImGui::GetFont();
+}
+
+Result<Rendering::FontId> ImGuiCompatRenderer::LoadFont(const Utility::Path& path, float sizePixels) {
+    if (!Utility::File::Exists(path)) { return std::unexpected(Error::FileNotFound); }
+
+    ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(path.ToString().c_str(), sizePixels);
+    if (font == nullptr) { return std::unexpected(Error::FontLoadFailed); }
+
+    const std::uint32_t id = _nextFontId++;
+    _fontsById.emplace(id, font);
+    return Rendering::FontId(id);
+}
+
 void ImGuiCompatRenderer::Render(const Rendering::CommandBuffer& buffer) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     for (const Rendering::Command& command : buffer) {
         std::visit(
-            [dl](const auto& cmd) {
+            [dl, this](const auto& cmd) {
                 using T = std::decay_t<decltype(cmd)>;
                 if constexpr (std::is_same_v<T, Rendering::DrawRect>) {
                     Translate(dl, cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawText>) {
-                    Translate(dl, cmd);
+                    Translate(dl, cmd, ResolveFont(cmd.Font));
                 } else if constexpr (std::is_same_v<T, Rendering::DrawImage>) {
                     Translate(dl, cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawPath>) {

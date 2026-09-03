@@ -17,6 +17,7 @@
  */
 
 #include "ImFrame/App/Application.hpp"
+#include "ImFrame/Core/Error.hpp"
 #include "ImFrame/Icons/IconFont.hpp"
 #include "ImFrame/Overlay/Toast.hpp"
 #include "ImFrame/Theme/Theme.hpp"
@@ -59,6 +60,10 @@ Application::~Application() noexcept = default;
 Application& Application::WithFont(FontConfig font) {
     _pendingFonts.push_back(std::move(font));
     return *this;
+}
+
+Rendering::FontId Application::LoadedFontId(std::size_t index) const noexcept {
+    return index < _loadedFontIds.size() ? _loadedFontIds[index] : Rendering::FontId{};
 }
 
 Application& Application::WithTheme(const ImFrame::Theme::Theme& theme) {
@@ -109,8 +114,15 @@ VoidResult Application::Run() {
     }
 
     // ── Font loading ──────────────────────────────────────────────────────────
+    // Icon fonts stay ImGui-atlas-only regardless of which IRenderer is active -- glyph-range
+    // merging (Phase 9) has no MSDF equivalent (Phase 33). Regular fonts route through
+    // IRenderer::LoadFont() generically -- Application never checks which concrete renderer is
+    // active; ImGuiCompatRenderer's own implementation loads into the same ImGui atlas this loop
+    // called directly before Phase 33.8, just now also recording a real Rendering::FontId. See
+    // .claude/DECISIONS.md, Phase 33.8.
     for (const auto& fc : _pendingFonts) {
         if (fc.path.Native().empty()) {
+            _loadedFontIds.push_back(Rendering::FontId{});
             continue;
         }
         const float actualSize = fc.dpiScaled ? fc.size * dpi : fc.size;
@@ -119,11 +131,30 @@ VoidResult Application::Run() {
                 { .path         = fc.path,
                   .sizePixels   = actualSize,
                   .glyphOffsetY = fc.glyphOffsetY });
+            _loadedFontIds.push_back(Rendering::FontId{});
         } else {
-            ImGui::GetIO().Fonts->AddFontFromFileTTF(fc.path.ToString().c_str(), actualSize);
+            const Result<Rendering::FontId> loaded = _reconciler->GetRenderer()->LoadFont(fc.path, actualSize);
+            if (loaded.has_value()) {
+                _loadedFontIds.push_back(*loaded);
+            } else {
+                IMF_WARN("Application::WithFont: failed to load '{}'", fc.path.ToString());
+                _loadedFontIds.push_back(Rendering::FontId{});
+            }
         }
     }
     _pendingFonts.clear();
+
+    // Any font added above (icon or regular) leaves ImGui's atlas needing a rebuild before the
+    // next NewFrame()/Render() -- backends without ImGuiBackendFlags_RendererHasTextures (e.g.
+    // TestHeadlessBackend, and any real backend not using the newer dynamic-texture-update path)
+    // assert on this otherwise. GetTexDataAsRGBA32() is the same call TestHeadlessBackend's own
+    // Init() already makes for its default font; safe and idempotent to call again here.
+    if (!ImGui::GetIO().Fonts->IsBuilt()) {
+        unsigned char* texPixels = nullptr;
+        int            texWidth  = 0;
+        int            texHeight = 0;
+        ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&texPixels, &texWidth, &texHeight);
+    }
 
     _dockSpace.SetConfig(&_layoutConfig);
 

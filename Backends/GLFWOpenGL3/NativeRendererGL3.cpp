@@ -425,6 +425,11 @@ void NativeRendererGL3::RenderDeferred() {
     drawList->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
 }
 
+Result<Rendering::FontId> NativeRendererGL3::LoadFont(const Utility::Path& path, float sizePixels) {
+    if (_textRenderer == nullptr) { return std::unexpected(Error::FontLoadFailed); }
+    return _textRenderer->LoadFont(path, sizePixels);
+}
+
 void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
     _batchBuilder.SetTextLayoutProvider(_textRenderer != nullptr ? _textRenderer->LayoutProvider() : nullptr);

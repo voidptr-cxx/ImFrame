@@ -34,6 +34,7 @@
 #include "ImFrame/App/DockSpace.hpp"
 #include "ImFrame/App/Window.hpp"
 #include "ImFrame/Backends/BackendInfo.hpp"
+#include "ImFrame/Rendering/CommandBuffer.hpp" // Rendering::FontId — LoadedFontId()'s return type
 #include "ImFrame/Tree/Widget.hpp"
 #include "ImFrame/Utility/Config.hpp"
 #include "ImFrame/Utility/Delegate.hpp"
@@ -130,6 +131,25 @@ public:
      * @return   Reference to this Application for chaining.
      */
     Application& WithFont(FontConfig font);
+
+    /**
+     * @brief    The `Rendering::FontId` resolved for the Nth `WithFont()` call, in call order.
+     *
+     * @internal
+     * `WithFont()` only queues a `FontConfig` — the font isn't actually loaded until `Run()`
+     * processes `_pendingFonts` (a valid GL/ImGui context is needed first). Every call is
+     * accounted for by index, including icon-font ones (`FontConfig::isIconFont`), which never
+     * resolve to a real `FontId` — they stay ImGui-atlas-only, unchanged from Phase 9 (Phase 33's
+     * MSDF pipeline has no equivalent glyph-range-merge concept). See `.claude/DECISIONS.md`,
+     * Phase 33.8.
+     *
+     * @param[in]  index  Same order as the corresponding `WithFont()` call.
+     * @return   The resolved `Rendering::FontId`, or a default (invalid) one if `index` is out of
+     *           range, `Run()` hasn't processed it yet, that slot was an icon font, or the active
+     *           renderer's `LoadFont()` failed for it.
+     * @throws   Nothing.
+     */
+    [[nodiscard]] Rendering::FontId LoadedFontId(std::size_t index) const noexcept;
 
     /**
      * @brief    Set the active theme.
@@ -357,6 +377,7 @@ private:
     Utility::Delegate<bool()>               _onClose;
     Utility::Delegate<Tree::Widget()>        _rootBuilder;
     std::vector<FontConfig>                 _pendingFonts;
+    std::vector<Rendering::FontId>          _loadedFontIds; ///< Parallel to _pendingFonts — see LoadedFontId().
     const ImFrame::Theme::Theme*            _pendingTheme            = nullptr;
     bool                                    _themeDirty              = false;
     float                                   _deltaTime               = 0.0f;

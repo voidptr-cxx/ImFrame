@@ -80,7 +80,7 @@ public:
      * @return   A `Rendering::FontId`, or `Error::FileNotFound`/`Error::FontLoadFailed`.
      * @throws   Nothing.
      */
-    [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels);
+    [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) override;
 
     /// Releases all GL resources. Safe to call multiple times, including before any render call.
     void Shutdown();

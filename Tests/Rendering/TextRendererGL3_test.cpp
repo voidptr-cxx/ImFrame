@@ -120,6 +120,26 @@ TEST_CASE("TextRendererGL3::LoadFont returns FileNotFound for a missing path", "
     REQUIRE(result.error() == Error::FileNotFound);
 }
 
+TEST_CASE("NativeRendererGL3::LoadFont fails when no ITextRenderer is attached", "[unit]") {
+    NativeRendererGL3 renderer;
+    const auto        result = renderer.LoadFont(kRealFont, 16.0f);
+    REQUIRE_FALSE(result.has_value());
+    renderer.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3::LoadFont forwards to an attached ITextRenderer's TextRendererGL3", "[unit]") {
+    TextRendererGL3    textRenderer;
+    NativeRendererGL3  renderer;
+    renderer.AttachTextRenderer(&textRenderer);
+
+    const auto result = renderer.LoadFont(kRealFont, 16.0f);
+    REQUIRE(result.has_value());
+    REQUIRE(result->IsValid());
+
+    renderer.Shutdown();
+    textRenderer.Shutdown();
+}
+
 TEST_CASE("TextRendererGL3::LayoutText returns an invalid texture and no quads for an unknown FontId", "[unit]") {
     TextRendererGL3 textRenderer;
 

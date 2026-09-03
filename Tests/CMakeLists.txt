@@ -201,7 +201,23 @@ target_link_libraries(ImFrame_Tests_App_Application
     PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
 )
 target_compile_features(ImFrame_Tests_App_Application PRIVATE cxx_std_23)
-catch_discover_tests(ImFrame_Tests_App_Application PROPERTIES LABELS unit)
+# WORKING_DIRECTORY needed since Phase 33.8's WithFont()/LoadedFontId() test references the
+# vendored FA6 font by relative path -- see ImFrame_Tests_Rendering_FontRegistry's identical
+# comment (Phase 33.2) for why catch_discover_tests()'s default CWD doesn't match the POST_BUILD
+# copy destination.
+catch_discover_tests(ImFrame_Tests_App_Application
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_App_Application>"
+    PROPERTIES LABELS unit
+)
+
+add_custom_command(TARGET ImFrame_Tests_App_Application POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:ImFrame_Tests_App_Application>/Assets/Fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+        "$<TARGET_FILE_DIR:ImFrame_Tests_App_Application>/Assets/Fonts/fa-solid-900.ttf"
+    COMMENT "Copying FA6 solid font to test output directory"
+)
 
 add_executable(ImFrame_Tests_App_DockSpace
     App/DockSpace_test.cpp
@@ -765,7 +781,22 @@ if(IMF_BACKEND_GLFW_OPENGL3)
     if(MSVC)
         target_compile_options(ImFrame_Tests_Rendering_ImGuiCompatRenderer PRIVATE /utf-8)
     endif()
-    catch_discover_tests(ImFrame_Tests_Rendering_ImGuiCompatRenderer PROPERTIES LABELS unit)
+    # WORKING_DIRECTORY needed since Phase 33.8's LoadFont() tests reference the vendored FA6 font
+    # by relative path -- see ImFrame_Tests_Rendering_FontRegistry's identical comment (Phase 33.2)
+    # for why catch_discover_tests()'s default CWD doesn't match the POST_BUILD copy destination.
+    catch_discover_tests(ImFrame_Tests_Rendering_ImGuiCompatRenderer
+        WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_ImGuiCompatRenderer>"
+        PROPERTIES LABELS unit
+    )
+
+    add_custom_command(TARGET ImFrame_Tests_Rendering_ImGuiCompatRenderer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_ImGuiCompatRenderer>/Assets/Fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/Assets/Fonts/fa-solid-900.ttf"
+            "$<TARGET_FILE_DIR:ImFrame_Tests_Rendering_ImGuiCompatRenderer>/Assets/Fonts/fa-solid-900.ttf"
+        COMMENT "Copying FA6 solid font to test output directory"
+    )
 endif()
 
 # ─── Phase 32.4: NativeRendererGL3 real-pixel tests ──────────────────────────────────────────

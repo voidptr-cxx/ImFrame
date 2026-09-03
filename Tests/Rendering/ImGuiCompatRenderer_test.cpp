@@ -23,6 +23,8 @@
 #include "GLFWOpenGL3Backend.hpp"
 #include "Rendering/Renderers/ImGuiCompatRenderer.hpp"
 
+#include "ImFrame/Icons/Icons.hpp"
+
 #include <imgui.h>
 
 #include <array>
@@ -221,6 +223,64 @@ TEST_CASE("ImGuiCompatRenderer handles PushClipRect/PopClipRect and layer comman
 
     ImGui::End();
     REQUIRE_NOTHROW(backend.EndFrame());
+
+    renderer.Shutdown();
+    backend.Shutdown();
+}
+
+TEST_CASE("ImGuiCompatRenderer::LoadFont returns FileNotFound for a missing path, without needing an "
+          "ImGui context",
+          "[unit]") {
+    ImGuiCompatRenderer renderer;
+    const auto          result = renderer.LoadFont(Utility::Path("Assets/Fonts/does-not-exist.ttf"), 16.0f);
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error() == Error::FileNotFound);
+}
+
+TEST_CASE("ImGuiCompatRenderer::LoadFont loads a real font into ImGui's atlas and Translate(DrawText) "
+          "respects the resolved FontId",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(ConformanceWindowConfig()).has_value());
+    const WindowExtent extent = backend.WindowSize();
+
+    ImGuiCompatRenderer renderer;
+    const auto          font = renderer.LoadFont(Utility::Path("Assets/Fonts/fa-solid-900.ttf"), 32.0f);
+    REQUIRE(font.has_value());
+    REQUIRE(font->IsValid());
+
+    backend.Poll();
+    backend.BeginFrame();
+
+    ImGui::SetNextWindowPos({0.0f, 0.0f});
+    ImGui::SetNextWindowSize({static_cast<float>(extent.Width), static_cast<float>(extent.Height)});
+    ImGui::Begin("Compat", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+
+    CommandBuffer buffer;
+    buffer.Push(DrawText{
+        .Position = {10.0f, 10.0f},
+        .Text     = Icons::Fa::House, // a real, checked-in FA6 glyph -- not a hand-typed PUA byte
+                                      // sequence (see .claude/DECISIONS.md, Phase 33.4, for why that's unreliable)
+        .Font     = *font,
+        .FontSize = 32.0f,
+        .Color    = {1.0f, 1.0f, 1.0f, 1.0f},
+    });
+
+    REQUIRE_NOTHROW(renderer.Render(buffer));
+
+    ImGui::End();
+    backend.EndFrame();
+
+    auto pixels = backend.ReadPixels();
+    bool anyNonBackground = false;
+    for (int y = 0; y < extent.Height; y += 2) {
+        for (int x = 0; x < extent.Width; x += 2) {
+            if (Sample(pixels, x, y, extent.Width).r > 50) { anyNonBackground = true; break; }
+        }
+        if (anyNonBackground) break;
+    }
+    REQUIRE(anyNonBackground); // the resolved FontId was actually used to draw something
 
     renderer.Shutdown();
     backend.Shutdown();
