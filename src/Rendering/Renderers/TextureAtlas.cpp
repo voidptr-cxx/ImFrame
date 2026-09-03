@@ -49,6 +49,7 @@ bool TextureAtlas::Grow() {
 
     _pixels = std::move(grown);
     _height = newHeight;
+    ++_generation;
     return true;
 }
 
@@ -84,6 +85,7 @@ void TextureAtlas::Upload(const AtlasRegion& region, const std::vector<std::uint
         std::memcpy(_pixels.data() + dstOffset, rgba8Pixels.data() + srcOffset,
                     static_cast<std::size_t>(region.Width) * 4);
     }
+    ++_generation;
 }
 
 std::vector<std::uint8_t> TextureAtlas::ReadRegion(const AtlasRegion& region) const {

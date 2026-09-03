@@ -118,6 +118,12 @@ public:
     /// Opaque id for this atlas's (conceptual, not-yet-GPU-backed) texture — stable across growth.
     [[nodiscard]] Rendering::TextureId TextureId() const noexcept { return _textureId; }
 
+    /// Increments on every `Upload()`/`Grow()` call — lets a real GPU-backed consumer (a later
+    /// sub-phase's `TextRendererGL3`, mirroring this atlas's pixel buffer into an actual GL
+    /// texture) detect "has the CPU-side buffer changed since I last uploaded it to the GPU"
+    /// without diffing pixels, by remembering the generation it last uploaded.
+    [[nodiscard]] std::uint64_t Generation() const noexcept { return _generation; }
+
 private:
     struct Shelf {
         std::uint32_t YOffset = 0;
@@ -132,6 +138,7 @@ private:
     std::uint32_t _height;
     std::uint32_t _maxHeight;
     Rendering::TextureId _textureId;
+    std::uint64_t _generation = 0;
 
     std::vector<Shelf> _shelves;
     std::vector<std::uint8_t> _pixels; ///< RGBA8, row-major, `_width * _height * 4` bytes.

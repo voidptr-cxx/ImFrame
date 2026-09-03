@@ -15,6 +15,26 @@ if(IMF_BUILD_NATIVE_RENDERER)
     target_include_directories(ImFrame_GLFWOpenGL3 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 
+# ── Phase 33.7: TextRendererGL3, NativeRendererGL3's real GL3 MSDF text delegate. Requires BOTH
+# IMF_BUILD_NATIVE_RENDERER (this file's own gate, above) AND IMF_BUILD_TEXT_MSDF (FontRegistry/
+# TextShaper/GlyphAtlas, Phase 33.1+) — deliberately not auto-enabled by one another (see
+# .claude/DECISIONS.md, Phase 33.7): IMF_BUILD_NATIVE_RENDERER alone must keep building exactly as
+# it did through Phase 33.6, with no silent new harfbuzz/msdfgen toolchain requirement (~26 minutes
+# from source, per Phase 33.1). NativeRendererGL3.cpp/.hpp themselves have no part in this block —
+# they depend only on the abstract ITextRenderer/ITextLayoutProvider seam, always available. ──
+if(IMF_BUILD_NATIVE_RENDERER AND IMF_BUILD_TEXT_MSDF)
+    target_sources(ImFrame_GLFWOpenGL3 PRIVATE TextRendererGL3.cpp)
+    target_include_directories(ImFrame_GLFWOpenGL3 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    # Same reasoning as GlyphAtlas's own test targets (Phase 33.4, DECISIONS.md): ImFrame's PRIVATE
+    # link to these doesn't propagate through the static ImFrame.lib to this separate static lib.
+    target_link_libraries(ImFrame_GLFWOpenGL3
+        PRIVATE Freetype::Freetype
+                harfbuzz::harfbuzz
+                msdfgen::msdfgen-ext
+                msdfgen::msdfgen-core
+    )
+endif()
+
 # Expose own source directory so consumers can:
 #   #include "GLFWOpenGL3Backend.hpp"
 target_include_directories(ImFrame_GLFWOpenGL3

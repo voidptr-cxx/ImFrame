@@ -381,13 +381,13 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
                 RenderImageBatch(batch);
                 break;
             case BatchKind::Text:
-                // No text-batch producer exists yet -- _batchBuilder is never given a
-                // ITextLayoutProvider (see BatchBuilder::SetTextLayoutProvider()), so
-                // BatchKind::Text is never actually produced here today. A real
-                // RenderTextBatch() (MSDF shader + glyph-atlas GL texture) is a later
-                // sub-phase's job -- this branch exists so a stray Text batch is silently
-                // dropped rather than misrouted into RenderImageBatch() and crashing via
+                // A BatchKind::Text batch only exists here at all when _textRenderer's own
+                // ITextLayoutProvider (handed to _batchBuilder in Render(), below) resolved it --
+                // so _textRenderer is guaranteed non-null whenever this case is reached. The null
+                // check stays anyway: a stray Text batch with no attached renderer is silently
+                // dropped rather than misrouted into RenderImageBatch(), which would crash via
                 // std::get<vector<ImageVertex>> on a std::vector<TextVertex>.
+                if (_textRenderer != nullptr) { _textRenderer->RenderTextBatch(batch); }
                 break;
         }
     }
@@ -427,6 +427,7 @@ void NativeRendererGL3::RenderDeferred() {
 
 void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
+    _batchBuilder.SetTextLayoutProvider(_textRenderer != nullptr ? _textRenderer->LayoutProvider() : nullptr);
     _batchBuilder.Build(buffer);
 
     if (_mode == RenderMode::DeferredReplay) {

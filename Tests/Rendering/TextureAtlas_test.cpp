@@ -116,6 +116,24 @@ TEST_CASE("TextureAtlas: growth preserves already-uploaded pixel content", "[uni
     REQUIRE(atlas.ReadRegion(*region) == pixels);
 }
 
+TEST_CASE("TextureAtlas: Generation() increments on Upload() and Grow(), and is stable otherwise", "[unit]") {
+    TextureAtlas atlas(16, 8, 32);
+    REQUIRE(atlas.Generation() == 0);
+
+    auto region = atlas.Alloc(4, 4); // opens the first shelf -- no growth needed yet
+    REQUIRE(region.has_value());
+    REQUIRE(atlas.Generation() == 0); // Alloc() alone doesn't touch pixels
+
+    std::vector<std::uint8_t> pixels(4 * 4 * 4, 0xCD);
+    atlas.Upload(*region, pixels);
+    REQUIRE(atlas.Generation() == 1);
+
+    auto forceGrow = atlas.Alloc(16, 8); // needs a new, taller shelf -- forces Grow()
+    REQUIRE(forceGrow.has_value());
+    REQUIRE(atlas.Height() == 16); // confirms Grow() actually ran
+    REQUIRE(atlas.Generation() == 2);
+}
+
 TEST_CASE("TextureAtlas: Uv() is normalized to the atlas's current dimensions", "[unit]") {
     TextureAtlas atlas(100, 100, 100);
     auto region = atlas.Alloc(25, 50);
