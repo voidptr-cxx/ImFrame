@@ -86,12 +86,16 @@ void main() {
     vec4 r = vec4(vRadii.y, vRadii.z, vRadii.x, vRadii.w);
     float dist = RoundedBoxSdf(vLocal, vHalfSize, r);
 
-    float fillAlpha = 1.0 - smoothstep(-1.0, 1.0, dist);
+    // fwidth-derived AA band (Phase 34.2) -- matches Shaders/SDFRect.glsl's identical fix
+    // (Phase 34.1): a hardcoded +-1.0 band is only correct at exact 1:1 pixel scale.
+    float aa = max(fwidth(dist) * 0.5, 1e-4);
+    float fillAlpha = 1.0 - smoothstep(-aa, aa, dist);
     vec4 color = vFillColor * fillAlpha;
 
     if (vStrokeWidth > 0.0) {
         float strokeDist = abs(dist) - vStrokeWidth * 0.5;
-        float strokeAlpha = 1.0 - smoothstep(-1.0, 1.0, strokeDist);
+        float strokeAa = max(fwidth(strokeDist) * 0.5, 1e-4);
+        float strokeAlpha = 1.0 - smoothstep(-strokeAa, strokeAa, strokeDist);
         color = mix(color, vStrokeColor, strokeAlpha * vStrokeColor.a);
     }
 
@@ -156,7 +160,11 @@ float RoundedBoxSdf(vec2 p, vec2 b, vec4 r) {
 
 void main() {
     vec4 r = vec4(vRadii.y, vRadii.z, vRadii.x, vRadii.w);
-    float mask = 1.0 - smoothstep(-1.0, 1.0, RoundedBoxSdf(vLocal, vHalfSize, r));
+    float dist = RoundedBoxSdf(vLocal, vHalfSize, r);
+
+    // fwidth-derived AA band (Phase 34.2) -- see kRectFragmentSource's identical fix above.
+    float aa = max(fwidth(dist) * 0.5, 1e-4);
+    float mask = 1.0 - smoothstep(-aa, aa, dist);
     outColor = texture(uTexture, vUv) * vTintColor * mask;
 }
 )GLSL";
