@@ -5,6 +5,9 @@
 // technique and the RoundedBoxSdf rounding approach — duplicated here rather than shared via
 // #include so each shader file compiles standalone (no cross-shader #include exists in this
 // codebase yet); keep the two copies in sync by hand if RoundedBoxSdf's formula ever changes.
+// The rounding mask's AA band was fwidth-derived to match SDFRect.glsl's own fix (Phase 34.2) —
+// previously a hardcoded +-1.0 band, correct only at exact 1:1 pixel scale (see DECISIONS.md,
+// Phase 34.1, for why this was flagged there but fixed here instead).
 
 #version 450
 
@@ -59,7 +62,12 @@ float RoundedBoxSdf(vec2 p, vec2 b, vec4 r) {
 
 void main() {
     vec4 r = vec4(vRadii.y, vRadii.z, vRadii.x, vRadii.w);
-    float mask = 1.0 - smoothstep(-1.0, 1.0, RoundedBoxSdf(vLocal, vHalfSize, r));
+    float dist = RoundedBoxSdf(vLocal, vHalfSize, r);
+
+    // fwidth-derived AA band (Phase 34.2) -- see SDFRect.glsl's identical fix (Phase 34.1) for why
+    // a hardcoded +-1.0 band is only correct at exact 1:1 pixel scale.
+    float aa = max(fwidth(dist) * 0.5, 1e-4);
+    float mask = 1.0 - smoothstep(-aa, aa, dist);
     outColor = texture(uTexture, vUv) * vTintColor * mask;
 }
 
