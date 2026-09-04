@@ -82,7 +82,7 @@ void main() {
 
 // Duplicated from NativeRendererGL3.cpp's own anonymous-namespace helpers of the same name/shape
 // (not shared via a header) — matches this codebase's already-accepted duplication of e.g.
-// RoundedBoxSdf across Rect.glsl/Image.glsl/NativeRendererGL3.cpp. Kept in sync by hand.
+// RoundedBoxSdf across SDFRect.glsl/Image.glsl/NativeRendererGL3.cpp. Kept in sync by hand.
 
 [[nodiscard]] unsigned int CompileShaderStage(unsigned int type, const char* source) {
     const unsigned int shader = glCreateShader(type);

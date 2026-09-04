@@ -1,6 +1,6 @@
 /**
  * @file     ShaderPipeline_test.cpp
- * @brief    Smoke tests for the Phase 32.2 generated shader headers
+ * @brief    Smoke tests for the Phase 32.2/34.1 generated shader headers
  *
  * @internal
  * Only built when IMF_BUILD_NATIVE_RENDERER=ON (see CMakeLists.txt / Tests/CMakeLists.txt) —
@@ -19,8 +19,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "Shaders/Rect.vert.hpp"
-#include "Shaders/Rect.frag.hpp"
+#include "Shaders/SDFRect.vert.hpp"
+#include "Shaders/SDFRect.frag.hpp"
 #include "Shaders/Image.vert.hpp"
 #include "Shaders/Image.frag.hpp"
 #include "Shaders/Path.vert.hpp"
@@ -33,13 +33,13 @@
 using namespace ImFrame::Internal::Shaders;
 
 TEST_CASE("ShaderPipeline: every generated header has non-empty source and non-empty SPIR-V", "[unit]") {
-    REQUIRE(std::strlen(kRectVertexSource) > 0);
-    REQUIRE(kRectVertexSpirvByteCount > 0);
-    REQUIRE(sizeof(kRectVertexSpirv) == kRectVertexSpirvByteCount);
+    REQUIRE(std::strlen(kSDFRectVertexSource) > 0);
+    REQUIRE(kSDFRectVertexSpirvByteCount > 0);
+    REQUIRE(sizeof(kSDFRectVertexSpirv) == kSDFRectVertexSpirvByteCount);
 
-    REQUIRE(std::strlen(kRectFragmentSource) > 0);
-    REQUIRE(kRectFragmentSpirvByteCount > 0);
-    REQUIRE(sizeof(kRectFragmentSpirv) == kRectFragmentSpirvByteCount);
+    REQUIRE(std::strlen(kSDFRectFragmentSource) > 0);
+    REQUIRE(kSDFRectFragmentSpirvByteCount > 0);
+    REQUIRE(sizeof(kSDFRectFragmentSpirv) == kSDFRectFragmentSpirvByteCount);
 
     REQUIRE(std::strlen(kImageVertexSource) > 0);
     REQUIRE(kImageVertexSpirvByteCount > 0);
@@ -72,8 +72,8 @@ TEST_CASE("ShaderPipeline: every embedded SPIR-V module starts with the SPIR-V m
     // SPIR-V and not e.g. accidentally-embedded garbage or a truncated read.
     constexpr unsigned char kMagic[4] = {0x03, 0x02, 0x23, 0x07};
 
-    REQUIRE(std::memcmp(kRectVertexSpirv, kMagic, 4) == 0);
-    REQUIRE(std::memcmp(kRectFragmentSpirv, kMagic, 4) == 0);
+    REQUIRE(std::memcmp(kSDFRectVertexSpirv, kMagic, 4) == 0);
+    REQUIRE(std::memcmp(kSDFRectFragmentSpirv, kMagic, 4) == 0);
     REQUIRE(std::memcmp(kImageVertexSpirv, kMagic, 4) == 0);
     REQUIRE(std::memcmp(kImageFragmentSpirv, kMagic, 4) == 0);
     REQUIRE(std::memcmp(kPathVertexSpirv, kMagic, 4) == 0);
