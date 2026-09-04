@@ -11,7 +11,7 @@
  * command is encountered, or the batch's vertex count reaches `kMaxBatchVertices`.
  *
  * `RectVertex`/`ImageVertex`/`TextVertex` are deliberately kind-specific, not
- * one generic `Vertex` struct — they match `Shaders/Rect.glsl`/`Shaders/
+ * one generic `Vertex` struct — they match `Shaders/SDFRect.glsl`/`Shaders/
  * Image.glsl`/`Shaders/MSDFText.glsl`'s `STAGE_VERTEX` inputs field-for-field
  * (Phase 32.2's rounded-box SDF shaders need per-rect `Local`/`HalfSize`/
  * `Radii`, which a generic Position/Uv/Color vertex cannot carry). `DrawPath`
@@ -54,7 +54,7 @@
 
 namespace ImFrame::Internal {
 
-/// Vertex layout for `BatchKind::Rect` — matches `Shaders/Rect.glsl`'s `STAGE_VERTEX` inputs exactly.
+/// Vertex layout for `BatchKind::Rect` — matches `Shaders/SDFRect.glsl`'s `STAGE_VERTEX` inputs exactly.
 struct RectVertex {
     Widgets::Vec2           Position{};    ///< Pixel-space vertex position (`inPosition`).
     Widgets::Vec2           Local{};       ///< Position relative to the rect's center, in pixels (`inLocal`).

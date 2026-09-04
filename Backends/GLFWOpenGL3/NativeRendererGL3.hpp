@@ -29,13 +29,13 @@
  *
  * Its shaders are hand-written `#version 330 core` GLSL, compiled at runtime
  * via the normal `glCompileShader()` API — **not** the Phase 32.2
- * `glslang`/SPIR-V build-time pipeline. `Shaders/Rect.glsl` targets
+ * `glslang`/SPIR-V build-time pipeline. `Shaders/SDFRect.glsl` targets
  * `#version 450` with explicit `layout(binding=N)` qualifiers (required for
  * Vulkan-semantics SPIR-V generation); this backend's actual GL context is
  * requested as 3.3 core (`GLFWOpenGL3Backend.cpp`), which does not support
  * those qualifiers without an extension. The two shaders implement the same
  * rounded-box SDF logic, kept in sync by hand — matching the same
- * documented duplication already accepted between `Rect.glsl` and
+ * documented duplication already accepted between `SDFRect.glsl` and
  * `Image.glsl` themselves.
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)

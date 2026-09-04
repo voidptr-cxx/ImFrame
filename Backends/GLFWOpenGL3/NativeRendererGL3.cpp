@@ -27,7 +27,7 @@ namespace ImFrame::Internal {
 
 namespace {
 
-// Hand-written #version 330 core equivalent of Shaders/Rect.glsl's rounded-box SDF logic — see
+// Hand-written #version 330 core equivalent of Shaders/SDFRect.glsl's rounded-box SDF logic — see
 // this file's own header comment for why the Phase 32.2 #version 450 source isn't reused directly.
 
 const char* kRectVertexSource = R"GLSL(

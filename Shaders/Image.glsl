@@ -1,7 +1,7 @@
 // Image.glsl — textured rectangle with independent per-corner rounding and a tint colour.
 //
 // Matches Rendering::DrawImage: Position, Size, Texture, UvMin/UvMax, TintColor, Radii.
-// See Rect.glsl's file comment for the STAGE_VERTEX/STAGE_FRAGMENT single-file compile
+// See SDFRect.glsl's file comment for the STAGE_VERTEX/STAGE_FRAGMENT single-file compile
 // technique and the RoundedBoxSdf rounding approach — duplicated here rather than shared via
 // #include so each shader file compiles standalone (no cross-shader #include exists in this
 // codebase yet); keep the two copies in sync by hand if RoundedBoxSdf's formula ever changes.
