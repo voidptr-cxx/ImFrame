@@ -257,7 +257,13 @@ target_link_libraries(ImFrame_Tests_Icons_IconFont
     PRIVATE ImFrame imgui::imgui Catch2::Catch2WithMain
 )
 target_compile_features(ImFrame_Tests_Icons_IconFont PRIVATE cxx_std_23)
-catch_discover_tests(ImFrame_Tests_Icons_IconFont PROPERTIES LABELS unit)
+# WORKING_DIRECTORY needed so FindSolidFont()'s relative path resolves under ctest, matching the
+# POST_BUILD copy step below -- see that helper's own doc comment (Tests/Icons/IconFont_test.cpp)
+# and ImFrame_Tests_Rendering_FontRegistry's identical fix (Phase 33.2) for the full explanation.
+catch_discover_tests(ImFrame_Tests_Icons_IconFont
+    WORKING_DIRECTORY "$<TARGET_FILE_DIR:ImFrame_Tests_Icons_IconFont>"
+    PROPERTIES LABELS unit
+)
 
 # Copy the vendored FA6 solid font next to the test binary so FindSolidFont()
 # resolves "Assets/Fonts/fa-solid-900.ttf" relative to the working directory.
