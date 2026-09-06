@@ -20,9 +20,8 @@
  * @date     2026-06-01
  * @version  0.6.0
  *
- * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
- *            Proprietary and confidential. Unauthorised copying, distribution,
- *            or modification of this file is strictly prohibited.
+ * @copyright Copyright (c) 2025 voidptr-cxx
+ * @license   MIT — see LICENSE in the project root for the full text
  */
 
 #include "ImFrame/Utility/Config.hpp"
@@ -34,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <shared_mutex>
 #include <sstream>
 
@@ -42,6 +42,19 @@ namespace ImFrame::Utility {
 // ─── TOML-subset parser (file-local) ─────────────────────────────────────────
 
 namespace {
+
+/// Serialises every `Config::Save()`/`Load()`/`PollWatcher()` file access across the whole
+/// process — not per-`Config`-instance. A per-instance mutex (`Config::Impl::mutex`) cannot
+/// prevent two *different* `Config` objects (e.g. one instance's coalesced background save and
+/// an unrelated `Config::Load()` call reading the same path) from racing on the same file, since
+/// `Load()` is static and has no instance to share a lock with in the first place. `Config` is a
+/// low-frequency, app-config-scale utility (startup load, occasional save-on-change) -- a single
+/// global mutex costs nothing measurable here and is simpler and more complete than trying to key
+/// locks by path. See `.claude/DECISIONS.md`.
+std::mutex& FileIoMutex() {
+    static std::mutex m;
+    return m;
+}
 
 std::string Trim(const std::string& s) {
     const auto start = s.find_first_not_of(" \t\r\n");
@@ -211,17 +224,23 @@ Config& Config::operator=(Config&& other) noexcept {
 // ─── Config::Load ─────────────────────────────────────────────────────────────
 
 ImFrame::Result<Config> Config::Load(const Path& path) {
-    if (!std::filesystem::exists(path.Native()))
-        return std::unexpected(ImFrame::Error::FileNotFound);
+    std::string text;
+    {
+        // Serialised against any Config::Save() (this or another instance) targeting the same
+        // or a different path -- see FileIoMutex()'s own comment.
+        std::lock_guard<std::mutex> ioLock{FileIoMutex()};
 
-    std::ifstream file{path.Native()};
-    if (!file.is_open())
-        return std::unexpected(ImFrame::Error::FileReadFailed);
+        if (!std::filesystem::exists(path.Native()))
+            return std::unexpected(ImFrame::Error::FileNotFound);
 
-    std::string text{std::istreambuf_iterator<char>{file},
-                     std::istreambuf_iterator<char>{}};
-    if (file.fail() && !file.eof())
-        return std::unexpected(ImFrame::Error::FileReadFailed);
+        std::ifstream file{path.Native()};
+        if (!file.is_open())
+            return std::unexpected(ImFrame::Error::FileReadFailed);
+
+        text.assign(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{});
+        if (file.fail() && !file.eof())
+            return std::unexpected(ImFrame::Error::FileReadFailed);
+    }
 
     Config cfg;
     if (auto err = ParseToml(text, cfg._impl->data); !err.empty())
@@ -259,25 +278,29 @@ void Config::SetValue(const std::string& key, ConfigValue value) {
 // ─── Config::Save ─────────────────────────────────────────────────────────────
 
 ImFrame::VoidResult Config::Save(const Path& path) {
-    // Exclusive (not shared) and held across the actual file write, not just the data->string
-    // serialisation: SetValue()'s coalesced background save and a caller's own explicit Save()
-    // both end up here, on different threads, targeting the same path. A shared_lock released
-    // before the ofstream write let two such calls interleave their writes to the same file --
-    // e.g. one truncates just as the other is mid-write -- corrupting it. Since SetValue() always
-    // applies each Set() to _impl->data synchronously (under its own unique_lock) before this ever
-    // runs, whichever of two racing Save() calls a caller-vs-worker pair happens to run first, both
-    // would serialise the identical, fully up-to-date content anyway -- so full serialisation here
-    // costs nothing but a Save() call rarely overlapping with an unrelated Get()/Set() on the same
-    // instance, and fixes the real, reproducible file corruption. See .claude/DECISIONS.md.
-    std::unique_lock lock{_impl->mutex};
-    const std::string text = SerialiseToml(_impl->data);
+    std::string text;
+    {
+        std::shared_lock lock{_impl->mutex};
+        text = SerialiseToml(_impl->data);
+    }
 
+    // Serialised against any other Config::Save()/Load() (this or a different instance)
+    // targeting the same or a different path. SetValue()'s coalesced background save and a
+    // caller's own explicit Save() -- or an unrelated Config::Load() call reading the same file
+    // -- can all reach file I/O concurrently on different threads; without this, e.g. one
+    // Save()'s truncate could land mid-write of another, corrupting the file, or a Load() could
+    // read a half-written file. See FileIoMutex()'s own comment and .claude/DECISIONS.md.
+    std::lock_guard<std::mutex> ioLock{FileIoMutex()};
     std::ofstream out{path.Native(), std::ios::trunc};
     if (!out.is_open()) return std::unexpected(ImFrame::Error::FileWriteFailed);
     out << text;
     if (!out) return std::unexpected(ImFrame::Error::FileWriteFailed);
     _impl->savePath = path;
     return {};
+}
+
+void Config::FlushPendingSave() {
+    _impl->saveWorker.Drain();
 }
 
 // ─── Config::WatchPath / PollWatcher ──────────────────────────────────────────
@@ -300,12 +323,16 @@ void Config::PollWatcher() {
         if (e.Type != FileChangeType::Modified) return;
         if (e.ChangedPath.Native().filename() != _impl->watchedPath.Native().filename()) return;
 
-        std::ifstream file{_impl->watchedPath.Native()};
-        if (!file.is_open()) return;
+        std::string text;
+        {
+            // Same reasoning as Load()/Save() -- see FileIoMutex()'s own comment.
+            std::lock_guard<std::mutex> ioLock{FileIoMutex()};
+            std::ifstream file{_impl->watchedPath.Native()};
+            if (!file.is_open()) return;
 
-        std::string text{std::istreambuf_iterator<char>{file},
-                         std::istreambuf_iterator<char>{}};
-        if (file.fail() && !file.eof()) return;
+            text.assign(std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{});
+            if (file.fail() && !file.eof()) return;
+        }
 
         std::unordered_map<std::string, ConfigValue> newData;
         if (!ParseToml(text, newData).empty()) return;

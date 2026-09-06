@@ -12,9 +12,8 @@
  * @date     2026-06-01
  * @version  0.6.0
  *
- * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
- *            Proprietary and confidential. Unauthorised copying, distribution,
- *            or modification of this file is strictly prohibited.
+ * @copyright Copyright (c) 2025 voidptr-cxx
+ * @license   MIT — see LICENSE in the project root for the full text
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -126,6 +125,12 @@ TEST_CASE("Config Set and Save round-trip", "[unit]") {
     REQUIRE(loaded->Get<int64_t>   ("Window.Width",   0) == 800);
     REQUIRE(loaded->Get<bool>      ("enabled",    false) == true);
 
+    // An early Set() above (while cfg's save path was still unset) queued a coalesced background
+    // save whose deferred check of _impl->savePath can now see the path this test's own explicit
+    // Save() call just set -- meaning that task can still be mid-write (file handle open) after
+    // this point. Flush it before removing the file, or fs::remove() can throw a Windows sharing
+    // violation ("used by another process") on a lingering handle. See .claude/DECISIONS.md.
+    cfg.FlushPendingSave();
     fs::remove(savePath.Native());
 }
 
@@ -151,6 +156,10 @@ TEST_CASE("Config Set coalesces: at most one save queued per batch of Sets", "[u
     REQUIRE(reloaded.has_value());
     REQUIRE(reloaded->Get<int64_t>("counter", -1) == 19);
 
+    // The first of the 20 Set() calls above queued the (single, coalesced) background save --
+    // flush it before removing the file, or a still-in-flight write's open file handle can make
+    // fs::remove() throw a Windows sharing violation. See .claude/DECISIONS.md.
+    loaded->FlushPendingSave();
     fs::remove(savePath.Native());
 }
 
