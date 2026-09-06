@@ -155,10 +155,41 @@ ThreadPool::ThreadPool(std::size_t workerCount, std::string namePrefix)
                 [this](std::stop_token st) {
                     // Worker loop: acquire the semaphore (one permit per queued task),
                     // then pop and execute. try_acquire_for allows observing stop requests.
+                    //
+                    // A successful acquire() is a promise that a pushed item is waiting --
+                    // but TryPush()'s producer can still be between its _tail CAS and its
+                    // slot.sequence.store(release) when a worker's TryPop() runs (that
+                    // producer reserved its slot, and another producer's *later* release()
+                    // is what this worker's acquire() happened to consume). TryPop() then
+                    // legitimately reports the head slot as "not yet visible" and returns
+                    // false, even though a real item is queued -- this is not "no work",
+                    // it is "the work isn't published yet". Once a permit has been
+                    // consumed, its corresponding item is retryable but not optional: if
+                    // this loop gave up on a false TryPop() instead of retrying, that
+                    // permit is gone forever with no item ever popped for it, and once
+                    // enough of these accumulate, the queue permanently strands its last
+                    // few items (nobody left holding a permit to pop them) -- a real,
+                    // reproducible deadlock hit ~50% of the time under the stress test's
+                    // 8-producer/8-worker/10000-task load (see .claude/DECISIONS.md).
+                    //
+                    // Shutdown() also releases workerCount *extra* permits purely to wake
+                    // any worker blocked in try_acquire_for so it can observe
+                    // stop_requested() and exit -- those permits have no item behind
+                    // them at all. Stopping the retry as soon as stop_requested() becomes
+                    // true (rather than retrying unconditionally) tells the two cases
+                    // apart: outside shutdown, every acquired permit is backed by a real
+                    // push and is safe to retry for; during shutdown, giving up on a
+                    // permit with nothing to pop is correct and matches this pool's
+                    // existing "shutdown does not guarantee the queue drains" contract.
                     while (!st.stop_requested()) {
                         if (_impl->semaphore.try_acquire_for(std::chrono::milliseconds{5})) {
                             std::function<void()> task;
-                            if (_impl->queue.TryPop(task))
+                            bool popped = _impl->queue.TryPop(task);
+                            while (!popped && !st.stop_requested()) {
+                                std::this_thread::yield();
+                                popped = _impl->queue.TryPop(task);
+                            }
+                            if (popped)
                                 task();
                         }
                     }
