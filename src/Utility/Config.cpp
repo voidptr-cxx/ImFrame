@@ -259,11 +259,19 @@ void Config::SetValue(const std::string& key, ConfigValue value) {
 // ─── Config::Save ─────────────────────────────────────────────────────────────
 
 ImFrame::VoidResult Config::Save(const Path& path) {
-    std::string text;
-    {
-        std::shared_lock lock{_impl->mutex};
-        text = SerialiseToml(_impl->data);
-    }
+    // Exclusive (not shared) and held across the actual file write, not just the data->string
+    // serialisation: SetValue()'s coalesced background save and a caller's own explicit Save()
+    // both end up here, on different threads, targeting the same path. A shared_lock released
+    // before the ofstream write let two such calls interleave their writes to the same file --
+    // e.g. one truncates just as the other is mid-write -- corrupting it. Since SetValue() always
+    // applies each Set() to _impl->data synchronously (under its own unique_lock) before this ever
+    // runs, whichever of two racing Save() calls a caller-vs-worker pair happens to run first, both
+    // would serialise the identical, fully up-to-date content anyway -- so full serialisation here
+    // costs nothing but a Save() call rarely overlapping with an unrelated Get()/Set() on the same
+    // instance, and fixes the real, reproducible file corruption. See .claude/DECISIONS.md.
+    std::unique_lock lock{_impl->mutex};
+    const std::string text = SerialiseToml(_impl->data);
+
     std::ofstream out{path.Native(), std::ios::trunc};
     if (!out.is_open()) return std::unexpected(ImFrame::Error::FileWriteFailed);
     out << text;
