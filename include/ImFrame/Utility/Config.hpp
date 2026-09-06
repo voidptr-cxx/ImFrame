@@ -34,9 +34,8 @@
  * @date     2026-06-01
  * @version  0.6.0
  *
- * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
- *            Proprietary and confidential. Unauthorised copying, distribution,
- *            or modification of this file is strictly prohibited.
+ * @copyright Copyright (c) 2025 voidptr-cxx
+ * @license   MIT — see LICENSE in the project root for the full text
  */
 
 #pragma once
@@ -174,6 +173,20 @@ public:
      * @return   `std::unexpected(Error::FileWriteFailed)` if write fails.
      */
     [[nodiscard]] ImFrame::VoidResult Save(const Path& path);
+
+    /**
+     * @brief    Blocks until any in-flight coalesced background save has fully completed.
+     *
+     * `Set()` queues at most one coalesced save on a background worker thread — by design, a
+     * caller has no other way to know that save has actually finished writing (and closed its
+     * file handle) rather than merely been queued. Call this before doing anything that assumes
+     * the save path is in a final, settled state outside of `Config` itself: deleting the file,
+     * reading it through another mechanism, or handing it to another process. The destructor and
+     * move-assignment already call this internally, so it is never required just to destroy or
+     * reassign a `Config` safely — only when an external operation on the same path needs to wait
+     * for it first.
+     */
+    void FlushPendingSave();
 
     // ── File watching ─────────────────────────────────────────────────────
 
