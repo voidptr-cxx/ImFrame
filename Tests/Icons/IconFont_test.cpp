@@ -67,22 +67,22 @@ static_assert(
 
 namespace {
 
-/// Resolves the path to the vendored FA6 solid font relative to the source tree.
-/// Falls back to a relative path for builds that copy Assets/ next to the binary.
+/// Resolves the path to the vendored FA6 solid font, relative to the process's current working
+/// directory. `Tests/CMakeLists.txt`'s `ImFrame_Tests_Icons_IconFont` target both copies the font
+/// next to the test binary (a `POST_BUILD` step) and sets `WORKING_DIRECTORY` on its
+/// `catch_discover_tests()` registration to that same binary directory, so this one relative path
+/// resolves correctly under `ctest`, not just when run directly from the repo root.
+///
+/// @internal
+/// This previously tried two "candidate" paths, but both were the identical literal string --
+/// dead code masquerading as a repo-root/binary-relative fallback, and the real reason the two
+/// runtime tests below silently SKIPPED on every `ctest` run was the missing `WORKING_DIRECTORY`
+/// (matching the identical bug already fixed, this same session, in `FontRegistry_test.cpp` and
+/// several sibling test files) -- fixed directly on the CMake target instead of by adding more
+/// candidate strings here. See `.claude/DECISIONS.md`.
 std::string FindSolidFont() {
-    // Search order: source-tree path → binary-relative path.
-    const std::filesystem::path candidates[] = {
-        // Relative from the repo root (works when CWD is the project root).
-        "Assets/Fonts/fa-solid-900.ttf",
-        // Next to the test binary (copy step required in CMake).
-        "Assets/Fonts/fa-solid-900.ttf",
-    };
-    for (const auto& p : candidates) {
-        if (std::filesystem::exists(p)) {
-            return p.string();
-        }
-    }
-    return {};
+    const std::filesystem::path path = "Assets/Fonts/fa-solid-900.ttf";
+    return std::filesystem::exists(path) ? path.string() : std::string{};
 }
 
 /// RAII wrapper that creates/destroys an ImGui context for atlas tests.
@@ -94,8 +94,16 @@ struct ImGuiAtlasFixture {
         io.DisplaySize  = ImVec2(1280.0f, 720.0f);
         io.DeltaTime    = 1.0f / 60.0f;
 
-        // Load a default text font first — icon font merges into this.
-        io.Fonts->AddFontDefault();
+        // Load a default text font first, with an *explicit* pixel size — icon font merges
+        // into this via IconFont::Load()'s MergeMode. AddFontDefault() given no ImFontConfig
+        // marks the font ImFontFlags_ImplicitRefSize; ImGui's docking-branch atlas now asserts
+        // when merging an explicitly-sized font (IconFontConfig::sizePixels) onto an implicitly-
+        // sized destination. This was never exercised until this session fixed the WORKING_DIRECTORY
+        // bug that had silently SKIPPED both of this file's runtime tests on every ctest run — see
+        // .claude/DECISIONS.md for the full history.
+        ImFontConfig baseFontCfg;
+        baseFontCfg.SizePixels = 13.0f;
+        io.Fonts->AddFontDefault(&baseFontCfg);
     }
 
     ~ImGuiAtlasFixture() {
