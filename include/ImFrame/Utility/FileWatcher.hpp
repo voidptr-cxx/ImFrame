@@ -12,9 +12,8 @@
  * @date     2025-01-15
  * @version  0.3.0
  *
- * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
- *            Proprietary and confidential. Unauthorised copying, distribution,
- *            or modification of this file is strictly prohibited.
+ * @copyright Copyright (c) 2025 voidptr-cxx
+ * @license   MIT — see LICENSE in the project root for the full text
  */
 
 #pragma once

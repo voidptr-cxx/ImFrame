@@ -9,7 +9,8 @@
  * @date     2025-01-15
  * @version  0.3.0
  *
- * @copyright Copyright (c) 2025 voidptr-cxx. All rights reserved.
+ * @copyright Copyright (c) 2025 voidptr-cxx
+ * @license   MIT — see LICENSE in the project root for the full text
  */
 
 #include <catch2/catch_test_macros.hpp>
