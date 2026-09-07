@@ -823,6 +823,21 @@ if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
     catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererGL3 PROPERTIES LABELS unit)
 endif()
 
+# ─── Phase 34.3: BlurPassGL3 real-pixel tests ────────────────────────────────────────────────
+if(IMF_BACKEND_GLFW_OPENGL3 AND IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Rendering_BlurPassGL3
+        Rendering/BlurPassGL3_test.cpp
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_BlurPassGL3
+        PRIVATE ImFrame ImFrame_GLFWOpenGL3 glad::glad Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_BlurPassGL3 PRIVATE cxx_std_23)
+    if(MSVC)
+        target_compile_options(ImFrame_Tests_Rendering_BlurPassGL3 PRIVATE /utf-8)
+    endif()
+    catch_discover_tests(ImFrame_Tests_Rendering_BlurPassGL3 PROPERTIES LABELS unit)
+endif()
+
 # ─── Phase 33.7: TextRendererGL3 real-pixel tests (needs the backend, the native-renderer shader
 # pipeline, AND the harfbuzz/msdfgen text pipeline -- see Backends/GLFWOpenGL3/CMakeLists.txt's own
 # comment for why these three gates are independent, not implied by one another) ─────────────────

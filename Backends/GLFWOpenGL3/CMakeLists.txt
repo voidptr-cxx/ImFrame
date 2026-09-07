@@ -15,6 +15,13 @@ if(IMF_BUILD_NATIVE_RENDERER)
     target_include_directories(ImFrame_GLFWOpenGL3 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 endif()
 
+# ── Phase 34.3: BlurPassGL3, NativeRendererGL3's fragment-shader-ping-pong Gaussian blur.
+# Gated on IMF_BUILD_NATIVE_RENDERER alone (same as NativeRendererGL3.cpp above) -- it has no
+# dependency on the text pipeline (IMF_BUILD_TEXT_MSDF), unlike TextRendererGL3.cpp below. ──
+if(IMF_BUILD_NATIVE_RENDERER)
+    target_sources(ImFrame_GLFWOpenGL3 PRIVATE BlurPassGL3.cpp)
+endif()
+
 # ── Phase 33.7: TextRendererGL3, NativeRendererGL3's real GL3 MSDF text delegate. Requires BOTH
 # IMF_BUILD_NATIVE_RENDERER (this file's own gate, above) AND IMF_BUILD_TEXT_MSDF (FontRegistry/
 # TextShaper/GlyphAtlas, Phase 33.1+) — deliberately not auto-enabled by one another (see
