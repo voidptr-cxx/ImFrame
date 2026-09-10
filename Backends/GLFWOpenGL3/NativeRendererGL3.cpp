@@ -18,6 +18,8 @@
 #include <glad/glad.h>
 #include <imgui.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -207,6 +209,65 @@ struct PendingDraw {
     std::vector<Batch>  Batches;
 };
 
+/// Builds one axis-aligned quad's `RectVertex`es (Phase 34.4's shadow silhouette pass reuses the
+/// existing Rect shader/pipeline via `RenderRectBatch()` rather than a third hand-written shader).
+std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size,
+                                               Rendering::CornerRadii radii, Widgets::Vec4 fillColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+
+    std::vector<RectVertex> vertices;
+    vertices.reserve(4);
+    for (const Widgets::Vec2& corner : corners) {
+        vertices.push_back(RectVertex{
+            .Position = corner,
+            .Local = {corner.x - center.x, corner.y - center.y},
+            .HalfSize = halfSize,
+            .Radii = radii,
+            .FillColor = fillColor,
+            .StrokeColor = {},
+            .StrokeWidth = 0.0f,
+        });
+    }
+    return vertices;
+}
+
+/// Builds one axis-aligned quad's `ImageVertex`es, unrounded (`Radii` all zero) — Phase 34.4's
+/// shadow composite pass reuses the existing Image shader/pipeline via `RenderImageBatch()` to
+/// draw the blurred shadow texture, tinted by `Rendering::DrawShadow::ShadowColor`, as a plain
+/// rectangle (the shape's own rounding already baked into the blurred texture's alpha).
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+    const Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+
+    std::vector<ImageVertex> vertices;
+    vertices.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        vertices.push_back(ImageVertex{
+            .Position = corners[i],
+            .Local = {corners[i].x - center.x, corners[i].y - center.y},
+            .HalfSize = halfSize,
+            .Radii = Rendering::CornerRadii{},
+            .Uv = uvs[i],
+            .TintColor = tintColor,
+        });
+    }
+    return vertices;
+}
+
 } // namespace
 
 NativeRendererGL3::NativeRendererGL3(RenderMode mode) : _mode(mode) {}
@@ -223,6 +284,12 @@ void NativeRendererGL3::Shutdown() {
     if (_imageEbo != 0) { glDeleteBuffers(1, &_imageEbo); _imageEbo = 0; }
     if (_imageVao != 0) { glDeleteVertexArrays(1, &_imageVao); _imageVao = 0; }
     if (_imageProgram != 0) { glDeleteProgram(_imageProgram); _imageProgram = 0; }
+
+    if (_shadowSilhouetteFbo != 0) { glDeleteFramebuffers(1, &_shadowSilhouetteFbo); _shadowSilhouetteFbo = 0; }
+    if (_shadowSilhouetteTex != 0) { glDeleteTextures(1, &_shadowSilhouetteTex); _shadowSilhouetteTex = 0; }
+    _shadowSilhouetteWidth = 0;
+    _shadowSilhouetteHeight = 0;
+    _blurPass.Shutdown();
 
     _initialized = false;
 }
@@ -351,6 +418,102 @@ void NativeRendererGL3::RenderImageBatch(const Batch& batch) {
     glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(batch.Indices.size()), GL_UNSIGNED_INT, nullptr);
 }
 
+void NativeRendererGL3::EnsureShadowSilhouetteTarget(int width, int height) {
+    if (_shadowSilhouetteFbo != 0 && _shadowSilhouetteWidth == width && _shadowSilhouetteHeight == height) {
+        return;
+    }
+
+    if (_shadowSilhouetteFbo != 0) { glDeleteFramebuffers(1, &_shadowSilhouetteFbo); }
+    if (_shadowSilhouetteTex != 0) { glDeleteTextures(1, &_shadowSilhouetteTex); }
+
+    glGenTextures(1, &_shadowSilhouetteTex);
+    glBindTexture(GL_TEXTURE_2D, _shadowSilhouetteTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glGenFramebuffers(1, &_shadowSilhouetteFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, _shadowSilhouetteFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _shadowSilhouetteTex, 0);
+    IMF_ASSERT(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+
+    _shadowSilhouetteWidth  = width;
+    _shadowSilhouetteHeight = height;
+}
+
+void NativeRendererGL3::RenderShadowBatch(const Batch& batch) {
+    const auto& shadows = std::get<std::vector<ShadowVertex>>(batch.Vertices);
+    if (shadows.empty()) { return; }
+    const ShadowVertex& shadow = shadows.front();
+
+    // Spread grows the silhouette outward on all sides before blurring -- matches
+    // Rendering::DrawShadow::Spread's documented meaning (see CommandBuffer.hpp).
+    const float spreadWidth  = shadow.Size.x + 2.0f * shadow.Spread;
+    const float spreadHeight = shadow.Size.y + 2.0f * shadow.Spread;
+    if (spreadWidth <= 0.0f || spreadHeight <= 0.0f) { return; }
+
+    // Pad the offscreen silhouette texture by the blur radius on every side so BlurPassGL3's
+    // kernel (which samples up to `radius` texels either way) has real content to read at the
+    // silhouette's own edges, instead of clamped-edge repeats of the boundary pixel.
+    const float pad = std::max(shadow.BlurRadius, 0.0f);
+    const int texWidth  = std::max(1, static_cast<int>(std::ceil(spreadWidth + 2.0f * pad)));
+    const int texHeight = std::max(1, static_cast<int>(std::ceil(spreadHeight + 2.0f * pad)));
+
+    // Save the framebuffer/viewport this call disturbs -- RenderShadowBatch() renders into its
+    // own silhouette FBO and (via _blurPass) its own ping-pong targets mid-sequence, then must
+    // hand control back to whatever framebuffer/viewport DrawBatches()'s caller had bound, so the
+    // next batch in the same loop (if any) keeps drawing into the right target.
+    int previousFbo = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
+    int previousViewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+
+    EnsureShadowSilhouetteTarget(texWidth, texHeight);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, _shadowSilhouetteFbo);
+    glViewport(0, 0, texWidth, texHeight);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_BLEND); // a single opaque-white shape on a cleared target -- nothing to blend against.
+
+    // Fill colour is opaque white: RenderRectBatch()'s shader premultiplies by its own AA coverage
+    // (`color = vFillColor * fillAlpha`), so with FillColor={1,1,1,1} the rendered RGBA channels
+    // all equal the shape's coverage at that pixel -- exactly the mask BlurPassGL3 needs to blur,
+    // and exactly what the composite pass below re-tints with the shadow's real color.
+    Batch silhouetteBatch;
+    silhouetteBatch.Kind = BatchKind::Rect;
+    silhouetteBatch.Vertices =
+        BuildRectQuadVertices({pad, pad}, {spreadWidth, spreadHeight}, shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
+    silhouetteBatch.Indices = {0, 1, 2, 0, 2, 3};
+    RenderRectBatch(silhouetteBatch);
+
+    const unsigned int blurredTexture = _blurPass.Apply(_shadowSilhouetteTex, texWidth, texHeight, shadow.BlurRadius);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<unsigned int>(previousFbo));
+    glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // DrawBatches() set this before the loop began;
+                                                        // restored here since the silhouette pass above disabled it.
+
+    // Top-left of the padded silhouette texture, in the shape's own coordinate space, plus the
+    // shadow's drop offset -- per PHASE_34_PROPOSAL.md's DrawShadow section ("composite it behind
+    // the shape at the specified offset").
+    const Widgets::Vec2 compositePosition{
+        shadow.Position.x - shadow.Spread - pad + shadow.Offset.x,
+        shadow.Position.y - shadow.Spread - pad + shadow.Offset.y,
+    };
+    const Widgets::Vec2 compositeSize{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+
+    Batch compositeBatch;
+    compositeBatch.Kind = BatchKind::Image;
+    compositeBatch.Texture = Rendering::TextureId(static_cast<std::uint64_t>(blurredTexture));
+    compositeBatch.Vertices = BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
+    compositeBatch.Indices = {0, 1, 2, 0, 2, 3};
+    RenderImageBatch(compositeBatch);
+}
+
 void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
     // Save GL state this call touches so a caller mixing NativeRendererGL3 output with other GL/ImGui
     // drawing in the same frame gets it back unchanged. In RenderMode::DeferredReplay this runs
@@ -386,6 +549,9 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
                 break;
             case BatchKind::Image:
                 RenderImageBatch(batch);
+                break;
+            case BatchKind::Shadow:
+                RenderShadowBatch(batch);
                 break;
             case BatchKind::Text:
                 // A BatchKind::Text batch only exists here at all when _textRenderer's own

@@ -34,6 +34,10 @@ std::size_t BatchBuilder::OpenVertexCount() const noexcept {
         case BatchKind::Rect:  return _openRectVertices.size();
         case BatchKind::Image: return _openImageVertices.size();
         case BatchKind::Text:  return _openTextVertices.size();
+        case BatchKind::Shadow:
+            // Unreachable: AppendShadow() never calls BeginBatch(), so _openKind is never Shadow.
+            // Case kept so this switch stays exhaustive as BatchKind gains values.
+            return 0;
     }
     return 0;
 }
@@ -59,6 +63,9 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
         case BatchKind::Text:
             vertexCount = _openTextVertices.size();
             batch.Vertices = std::move(_openTextVertices);
+            break;
+        case BatchKind::Shadow:
+            // Unreachable: see OpenVertexCount()'s identical comment.
             break;
     }
 
@@ -229,6 +236,32 @@ void BatchBuilder::AppendText(const Rendering::DrawText& cmd) {
     }
 }
 
+void BatchBuilder::AppendShadow(const Rendering::DrawShadow& cmd) {
+    // A Shadow batch never accumulates a second item (see this class's own header comment), so
+    // there's no "is a Shadow batch already open" check the way Append{Rect,Image,Text} have —
+    // whatever kind of batch WAS open (if any) closes first, preserving draw order, then this
+    // shadow's own single-item batch is built and appended directly, already closed.
+    FlushOpen(BatchFlushReason::CommandTypeChange);
+
+    Batch batch;
+    batch.Kind = BatchKind::Shadow;
+    batch.Vertices = std::vector<ShadowVertex>{ShadowVertex{
+        .Position = cmd.Position,
+        .Size = cmd.Size,
+        .Radii = cmd.Radii,
+        .BlurRadius = cmd.BlurRadius,
+        .Offset = cmd.Offset,
+        .ShadowColor = cmd.ShadowColor,
+        .Spread = cmd.Spread,
+    }};
+
+    _stats.DrawCallCount += 1;
+    _stats.VertexCount += 1; // one ShadowVertex record, not a literal GPU vertex -- kept for stats consistency.
+    _stats.FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::CommandTypeChange)] += 1;
+
+    _batches.push_back(std::move(batch));
+}
+
 void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
     Reset();
 
@@ -243,8 +276,9 @@ void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
                     AppendImage(cmd);
                 } else if constexpr (std::is_same_v<T, Rendering::DrawText>) {
                     AppendText(cmd);
-                } else if constexpr (std::is_same_v<T, Rendering::DrawPath> ||
-                                      std::is_same_v<T, Rendering::DrawShadow>) {
+                } else if constexpr (std::is_same_v<T, Rendering::DrawShadow>) {
+                    AppendShadow(cmd);
+                } else if constexpr (std::is_same_v<T, Rendering::DrawPath>) {
                     FlushOpen(BatchFlushReason::NonBatchable);
                 } else if constexpr (std::is_same_v<T, Rendering::PushClipRect> ||
                                       std::is_same_v<T, Rendering::PopClipRect>) {

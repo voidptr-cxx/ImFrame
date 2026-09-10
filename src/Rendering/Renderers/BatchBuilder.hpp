@@ -19,7 +19,17 @@
  * tree emits `DrawPath` yet (see `.claude/DECISIONS.md`, Phase 31.2) and the
  * CPU polyline tesselator it would need is separate, deferred work; batching
  * it now would be speculative. See `.claude/DECISIONS.md`, Phase 32.3.
- * `DrawShadow` also remains non-batchable — no live producer, same reasoning.
+ *
+ * `DrawShadow` (Phase 34.4) gets its own `BatchKind::Shadow`, carrying a
+ * `ShadowVertex` that isn't real GPU vertex data — it's the `DrawShadow`
+ * command's own fields, reusing `Batch`'s existing "vector of kind-specific
+ * records, closed batches preserve encounter order" shape rather than
+ * inventing a second kind of buffer for one command type. Every `Shadow`
+ * batch holds exactly one `ShadowVertex` and is closed immediately (never
+ * accumulates a second shadow) — a real GPU renderer implements each shadow
+ * as its own render-to-texture-then-blur-then-composite sequence (see
+ * `NativeRendererGL3::RenderShadowBatch()`), not a single shared draw call
+ * the way same-kind `Rect`/`Image` commands can share one.
  *
  * `DrawText` is batchable only when a `ITextLayoutProvider` has been set via
  * `SetTextLayoutProvider()` *and* it resolves `cmd.Font` to a valid glyph-atlas
@@ -81,6 +91,18 @@ struct TextVertex {
     Widgets::Vec4 Color{1.0f, 1.0f, 1.0f, 1.0f};  ///< Per-vertex glyph colour (`inTextColor`).
 };
 
+/// Record for `BatchKind::Shadow` — not GPU vertex data; carries one `Rendering::DrawShadow`
+/// command's fields through to render time, field-for-field. See this file's own comment above.
+struct ShadowVertex {
+    Widgets::Vec2          Position{};
+    Widgets::Vec2          Size{};
+    Rendering::CornerRadii Radii{};
+    float                  BlurRadius = 0.0f;
+    Widgets::Vec2          Offset{};
+    Widgets::Vec4          ShadowColor{0.0f, 0.0f, 0.0f, 0.5f};
+    float                  Spread = 0.0f;
+};
+
 /**
  * @class    ITextLayoutProvider
  * @brief    Turns one `Rendering::DrawText` command into positioned, atlas-backed glyph quads
@@ -131,18 +153,19 @@ public:
 
 /// What kind of geometry a `Batch` holds — batches never mix kinds, matching the "command type change" flush trigger.
 enum class BatchKind : unsigned char {
-    Rect,  ///< From `Rendering::DrawRect` — solid-colour geometry, no texture. Vertices are `RectVertex`.
-    Image, ///< From `Rendering::DrawImage` — textured geometry. Vertices are `ImageVertex`.
-    Text,  ///< From `Rendering::DrawText`, when a `ITextLayoutProvider` is set. Vertices are `TextVertex`.
+    Rect,   ///< From `Rendering::DrawRect` — solid-colour geometry, no texture. Vertices are `RectVertex`.
+    Image,  ///< From `Rendering::DrawImage` — textured geometry. Vertices are `ImageVertex`.
+    Text,   ///< From `Rendering::DrawText`, when a `ITextLayoutProvider` is set. Vertices are `TextVertex`.
+    Shadow, ///< From `Rendering::DrawShadow` (Phase 34.4) — always a single-item batch. Vertices are `ShadowVertex`.
 };
 
 /// Why a batch was closed. Backs `BatchStats::FlushReasonCounts`.
 enum class BatchFlushReason : unsigned char {
-    CommandTypeChange, ///< `BatchKind` changed (e.g. `DrawRect` run followed by a `DrawImage`).
+    CommandTypeChange, ///< `BatchKind` changed (e.g. `DrawRect` run followed by a `DrawImage`/`DrawShadow`).
     TextureChange,     ///< Same `BatchKind` but a different `Rendering::TextureId`.
     ClipRectChange,    ///< `PushClipRect`/`PopClipRect` encountered.
     LayerChange,       ///< `PushOpacityLayer`/`PushBlendLayer`/`PopLayer` encountered.
-    NonBatchable,      ///< `DrawPath`/`DrawText`/`DrawShadow` encountered — Phase 32 does not batch these.
+    NonBatchable,      ///< `DrawPath` encountered, or `DrawText` with no usable layout provider.
     BufferFull,        ///< The open batch reached `kMaxBatchVertices`.
     EndOfBuffer,       ///< The command buffer ended with a batch still open.
 };
@@ -150,8 +173,10 @@ enum class BatchFlushReason : unsigned char {
 /// Number of distinct `BatchFlushReason` values — sizes `BatchStats::FlushReasonCounts`.
 inline constexpr std::size_t kBatchFlushReasonCount = 7;
 
-/// Kind-specific vertex storage for one `Batch` — holds `RectVertex`/`ImageVertex`/`TextVertex` depending on `Batch::Kind`.
-using BatchVertices = std::variant<std::vector<RectVertex>, std::vector<ImageVertex>, std::vector<TextVertex>>;
+/// Kind-specific vertex storage for one `Batch` — holds `RectVertex`/`ImageVertex`/`TextVertex`/`ShadowVertex`
+/// depending on `Batch::Kind`.
+using BatchVertices = std::variant<std::vector<RectVertex>, std::vector<ImageVertex>, std::vector<TextVertex>,
+                                    std::vector<ShadowVertex>>;
 
 /// One closed batch: exactly one draw call's worth of geometry, sharing a texture and clip/layer state.
 struct Batch {
@@ -218,6 +243,7 @@ private:
     void AppendRect(const Rendering::DrawRect& cmd);
     void AppendImage(const Rendering::DrawImage& cmd);
     void AppendText(const Rendering::DrawText& cmd);
+    void AppendShadow(const Rendering::DrawShadow& cmd);
     [[nodiscard]] std::size_t OpenVertexCount() const noexcept;
 
     std::vector<Batch> _batches;

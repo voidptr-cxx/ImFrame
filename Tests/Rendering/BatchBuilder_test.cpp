@@ -278,6 +278,50 @@ TEST_CASE("BatchBuilder: DrawPath is treated as non-batchable (no CPU tesselator
     REQUIRE(builder.Stats().FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::NonBatchable)] == 1);
 }
 
+TEST_CASE("BatchBuilder: DrawShadow between two DrawRects produces its own Shadow batch, "
+          "flushing both neighbours",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::DrawShadow{
+        .Position = {5.0f, 6.0f}, .Size = {20.0f, 30.0f}, .BlurRadius = 4.0f, .Offset = {1.0f, 2.0f}});
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+
+    BatchBuilder builder;
+    builder.Build(buffer);
+
+    // Rect / Shadow / Rect — three batches, none merged with a neighbour.
+    REQUIRE(builder.Batches().size() == 3);
+    REQUIRE(builder.Batches()[0].Kind == BatchKind::Rect);
+    REQUIRE(builder.Batches()[1].Kind == BatchKind::Shadow);
+    REQUIRE(builder.Batches()[2].Kind == BatchKind::Rect);
+
+    const auto& shadowVertices = std::get<std::vector<ShadowVertex>>(builder.Batches()[1].Vertices);
+    REQUIRE(shadowVertices.size() == 1);
+    REQUIRE(shadowVertices[0].Position.x == Approx(5.0f));
+    REQUIRE(shadowVertices[0].Position.y == Approx(6.0f));
+    REQUIRE(shadowVertices[0].Size.x == Approx(20.0f));
+    REQUIRE(shadowVertices[0].BlurRadius == Approx(4.0f));
+    REQUIRE(shadowVertices[0].Offset.x == Approx(1.0f));
+}
+
+TEST_CASE("BatchBuilder: two consecutive DrawShadow commands produce two separate Shadow batches",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawShadow{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::DrawShadow{.Size = {20.0f, 20.0f}});
+
+    BatchBuilder builder;
+    builder.Build(buffer);
+
+    // Each DrawShadow is always its own single-item batch — never merged with another shadow.
+    REQUIRE(builder.Batches().size() == 2);
+    REQUIRE(builder.Batches()[0].Kind == BatchKind::Shadow);
+    REQUIRE(builder.Batches()[1].Kind == BatchKind::Shadow);
+    REQUIRE(std::get<std::vector<ShadowVertex>>(builder.Batches()[0].Vertices)[0].Size.x == Approx(10.0f));
+    REQUIRE(std::get<std::vector<ShadowVertex>>(builder.Batches()[1].Vertices)[0].Size.x == Approx(20.0f));
+}
+
 TEST_CASE("BatchBuilder: an empty command buffer produces zero batches", "[unit]") {
     Rendering::CommandBuffer buffer;
 
