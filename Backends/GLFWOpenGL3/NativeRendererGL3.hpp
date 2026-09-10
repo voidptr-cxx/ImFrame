@@ -6,11 +6,13 @@
  * The first real `NativeRenderer` backend (Phase 32.4) — unlike
  * `Internal::ImGuiCompatRenderer`, this issues genuine `glDrawElements()`
  * calls against hand-written shaders, not `ImDrawList` calls. Supports
- * `BatchKind::Rect` (Phase 32.4), `BatchKind::Image` (Phase 32.9), and
+ * `BatchKind::Rect` (Phase 32.4), `BatchKind::Image` (Phase 32.9),
  * `BatchKind::Shadow` (Phase 34.4, via `RenderShadowBatch()` — render the
  * shadow's silhouette into an offscreen texture, blur it with `_blurPass`,
  * then composite the tinted result behind the shape at its offset, per
- * `PHASE_34_PROPOSAL.md`'s `DrawShadow` section).
+ * `PHASE_34_PROPOSAL.md`'s `DrawShadow` section), and `BatchKind::Layer`
+ * (Phase 34.5, via `PushLayer()`/`PopLayer()` — see those methods' own
+ * comments for the offscreen-layer-stack design).
  * `DrawPath` still has no live producer anywhere in the tree, so CPU
  * polyline tesselation stays speculative and there is no `BatchKind::Path`.
  *
@@ -176,6 +178,7 @@ private:
     void RenderImageBatch(const Batch& batch);
     void RenderShadowBatch(const Batch& batch);
     void EnsureShadowSilhouetteTarget(int width, int height);
+    void HandleLayerMarker(const Batch& batch);
 
     /// `ImDrawList::AddCallback()` trampoline for `RenderMode::DeferredReplay` — see NativeRendererGL3.cpp.
     static void ExecuteDeferredDraw(const ImDrawList* parentList, const ImDrawCmd* cmd);
@@ -198,6 +201,82 @@ private:
     unsigned int _imageVbo = 0;
     unsigned int _imageEbo = 0;
 
+    /**
+     * @brief    Begins a new offscreen compositing layer (Phase 34.5).
+     * @param[in] op       `LayerOp::PushOpacity` or `LayerOp::PushBlend` — never `Pop`.
+     * @param[in] opacity  Meaningful only when `op == PushOpacity`.
+     * @param[in] mode     Meaningful only when `op == PushBlend`.
+     *
+     * Saves the currently-bound framebuffer/viewport onto `_layerStack` (so the matching
+     * `PopLayer()` knows where to composite back into and how), then binds a pooled offscreen
+     * target (`_layerTargets[depth]`, same size as the current viewport, lazily (re)allocated by
+     * `EnsureLayerTarget()`) cleared to transparent — every batch between this call and the
+     * matching `PopLayer()` therefore renders into the new layer instead of wherever `Render()`'s
+     * caller originally bound, with no change needed in `RenderRectBatch()`/`RenderImageBatch()`/
+     * `RenderShadowBatch()` themselves, since they already just draw into whatever framebuffer is
+     * currently bound.
+     */
+    void PushLayer(LayerOp op, float opacity, Rendering::BlendMode mode);
+
+    /**
+     * @brief    Ends the innermost open layer, compositing it back into its parent (Phase 34.5).
+     *
+     * Pops `_layerStack`, rebinds the popped frame's saved parent framebuffer/viewport, then
+     * composites via `CompositeOpacityLayer()` or `CompositeBlendLayer()` depending on which kind
+     * of layer this was. `IMF_ASSERT`s the stack isn't already empty — a `PopLayer` with no
+     * matching `Push{Opacity,Blend}Layer` is a malformed `Rendering::CommandBuffer`, a programming
+     * error in the caller, not a runtime condition this internal renderer recovers from.
+     */
+    void PopLayer();
+
+    void EnsureLayerTarget(std::size_t depth, int width, int height);
+
+    /// One entry in `_layerStack` — everything `PopLayer()` needs to composite a layer back and
+    /// restore the state that was active before its matching `Push{Opacity,Blend}Layer`.
+    struct LayerFrame {
+        LayerOp              Op = LayerOp::PushOpacity;      ///< Never `Pop` — see `PushLayer()`.
+        float                Opacity = 1.0f;                 ///< Meaningful only when `Op == PushOpacity`.
+        Rendering::BlendMode Mode = Rendering::BlendMode::Normal; ///< Meaningful only when `Op == PushBlend`.
+        unsigned int         ParentFbo = 0;
+        int                  ParentViewport[4] = {0, 0, 0, 0};
+        std::size_t          TargetIndex = 0; ///< Index into `_layerTargets` this frame rendered into.
+        int                  Width  = 0;
+        int                  Height = 0;
+    };
+
+    /// Composites an opacity layer back into its parent: a plain textured quad, correct
+    /// premultiplied-alpha-over blending (`GL_ONE`, `GL_ONE_MINUS_SRC_ALPHA`) — see this method's
+    /// `.cpp` comment for why that differs from `DrawBatches()`'s own default blend func.
+    void CompositeOpacityLayer(const LayerFrame& frame);
+
+    /**
+     * @brief    Composites a blend-mode layer back into its parent (Phase 34.5).
+     *
+     * Real per-pixel blend modes (`Multiply`, `Screen`, ... ) need the *destination*'s own current
+     * color at each pixel, which plain `glBlendFunc` fixed-function blending cannot read — the
+     * blend equation only ever sees fixed src/dst *factors*, never the destination's actual color
+     * value, so a nonlinear function of both (e.g. `Cb * Cs`) can't be expressed that way. This
+     * copies the parent target's current content into `_backdropTex` (via `glCopyTexSubImage2D` —
+     * the same technique Phase 34.6's backdrop blur will use), then draws a fullscreen quad with
+     * `_blendProgram`, a shader that samples *both* the layer's own texture and `_backdropTex`,
+     * computes the selected `Rendering::BlendMode`'s formula in GLSL, and writes the fully
+     * Porter-Duff-composited result directly with `GL_BLEND` disabled — the shader's own output
+     * already incorporates the destination, so no fixed-function blending runs on top of it.
+     */
+    void CompositeBlendLayer(const LayerFrame& frame);
+
+    void EnsureBlendProgram();
+    void EnsureBackdropTarget(int width, int height);
+
+    /// One pooled offscreen render target, indexed by nesting depth in `_layerTargets` — reused
+    /// across `Push`/`Pop` pairs and across frames, resized only when the requested size changes.
+    struct LayerTarget {
+        unsigned int Fbo = 0;
+        unsigned int Tex = 0;
+        int          Width  = 0;
+        int          Height = 0;
+    };
+
     BatchBuilder _batchBuilder;
 
     /// See `AttachTextRenderer()`/`ITextRenderer`. Not owned.
@@ -212,6 +291,24 @@ private:
     unsigned int _shadowSilhouetteTex    = 0;
     int          _shadowSilhouetteWidth  = 0;
     int          _shadowSilhouetteHeight = 0;
+
+    /// Currently-open layers, outermost first — see `PushLayer()`/`PopLayer()`.
+    std::vector<LayerFrame>  _layerStack;
+    /// Pooled offscreen targets, indexed by nesting depth (`_layerStack.size()` at push time).
+    std::vector<LayerTarget> _layerTargets;
+
+    /// `CompositeBlendLayer()`'s two-texture blend-mode shader (Phase 34.5).
+    unsigned int _blendProgram       = 0;
+    int          _blendSourceLoc     = -1;
+    int          _blendBackdropLoc  = -1;
+    int          _blendModeLoc       = -1;
+    unsigned int _blendVao = 0;
+    unsigned int _blendVbo = 0;
+
+    /// The parent target's copied-back content for `CompositeBlendLayer()`. Resized on demand.
+    unsigned int _backdropTex    = 0;
+    int          _backdropWidth  = 0;
+    int          _backdropHeight = 0;
 };
 
 } // namespace ImFrame::Internal

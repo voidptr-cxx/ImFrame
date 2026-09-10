@@ -33,11 +33,23 @@
  *
  * `DrawText` is batchable only when a `ITextLayoutProvider` has been set via
  * `SetTextLayoutProvider()` *and* it resolves `cmd.Font` to a valid glyph-atlas
- * texture — otherwise it falls back to the same non-batchable skip `DrawPath`/
- * `DrawShadow` get. See `ITextLayoutProvider`'s own doc comment and
- * `.claude/DECISIONS.md`, Phase 33.6, for why this indirection exists (it lets
- * `BatchBuilder` stay free of any `FontRegistry`/`TextShaper`/`GlyphAtlas`
- * dependency).
+ * texture — otherwise it falls back to the same non-batchable skip `DrawPath`
+ * gets. See `ITextLayoutProvider`'s own doc comment and `.claude/DECISIONS.md`,
+ * Phase 33.6, for why this indirection exists (it lets `BatchBuilder` stay
+ * free of any `FontRegistry`/`TextShaper`/`GlyphAtlas` dependency).
+ *
+ * `PushOpacityLayer`/`PushBlendLayer`/`PopLayer` (Phase 34.5) each get their
+ * own `BatchKind::Layer` marker — a `LayerVertex` record (again not real GPU
+ * vertex data, same "record, not vertex" role `ShadowVertex` plays), always a
+ * single-item batch. Unlike `Shadow`, a `Layer` marker doesn't carry enough
+ * information on its own to render anything — `PushOpacityLayer`/
+ * `PushBlendLayer` mark where a *range* of subsequent batches should render
+ * into an offscreen target instead of the current one, and the matching
+ * `PopLayer` marker is where that range ends and gets composited back. Making
+ * sense of that range is `NativeRendererGL3`'s job (a runtime layer stack in
+ * its own `DrawBatches()` loop) — `BatchBuilder` itself stays ignorant of
+ * "currently inside a layer," same as it stays ignorant of what a `Shadow`
+ * batch's blur radius produces visually.
  *
  * This is a pure CPU-side data structure — it has no GPU calls and no
  * dependency on any `IRenderer` implementation, so it is unit-testable in
@@ -103,6 +115,21 @@ struct ShadowVertex {
     float                  Spread = 0.0f;
 };
 
+/// Which layer-stack operation a `BatchKind::Layer` marker represents.
+enum class LayerOp : unsigned char {
+    PushOpacity, ///< From `Rendering::PushOpacityLayer`.
+    PushBlend,   ///< From `Rendering::PushBlendLayer`.
+    Pop,         ///< From `Rendering::PopLayer`.
+};
+
+/// Record for `BatchKind::Layer` — not GPU vertex data; carries one layer-stack marker's fields
+/// through to render time. See this file's own comment above.
+struct LayerVertex {
+    LayerOp               Op = LayerOp::Pop;
+    float                 Opacity = 1.0f;                      ///< Meaningful only when `Op == PushOpacity`.
+    Rendering::BlendMode  Mode = Rendering::BlendMode::Normal;  ///< Meaningful only when `Op == PushBlend`.
+};
+
 /**
  * @class    ITextLayoutProvider
  * @brief    Turns one `Rendering::DrawText` command into positioned, atlas-backed glyph quads
@@ -157,6 +184,8 @@ enum class BatchKind : unsigned char {
     Image,  ///< From `Rendering::DrawImage` — textured geometry. Vertices are `ImageVertex`.
     Text,   ///< From `Rendering::DrawText`, when a `ITextLayoutProvider` is set. Vertices are `TextVertex`.
     Shadow, ///< From `Rendering::DrawShadow` (Phase 34.4) — always a single-item batch. Vertices are `ShadowVertex`.
+    Layer,  ///< From `Rendering::Push{Opacity,Blend}Layer`/`PopLayer` (Phase 34.5) — always a single-item
+            ///< marker batch, never real geometry. Vertices are `LayerVertex`.
 };
 
 /// Why a batch was closed. Backs `BatchStats::FlushReasonCounts`.
@@ -164,7 +193,8 @@ enum class BatchFlushReason : unsigned char {
     CommandTypeChange, ///< `BatchKind` changed (e.g. `DrawRect` run followed by a `DrawImage`/`DrawShadow`).
     TextureChange,     ///< Same `BatchKind` but a different `Rendering::TextureId`.
     ClipRectChange,    ///< `PushClipRect`/`PopClipRect` encountered.
-    LayerChange,       ///< `PushOpacityLayer`/`PushBlendLayer`/`PopLayer` encountered.
+    LayerChange,       ///< `PushOpacityLayer`/`PushBlendLayer`/`PopLayer` encountered — produces its own
+                       ///< `BatchKind::Layer` marker batch, same as this reason firing for any other kind.
     NonBatchable,      ///< `DrawPath` encountered, or `DrawText` with no usable layout provider.
     BufferFull,        ///< The open batch reached `kMaxBatchVertices`.
     EndOfBuffer,       ///< The command buffer ended with a batch still open.
@@ -173,10 +203,10 @@ enum class BatchFlushReason : unsigned char {
 /// Number of distinct `BatchFlushReason` values — sizes `BatchStats::FlushReasonCounts`.
 inline constexpr std::size_t kBatchFlushReasonCount = 7;
 
-/// Kind-specific vertex storage for one `Batch` — holds `RectVertex`/`ImageVertex`/`TextVertex`/`ShadowVertex`
-/// depending on `Batch::Kind`.
+/// Kind-specific vertex storage for one `Batch` — holds `RectVertex`/`ImageVertex`/`TextVertex`/`ShadowVertex`/
+/// `LayerVertex` depending on `Batch::Kind`.
 using BatchVertices = std::variant<std::vector<RectVertex>, std::vector<ImageVertex>, std::vector<TextVertex>,
-                                    std::vector<ShadowVertex>>;
+                                    std::vector<ShadowVertex>, std::vector<LayerVertex>>;
 
 /// One closed batch: exactly one draw call's worth of geometry, sharing a texture and clip/layer state.
 struct Batch {
@@ -244,6 +274,7 @@ private:
     void AppendImage(const Rendering::DrawImage& cmd);
     void AppendText(const Rendering::DrawText& cmd);
     void AppendShadow(const Rendering::DrawShadow& cmd);
+    void AppendLayerMarker(LayerVertex marker);
     [[nodiscard]] std::size_t OpenVertexCount() const noexcept;
 
     std::vector<Batch> _batches;

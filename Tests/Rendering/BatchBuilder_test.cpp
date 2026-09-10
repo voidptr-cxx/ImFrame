@@ -322,6 +322,51 @@ TEST_CASE("BatchBuilder: two consecutive DrawShadow commands produce two separat
     REQUIRE(std::get<std::vector<ShadowVertex>>(builder.Batches()[1].Vertices)[0].Size.x == Approx(20.0f));
 }
 
+TEST_CASE("BatchBuilder: PushOpacityLayer/PopLayer around a DrawRect each produce their own "
+          "single-item Layer batch",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::PushOpacityLayer{.Opacity = 0.25f});
+    buffer.Push(Rendering::DrawRect{.Size = {20.0f, 20.0f}});
+    buffer.Push(Rendering::PopLayer{});
+    buffer.Push(Rendering::DrawRect{.Size = {30.0f, 30.0f}});
+
+    BatchBuilder builder;
+    builder.Build(buffer);
+
+    // Rect / [Push] / Rect / [Pop] / Rect -- five batches, the two markers each isolated.
+    REQUIRE(builder.Batches().size() == 5);
+    REQUIRE(builder.Batches()[0].Kind == BatchKind::Rect);
+    REQUIRE(builder.Batches()[1].Kind == BatchKind::Layer);
+    REQUIRE(builder.Batches()[2].Kind == BatchKind::Rect);
+    REQUIRE(builder.Batches()[3].Kind == BatchKind::Layer);
+    REQUIRE(builder.Batches()[4].Kind == BatchKind::Rect);
+
+    const auto& pushMarker = std::get<std::vector<LayerVertex>>(builder.Batches()[1].Vertices);
+    REQUIRE(pushMarker.size() == 1);
+    REQUIRE(pushMarker[0].Op == LayerOp::PushOpacity);
+    REQUIRE(pushMarker[0].Opacity == Approx(0.25f));
+
+    const auto& popMarker = std::get<std::vector<LayerVertex>>(builder.Batches()[3].Vertices);
+    REQUIRE(popMarker.size() == 1);
+    REQUIRE(popMarker[0].Op == LayerOp::Pop);
+}
+
+TEST_CASE("BatchBuilder: PushBlendLayer carries its BlendMode through to the Layer batch", "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::PushBlendLayer{.Mode = Rendering::BlendMode::Multiply});
+    buffer.Push(Rendering::PopLayer{});
+
+    BatchBuilder builder;
+    builder.Build(buffer);
+
+    REQUIRE(builder.Batches().size() == 2);
+    const auto& pushMarker = std::get<std::vector<LayerVertex>>(builder.Batches()[0].Vertices);
+    REQUIRE(pushMarker[0].Op == LayerOp::PushBlend);
+    REQUIRE(pushMarker[0].Mode == Rendering::BlendMode::Multiply);
+}
+
 TEST_CASE("BatchBuilder: an empty command buffer produces zero batches", "[unit]") {
     Rendering::CommandBuffer buffer;
 

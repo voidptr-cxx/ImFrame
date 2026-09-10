@@ -206,12 +206,22 @@ struct PushOpacityLayer {
     float Opacity = 1.0f;
 };
 
-/// Blend mode for a `PushBlendLayer`.
+/// Blend mode for a `PushBlendLayer` — the 12 standard CSS/Porter-Duff `mix-blend-mode` values
+/// (Phase 34.5). Enumerator order matches shader-side mode-index dispatch — see
+/// `NativeRendererGL3::CompositeBlendLayer()`'s doc comment — so it must not be reordered.
 enum class BlendMode : unsigned char {
-    Normal,   ///< Standard alpha-over compositing.
-    Multiply, ///< Multiply blend.
-    Screen,   ///< Screen blend.
-    Additive, ///< Additive blend.
+    Normal,     ///< The source layer as-is — standard alpha-over compositing.
+    Multiply,   ///< Darkens: backdrop × source.
+    Screen,     ///< Lightens: the inverse-multiply of the inverted colors.
+    Overlay,    ///< `Multiply` or `Screen`, chosen by the backdrop's own brightness.
+    Darken,     ///< Per-channel minimum of backdrop and source.
+    Lighten,    ///< Per-channel maximum of backdrop and source.
+    ColorDodge, ///< Brightens the backdrop to reflect the source.
+    ColorBurn,  ///< Darkens the backdrop to reflect the source.
+    HardLight,  ///< `Multiply` or `Screen`, chosen by the source's own brightness.
+    SoftLight,  ///< A softer-edged `HardLight`.
+    Difference, ///< Per-channel absolute difference of backdrop and source.
+    Exclusion,  ///< A lower-contrast `Difference`.
 };
 
 /// Begins a compositing layer with a specified blend mode; subsequent commands render into it until `PopLayer`.

@@ -35,8 +35,9 @@ std::size_t BatchBuilder::OpenVertexCount() const noexcept {
         case BatchKind::Image: return _openImageVertices.size();
         case BatchKind::Text:  return _openTextVertices.size();
         case BatchKind::Shadow:
-            // Unreachable: AppendShadow() never calls BeginBatch(), so _openKind is never Shadow.
-            // Case kept so this switch stays exhaustive as BatchKind gains values.
+        case BatchKind::Layer:
+            // Unreachable: AppendShadow()/AppendLayerMarker() never call BeginBatch(), so
+            // _openKind is never Shadow or Layer. Cases kept so this switch stays exhaustive.
             return 0;
     }
     return 0;
@@ -65,6 +66,7 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
             batch.Vertices = std::move(_openTextVertices);
             break;
         case BatchKind::Shadow:
+        case BatchKind::Layer:
             // Unreachable: see OpenVertexCount()'s identical comment.
             break;
     }
@@ -262,6 +264,21 @@ void BatchBuilder::AppendShadow(const Rendering::DrawShadow& cmd) {
     _batches.push_back(std::move(batch));
 }
 
+void BatchBuilder::AppendLayerMarker(LayerVertex marker) {
+    // Same single-item, always-closed shape as AppendShadow() -- see that method's own comment.
+    FlushOpen(BatchFlushReason::LayerChange);
+
+    Batch batch;
+    batch.Kind = BatchKind::Layer;
+    batch.Vertices = std::vector<LayerVertex>{marker};
+
+    _stats.DrawCallCount += 1;
+    _stats.VertexCount += 1; // one LayerVertex record, not a literal GPU vertex -- see AppendShadow()'s identical note.
+    _stats.FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::LayerChange)] += 1;
+
+    _batches.push_back(std::move(batch));
+}
+
 void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
     Reset();
 
@@ -283,10 +300,12 @@ void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
                 } else if constexpr (std::is_same_v<T, Rendering::PushClipRect> ||
                                       std::is_same_v<T, Rendering::PopClipRect>) {
                     FlushOpen(BatchFlushReason::ClipRectChange);
-                } else if constexpr (std::is_same_v<T, Rendering::PushOpacityLayer> ||
-                                      std::is_same_v<T, Rendering::PushBlendLayer> ||
-                                      std::is_same_v<T, Rendering::PopLayer>) {
-                    FlushOpen(BatchFlushReason::LayerChange);
+                } else if constexpr (std::is_same_v<T, Rendering::PushOpacityLayer>) {
+                    AppendLayerMarker(LayerVertex{.Op = LayerOp::PushOpacity, .Opacity = cmd.Opacity});
+                } else if constexpr (std::is_same_v<T, Rendering::PushBlendLayer>) {
+                    AppendLayerMarker(LayerVertex{.Op = LayerOp::PushBlend, .Mode = cmd.Mode});
+                } else if constexpr (std::is_same_v<T, Rendering::PopLayer>) {
+                    AppendLayerMarker(LayerVertex{.Op = LayerOp::Pop});
                 }
             },
             command);
