@@ -6,7 +6,11 @@
  * The first real `NativeRenderer` backend (Phase 32.4) — unlike
  * `Internal::ImGuiCompatRenderer`, this issues genuine `glDrawElements()`
  * calls against hand-written shaders, not `ImDrawList` calls. Supports
- * `BatchKind::Rect` (Phase 32.4) and `BatchKind::Image` (Phase 32.9).
+ * `BatchKind::Rect` (Phase 32.4), `BatchKind::Image` (Phase 32.9), and
+ * `BatchKind::Shadow` (Phase 34.4, via `RenderShadowBatch()` — render the
+ * shadow's silhouette into an offscreen texture, blur it with `_blurPass`,
+ * then composite the tinted result behind the shape at its offset, per
+ * `PHASE_34_PROPOSAL.md`'s `DrawShadow` section).
  * `DrawPath` still has no live producer anywhere in the tree, so CPU
  * polyline tesselation stays speculative and there is no `BatchKind::Path`.
  *
@@ -48,6 +52,7 @@
 
 #pragma once
 
+#include "BlurPassGL3.hpp"
 #include "Rendering/Renderers/BatchBuilder.hpp"
 #include "Rendering/Renderers/IRenderer.hpp"
 
@@ -169,6 +174,8 @@ private:
     void DrawBatches(const std::vector<Batch>& batches);
     void RenderRectBatch(const Batch& batch);
     void RenderImageBatch(const Batch& batch);
+    void RenderShadowBatch(const Batch& batch);
+    void EnsureShadowSilhouetteTarget(int width, int height);
 
     /// `ImDrawList::AddCallback()` trampoline for `RenderMode::DeferredReplay` — see NativeRendererGL3.cpp.
     static void ExecuteDeferredDraw(const ImDrawList* parentList, const ImDrawCmd* cmd);
@@ -195,6 +202,16 @@ private:
 
     /// See `AttachTextRenderer()`/`ITextRenderer`. Not owned.
     ITextRenderer* _textRenderer = nullptr;
+
+    /// `RenderShadowBatch()`'s Gaussian blur (Phase 34.4) — see `BlurPassGL3`'s own doc comment.
+    BlurPassGL3 _blurPass;
+
+    /// Offscreen target `RenderShadowBatch()` renders a shadow's rounded-rect silhouette into,
+    /// before handing it to `_blurPass`. Resized on demand, same as `BlurPassGL3`'s own targets.
+    unsigned int _shadowSilhouetteFbo    = 0;
+    unsigned int _shadowSilhouetteTex    = 0;
+    int          _shadowSilhouetteWidth  = 0;
+    int          _shadowSilhouetteHeight = 0;
 };
 
 } // namespace ImFrame::Internal

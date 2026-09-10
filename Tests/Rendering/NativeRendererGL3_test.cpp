@@ -365,6 +365,55 @@ TEST_CASE("NativeRendererGL3 renders a DrawImage with rounded corners: the extre
     backend.Shutdown();
 }
 
+TEST_CASE("NativeRendererGL3 renders a DrawShadow behind and offset from the shape it shadows "
+          "(Phase 34.4)",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        // Shadow first (drawn behind), then an opaque white rect at the same (unshifted) position
+        // and size on top -- per PHASE_34_PROPOSAL.md's DrawShadow section ("composite it behind
+        // the shape at the specified offset").
+        buffer.Push(DrawShadow{
+            .Position = {40.0f, 40.0f},
+            .Size = {48.0f, 48.0f},
+            .BlurRadius = 8.0f,
+            .Offset = {10.0f, 10.0f},
+            .ShadowColor = {0.0f, 0.0f, 0.0f, 1.0f},
+        });
+        buffer.Push(DrawRect{
+            .Position = {40.0f, 40.0f}, .Size = {48.0f, 48.0f}, .FillColor = {1.0f, 1.0f, 1.0f, 1.0f}});
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        // Deep inside the shadow's offset footprint (x,y in [50,98] before blur padding) but past
+        // the white rect's own edge (rect ends at x=88, y=88) -- the shadow should be visible here,
+        // not occluded.
+        const Pixel shadowOnly = Sample(pixels, 94, 94, WIDTH);
+        // Deep inside the rect's own footprint -- drawn after the shadow, so it occludes it.
+        const Pixel rectOnTop = Sample(pixels, 60, 60, WIDTH);
+        // Far from both the rect and the shadow's shifted+blurred footprint -- untouched.
+        const Pixel untouched = Sample(pixels, 10, 10, WIDTH);
+
+        REQUIRE(shadowOnly.a > 100);
+        REQUIRE(shadowOnly.r < 50); // ShadowColor is opaque black
+        REQUIRE(rectOnTop.r > 200);
+        REQUIRE(rectOnTop.a > 200);
+        REQUIRE(untouched.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
 TEST_CASE("NativeRendererGL3 renders interleaved Rect and Image batches, each with the "
           "correct kind's geometry and texture",
           "[unit]") {
