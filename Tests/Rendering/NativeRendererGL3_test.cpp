@@ -414,6 +414,121 @@ TEST_CASE("NativeRendererGL3 renders a DrawShadow behind and offset from the sha
     backend.Shutdown();
 }
 
+TEST_CASE("NativeRendererGL3 composites a PushOpacityLayer at the recorded opacity (Phase 34.5)", "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel inside  = Sample(pixels, 40, 40, WIDTH);
+        const Pixel outside = Sample(pixels, 5, 5, WIDTH);
+
+        // Correct premultiplied-alpha compositing: an opaque red rect at Opacity=0.5 ends up with
+        // both its alpha AND its stored (premultiplied) red channel scaled to roughly half --
+        // matches PHASE_34_PROPOSAL.md's own testing spec ("PushOpacityLayer(0.5) halves pixel
+        // alpha values").
+        REQUIRE(inside.a > 100);
+        REQUIRE(inside.a < 150);
+        REQUIRE(inside.r > 100);
+        REQUIRE(inside.r < 150);
+        REQUIRE(inside.g < 20);
+        REQUIRE(outside.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 composites a PushBlendLayer using the Multiply formula (Phase 34.5)", "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop filling the whole viewport, then a Multiply layer with an
+        // opaque mid-gray rect over part of it.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel overlap      = Sample(pixels, 40, 40, WIDTH); // inside the blended rect
+        const Pixel backdropOnly = Sample(pixels, 5, 5, WIDTH);  // outside it -- backdrop untouched
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255. Backdrop-only area stays 0.8 -> ~204/255 (the
+        // layer's own texture is transparent there, so the union-alpha formula falls back to the
+        // unchanged backdrop).
+        REQUIRE(overlap.r > 90);
+        REQUIRE(overlap.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 composites a PushBlendLayer using the Screen formula, differently "
+          "from Multiply (Phase 34.5)",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Screen});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        const Pixel overlap = Sample(pixels, 40, 40, WIDTH);
+
+        // Screen(0.8, 0.5) = 0.8 + 0.5 - 0.4 = 0.9 -> ~229/255, distinctly brighter than Multiply's
+        // ~102/255 for the exact same backdrop/source pair -- proves uMode really switches the
+        // formula rather than one mode being hardcoded regardless of the uniform.
+        REQUIRE(overlap.r > 215);
+        REQUIRE(overlap.r < 240);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
 TEST_CASE("NativeRendererGL3 renders interleaved Rect and Image batches, each with the "
           "correct kind's geometry and texture",
           "[unit]") {
