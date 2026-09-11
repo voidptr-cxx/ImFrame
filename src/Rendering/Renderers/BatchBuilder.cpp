@@ -36,8 +36,9 @@ std::size_t BatchBuilder::OpenVertexCount() const noexcept {
         case BatchKind::Text:  return _openTextVertices.size();
         case BatchKind::Shadow:
         case BatchKind::Layer:
-            // Unreachable: AppendShadow()/AppendLayerMarker() never call BeginBatch(), so
-            // _openKind is never Shadow or Layer. Cases kept so this switch stays exhaustive.
+        case BatchKind::BackdropBlur:
+            // Unreachable: AppendShadow()/AppendLayerMarker()/AppendBackdropBlur() never call
+            // BeginBatch(), so _openKind is never one of these. Cases kept for exhaustiveness.
             return 0;
     }
     return 0;
@@ -67,6 +68,7 @@ void BatchBuilder::FlushOpen(BatchFlushReason reason) {
             break;
         case BatchKind::Shadow:
         case BatchKind::Layer:
+        case BatchKind::BackdropBlur:
             // Unreachable: see OpenVertexCount()'s identical comment.
             break;
     }
@@ -279,6 +281,27 @@ void BatchBuilder::AppendLayerMarker(LayerVertex marker) {
     _batches.push_back(std::move(batch));
 }
 
+void BatchBuilder::AppendBackdropBlur(const Rendering::DrawBackdropBlur& cmd) {
+    // Same single-item, always-closed shape as AppendShadow() -- see that method's own comment.
+    FlushOpen(BatchFlushReason::CommandTypeChange);
+
+    Batch batch;
+    batch.Kind = BatchKind::BackdropBlur;
+    batch.Vertices = std::vector<BackdropBlurVertex>{BackdropBlurVertex{
+        .Position = cmd.Position,
+        .Size = cmd.Size,
+        .Radii = cmd.Radii,
+        .BlurRadius = cmd.BlurRadius,
+        .TintColor = cmd.TintColor,
+    }};
+
+    _stats.DrawCallCount += 1;
+    _stats.VertexCount += 1; // one BackdropBlurVertex record, not a literal GPU vertex -- see AppendShadow()'s note.
+    _stats.FlushReasonCounts[static_cast<std::size_t>(BatchFlushReason::CommandTypeChange)] += 1;
+
+    _batches.push_back(std::move(batch));
+}
+
 void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
     Reset();
 
@@ -306,6 +329,8 @@ void BatchBuilder::Build(const Rendering::CommandBuffer& buffer) {
                     AppendLayerMarker(LayerVertex{.Op = LayerOp::PushBlend, .Mode = cmd.Mode});
                 } else if constexpr (std::is_same_v<T, Rendering::PopLayer>) {
                     AppendLayerMarker(LayerVertex{.Op = LayerOp::Pop});
+                } else if constexpr (std::is_same_v<T, Rendering::DrawBackdropBlur>) {
+                    AppendBackdropBlur(cmd);
                 }
             },
             command);

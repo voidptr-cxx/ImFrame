@@ -214,10 +214,17 @@ unsigned int BlurPassGL3::Apply(unsigned int sourceTexture, int width, int heigh
     if (radius <= 0.0f) { return sourceTexture; }
     const float clampedRadius = std::min(radius, 64.0f);
 
-    EnsureInitialized();
-    EnsureTargets(width, height);
-
-    // Save every piece of state the two passes touch -- see this class's own doc comment.
+    // Save every piece of state the two passes touch BEFORE EnsureInitialized()/EnsureTargets()
+    // run -- both lazily create GL objects (CreateTarget() in particular binds each new FBO and
+    // leaves it bound), so capturing "previous" state after them would, on the first Apply() call
+    // (or any call whose width/height differs from the last, forcing a target reallocation),
+    // record one of THIS class's own just-created FBOs as the caller's "previous" framebuffer --
+    // silently corrupting the caller's own binding once this function returns. This was a real,
+    // shipped bug from Phase 34.3, undetected because RenderShadowBatch() (Phase 34.4) — the only
+    // caller until Phase 34.6 — always rebinds its own saved framebuffer itself right after
+    // calling Apply(), independently papering over whatever Apply() left behind. Phase 34.6's
+    // backdrop-blur composite has no such redundant rebind and exposed it directly. See
+    // .claude/DECISIONS.md's Phase 34.6 entry.
     int previousFbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFbo);
     int previousViewport[4] = {0, 0, 0, 0};
@@ -232,6 +239,9 @@ unsigned int BlurPassGL3::Apply(unsigned int sourceTexture, int width, int heigh
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture0);
     const bool blendWasEnabled = glIsEnabled(GL_BLEND) != 0;
+
+    EnsureInitialized();
+    EnsureTargets(width, height);
 
     // Each pass's fullscreen quad overwrites every texel of its target -- disable blending so the
     // write is a plain replace, not composited against whatever that target previously held.

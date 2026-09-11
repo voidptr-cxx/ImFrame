@@ -367,6 +367,33 @@ TEST_CASE("BatchBuilder: PushBlendLayer carries its BlendMode through to the Lay
     REQUIRE(pushMarker[0].Mode == Rendering::BlendMode::Multiply);
 }
 
+TEST_CASE("BatchBuilder: DrawBackdropBlur between two DrawRects produces its own single-item "
+          "BackdropBlur batch",
+          "[unit]") {
+    Rendering::CommandBuffer buffer;
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+    buffer.Push(Rendering::DrawBackdropBlur{
+        .Position = {5.0f, 6.0f}, .Size = {20.0f, 30.0f}, .BlurRadius = 4.0f, .TintColor = {0.9f, 0.9f, 1.0f, 1.0f}});
+    buffer.Push(Rendering::DrawRect{.Size = {10.0f, 10.0f}});
+
+    BatchBuilder builder;
+    builder.Build(buffer);
+
+    // Rect / BackdropBlur / Rect -- three batches, none merged with a neighbour.
+    REQUIRE(builder.Batches().size() == 3);
+    REQUIRE(builder.Batches()[0].Kind == BatchKind::Rect);
+    REQUIRE(builder.Batches()[1].Kind == BatchKind::BackdropBlur);
+    REQUIRE(builder.Batches()[2].Kind == BatchKind::Rect);
+
+    const auto& blurVertices = std::get<std::vector<BackdropBlurVertex>>(builder.Batches()[1].Vertices);
+    REQUIRE(blurVertices.size() == 1);
+    REQUIRE(blurVertices[0].Position.x == Approx(5.0f));
+    REQUIRE(blurVertices[0].Position.y == Approx(6.0f));
+    REQUIRE(blurVertices[0].Size.x == Approx(20.0f));
+    REQUIRE(blurVertices[0].BlurRadius == Approx(4.0f));
+    REQUIRE(blurVertices[0].TintColor.x == Approx(0.9f));
+}
+
 TEST_CASE("BatchBuilder: an empty command buffer produces zero batches", "[unit]") {
     Rendering::CommandBuffer buffer;
 
