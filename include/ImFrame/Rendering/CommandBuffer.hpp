@@ -233,13 +233,37 @@ struct PushBlendLayer {
 struct PopLayer {};
 
 /**
+ * @brief  Backdrop blur ("frosted glass"): blurs the already-rendered content within this
+ *         region and draws the blurred result back in place, before any content drawn after it.
+ *
+ * Unlike `PushOpacityLayer`/`PushBlendLayer`, this is a single, self-contained operation — it
+ * doesn't bracket subsequent commands, it samples whatever was *already* rendered up to this
+ * point in the buffer, within `Position`/`Size`, and replaces that region with a blurred version
+ * of itself. A widget's own content (e.g. its own `DrawRect` background, then text/icons) is
+ * expected to draw *after* this command, on top of the now-blurred backdrop.
+ *
+ * The renderer rate-limits how many of these it processes per frame (`MaxBackdropBlurPerFrame`,
+ * default 4 — see `PHASE_34_PROPOSAL.md`'s Backdrop Blur section) — additional requests degrade
+ * gracefully by leaving that region's content unblurred rather than failing.
+ */
+struct DrawBackdropBlur {
+    Widgets::Vec2 Position{};
+    Widgets::Vec2 Size{};
+    CornerRadii   Radii{};
+    float         BlurRadius = 0.0f;
+    /// Multiplied over the blurred backdrop — a frosted-glass colour cast. `{1,1,1,1}` (the
+    /// default) is a neutral no-tint.
+    Widgets::Vec4 TintColor{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+/**
  * @typedef  Command
  * @brief    One recorded drawing operation
  *
  * @since    3.0.0
  */
 using Command = std::variant<DrawRect, DrawText, DrawImage, DrawPath, DrawShadow, PushClipRect, PopClipRect,
-                              PushOpacityLayer, PushBlendLayer, PopLayer>;
+                              PushOpacityLayer, PushBlendLayer, PopLayer, DrawBackdropBlur>;
 
 // ─── CommandBuffer ──────────────────────────────────────────────────────────
 

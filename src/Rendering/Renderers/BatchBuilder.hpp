@@ -51,6 +51,13 @@
  * "currently inside a layer," same as it stays ignorant of what a `Shadow`
  * batch's blur radius produces visually.
  *
+ * `DrawBackdropBlur` (Phase 34.6) gets its own `BatchKind::BackdropBlur`
+ * marker — a `BackdropBlurVertex` record, same "record, not vertex" shape as
+ * `ShadowVertex`, always a single-item batch. Unlike `PushOpacityLayer`/
+ * `PushBlendLayer`, it doesn't bracket a range of subsequent commands — it's
+ * a single, self-contained "blur what's already there" operation, closer in
+ * shape to `Shadow` than to `Layer`.
+ *
  * This is a pure CPU-side data structure — it has no GPU calls and no
  * dependency on any `IRenderer` implementation, so it is unit-testable in
  * isolation (`ITextLayoutProvider` is an abstract seam, not a concrete
@@ -130,6 +137,16 @@ struct LayerVertex {
     Rendering::BlendMode  Mode = Rendering::BlendMode::Normal;  ///< Meaningful only when `Op == PushBlend`.
 };
 
+/// Record for `BatchKind::BackdropBlur` — not GPU vertex data; carries one
+/// `Rendering::DrawBackdropBlur` command's fields through to render time, field-for-field.
+struct BackdropBlurVertex {
+    Widgets::Vec2          Position{};
+    Widgets::Vec2          Size{};
+    Rendering::CornerRadii Radii{};
+    float                  BlurRadius = 0.0f;
+    Widgets::Vec4          TintColor{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 /**
  * @class    ITextLayoutProvider
  * @brief    Turns one `Rendering::DrawText` command into positioned, atlas-backed glyph quads
@@ -186,6 +203,8 @@ enum class BatchKind : unsigned char {
     Shadow, ///< From `Rendering::DrawShadow` (Phase 34.4) — always a single-item batch. Vertices are `ShadowVertex`.
     Layer,  ///< From `Rendering::Push{Opacity,Blend}Layer`/`PopLayer` (Phase 34.5) — always a single-item
             ///< marker batch, never real geometry. Vertices are `LayerVertex`.
+    BackdropBlur, ///< From `Rendering::DrawBackdropBlur` (Phase 34.6) — always a single-item batch.
+                  ///< Vertices are `BackdropBlurVertex`.
 };
 
 /// Why a batch was closed. Backs `BatchStats::FlushReasonCounts`.
@@ -204,9 +223,10 @@ enum class BatchFlushReason : unsigned char {
 inline constexpr std::size_t kBatchFlushReasonCount = 7;
 
 /// Kind-specific vertex storage for one `Batch` — holds `RectVertex`/`ImageVertex`/`TextVertex`/`ShadowVertex`/
-/// `LayerVertex` depending on `Batch::Kind`.
+/// `LayerVertex`/`BackdropBlurVertex` depending on `Batch::Kind`.
 using BatchVertices = std::variant<std::vector<RectVertex>, std::vector<ImageVertex>, std::vector<TextVertex>,
-                                    std::vector<ShadowVertex>, std::vector<LayerVertex>>;
+                                    std::vector<ShadowVertex>, std::vector<LayerVertex>,
+                                    std::vector<BackdropBlurVertex>>;
 
 /// One closed batch: exactly one draw call's worth of geometry, sharing a texture and clip/layer state.
 struct Batch {
@@ -275,6 +295,7 @@ private:
     void AppendText(const Rendering::DrawText& cmd);
     void AppendShadow(const Rendering::DrawShadow& cmd);
     void AppendLayerMarker(LayerVertex marker);
+    void AppendBackdropBlur(const Rendering::DrawBackdropBlur& cmd);
     [[nodiscard]] std::size_t OpenVertexCount() const noexcept;
 
     std::vector<Batch> _batches;

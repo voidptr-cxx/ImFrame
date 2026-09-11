@@ -14,6 +14,7 @@
 #include "NativeRendererGL3.hpp"
 
 #include "ImFrame/Core/Error.hpp"
+#include "ImFrame/Utility/Logger.hpp"
 
 #include <glad/glad.h>
 #include <imgui.h>
@@ -260,7 +261,18 @@ std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::V
 /// unrounded white silhouette) looks identical whether flipped or not; Phase 34.5's opacity-layer
 /// composite test (an off-center rect) does, and failed until this V-flip was added. See
 /// `.claude/DECISIONS.md`'s Phase 34.5 entry for the full derivation.
-std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+///
+/// `uvMin`/`uvMax` (Phase 34.6) select a sub-rectangle of the source texture, in the same
+/// "author pixel-space, not yet V-flipped" sense as `position`/`size` -- default `{0,0}`/`{1,1}`
+/// samples the whole texture (Phase 34.4/34.5's original behaviour, unchanged). `RenderBackdropBlurBatch()`
+/// uses a non-default sub-rect to crop a padded, blurred copy back down to the requested rect.
+///
+/// `radii` (Phase 34.6, default all-zero/unrounded -- Phase 34.4/34.5's original behaviour,
+/// unchanged) rounds the composited quad's own corners, via the same rounded-box SDF mask
+/// `kImageFragmentSource` already applies to any `BatchKind::Image` draw.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor,
+                                                 Widgets::Vec2 uvMin = {0.0f, 0.0f}, Widgets::Vec2 uvMax = {1.0f, 1.0f},
+                                                 Rendering::CornerRadii radii = {}) {
     const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
     const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
     const Widgets::Vec2 corners[4] = {
@@ -269,7 +281,12 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
         {position.x + size.x, position.y + size.y},
         {position.x, position.y + size.y},
     };
-    const Widgets::Vec2 uvs[4] = {{0.0f, 1.0f}, {1.0f, 1.0f}, {1.0f, 0.0f}, {0.0f, 0.0f}};
+    // V-flip applied independently to uvMin.y/uvMax.y (`1 - v`), not a min/max swap -- the two
+    // only coincide for the default whole-texture case (uvMin=(0,0), uvMax=(1,1), where
+    // `uvMax.y == 1 - uvMin.y` holds trivially). A non-default sub-rect (Phase 34.6's backdrop-blur
+    // crop) needs the real formula, or the crop reads flipped-and-wrong texture rows.
+    const Widgets::Vec2 uvs[4] = {
+        {uvMin.x, 1.0f - uvMin.y}, {uvMax.x, 1.0f - uvMin.y}, {uvMax.x, 1.0f - uvMax.y}, {uvMin.x, 1.0f - uvMax.y}};
 
     std::vector<ImageVertex> vertices;
     vertices.reserve(4);
@@ -278,7 +295,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
             .Position = corners[i],
             .Local = {corners[i].x - center.x, corners[i].y - center.y},
             .HalfSize = halfSize,
-            .Radii = Rendering::CornerRadii{},
+            .Radii = radii,
             .Uv = uvs[i],
             .TintColor = tintColor,
         });
@@ -439,6 +456,10 @@ void NativeRendererGL3::Shutdown() {
     if (_backdropTex != 0) { glDeleteTextures(1, &_backdropTex); _backdropTex = 0; }
     _backdropWidth = 0;
     _backdropHeight = 0;
+
+    if (_backdropBlurCopyTex != 0) { glDeleteTextures(1, &_backdropBlurCopyTex); _backdropBlurCopyTex = 0; }
+    _backdropBlurCopyWidth = 0;
+    _backdropBlurCopyHeight = 0;
 
     _initialized = false;
 }
@@ -871,6 +892,94 @@ void NativeRendererGL3::HandleLayerMarker(const Batch& batch) {
     }
 }
 
+void NativeRendererGL3::EnsureBackdropBlurCopyTarget(int width, int height) {
+    if (_backdropBlurCopyTex != 0 && _backdropBlurCopyWidth == width && _backdropBlurCopyHeight == height) {
+        return;
+    }
+
+    if (_backdropBlurCopyTex != 0) { glDeleteTextures(1, &_backdropBlurCopyTex); }
+
+    glGenTextures(1, &_backdropBlurCopyTex);
+    glBindTexture(GL_TEXTURE_2D, _backdropBlurCopyTex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    _backdropBlurCopyWidth  = width;
+    _backdropBlurCopyHeight = height;
+}
+
+void NativeRendererGL3::RenderBackdropBlurBatch(const Batch& batch) {
+    const auto& blurs = std::get<std::vector<BackdropBlurVertex>>(batch.Vertices);
+    if (blurs.empty()) { return; }
+    const BackdropBlurVertex& blur = blurs.front();
+    if (blur.Size.x <= 0.0f || blur.Size.y <= 0.0f) { return; }
+
+    if (_backdropBlurCountThisFrame >= _maxBackdropBlurPerFrame) {
+        IMF_DEBUG("[NativeRendererGL3] Skipping DrawBackdropBlur: MaxBackdropBlurPerFrame ({}) already "
+                  "reached this frame -- region at ({}, {}) left unblurred",
+                  _maxBackdropBlurPerFrame, blur.Position.x, blur.Position.y);
+        return;
+    }
+    ++_backdropBlurCountThisFrame;
+
+    int previousViewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+    const int viewportWidth  = previousViewport[2];
+    const int viewportHeight = previousViewport[3];
+
+    // Pad the copied region by the blur radius on every side (clamped to the current viewport's
+    // own bounds) so BlurPassGL3's kernel has real surrounding content to read, the same reasoning
+    // as RenderShadowBatch()'s silhouette padding -- then crop the composite back down to exactly
+    // `blur.Position`/`blur.Size` (see BuildImageQuadVertices()'s uvMin/uvMax), since (unlike a
+    // shadow, which is expected to bleed past its shape and get covered by it) backdrop blur is
+    // documented as replacing exactly the requested rect, nothing more.
+    const float pad = std::max(blur.BlurRadius, 0.0f);
+    const float left   = std::max(blur.Position.x - pad, 0.0f);
+    const float top    = std::max(blur.Position.y - pad, 0.0f);
+    const float right  = std::min(blur.Position.x + blur.Size.x + pad, static_cast<float>(viewportWidth));
+    const float bottom = std::min(blur.Position.y + blur.Size.y + pad, static_cast<float>(viewportHeight));
+    const float copyWidthF  = right - left;
+    const float copyHeightF = bottom - top;
+    if (copyWidthF <= 0.0f || copyHeightF <= 0.0f) { return; }
+
+    const int copyWidth  = std::max(1, static_cast<int>(std::ceil(copyWidthF)));
+    const int copyHeight = std::max(1, static_cast<int>(std::ceil(copyHeightF)));
+
+    EnsureBackdropBlurCopyTarget(copyWidth, copyHeight);
+
+    // glCopyTexSubImage2D's own (x, y) are GL-native window coordinates (bottom-up), not this
+    // renderer's "author pixel-space, Y=0 is top" convention every Position/Size field otherwise
+    // uses -- the vertex shader that originally drew whatever's already on screen negates Y
+    // (see BuildImageQuadVertices()'s own comment), so author Y maps to GL window Y via
+    // `glY = viewportY + viewportHeight - authorY`. The rect's *bottom* edge (the larger author Y)
+    // is the *smaller* GL y -- i.e. the copy's own GL-native origin.
+    const int glX = previousViewport[0] + static_cast<int>(left);
+    const int glY = previousViewport[1] + viewportHeight - static_cast<int>(bottom);
+
+    glBindTexture(GL_TEXTURE_2D, _backdropBlurCopyTex);
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, glX, glY, copyWidth, copyHeight);
+
+    const unsigned int blurredTexture =
+        _blurPass.Apply(_backdropBlurCopyTex, copyWidth, copyHeight, blur.BlurRadius);
+
+    // Crop the composite to exactly the requested rect: uvMin/uvMax select the sub-rectangle of
+    // the padded, blurred copy that corresponds to `blur.Position`/`blur.Size`.
+    const Widgets::Vec2 uvMin{(blur.Position.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y - top) / static_cast<float>(copyHeight)};
+    const Widgets::Vec2 uvMax{(blur.Position.x + blur.Size.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y + blur.Size.y - top) / static_cast<float>(copyHeight)};
+
+    Batch compositeBatch;
+    compositeBatch.Kind = BatchKind::Image;
+    compositeBatch.Texture = Rendering::TextureId(static_cast<std::uint64_t>(blurredTexture));
+    compositeBatch.Vertices = BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
+    compositeBatch.Indices = {0, 1, 2, 0, 2, 3};
+    RenderImageBatch(compositeBatch);
+}
+
 void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
     // Save GL state this call touches so a caller mixing NativeRendererGL3 output with other GL/ImGui
     // drawing in the same frame gets it back unchanged. In RenderMode::DeferredReplay this runs
@@ -912,6 +1021,9 @@ void NativeRendererGL3::DrawBatches(const std::vector<Batch>& batches) {
                 break;
             case BatchKind::Layer:
                 HandleLayerMarker(batch);
+                break;
+            case BatchKind::BackdropBlur:
+                RenderBackdropBlurBatch(batch);
                 break;
             case BatchKind::Text:
                 // A BatchKind::Text batch only exists here at all when _textRenderer's own
@@ -972,6 +1084,7 @@ Result<Rendering::FontId> NativeRendererGL3::LoadFont(const Utility::Path& path,
 
 void NativeRendererGL3::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
+    _backdropBlurCountThisFrame = 0; // "per frame" == "per Render() call" -- see SetMaxBackdropBlurPerFrame().
     _batchBuilder.SetTextLayoutProvider(_textRenderer != nullptr ? _textRenderer->LayoutProvider() : nullptr);
     _batchBuilder.Build(buffer);
 

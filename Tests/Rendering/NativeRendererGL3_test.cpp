@@ -529,6 +529,110 @@ TEST_CASE("NativeRendererGL3 composites a PushBlendLayer using the Screen formul
     backend.Shutdown();
 }
 
+TEST_CASE("NativeRendererGL3 renders a DrawBackdropBlur: blends across a colour seam within its "
+          "own rect, leaves everything outside untouched (Phase 34.6)",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        // A hard horizontal colour seam at y=64: red above, blue below. Deliberately asymmetric
+        // in Y (not a uniform fill) so a Y-orientation bug (like Phase 34.5's) would show up as a
+        // wrong-side blend instead of passing by coincidence.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, static_cast<float>(HEIGHT) / 2.0f},
+            .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawBackdropBlur{.Position = {40.0f, 44.0f}, .Size = {48.0f, 40.0f}, .BlurRadius = 10.0f});
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        // Exactly at the seam, well inside the blur rect (x in [40,88], y in [44,84]) -- a real
+        // blur straddling red-above/blue-below should show a roughly even mix of both.
+        const Pixel atSeam = Sample(pixels, 64, 64, WIDTH);
+        // Just outside the blur rect's own top edge (y=40 < 44) but inside its padded copy region
+        // (padding = BlurRadius = 10, so the copy reaches up to y=34) -- proves the composite was
+        // cropped to the requested Size, not left showing the padding's own blurred bleed.
+        const Pixel justAboveRect = Sample(pixels, 64, 40, WIDTH);
+        // Far from the blur rect and the seam entirely -- untouched original colours.
+        const Pixel untouchedRed  = Sample(pixels, 10, 10, WIDTH);
+        const Pixel untouchedBlue = Sample(pixels, 10, 118, WIDTH);
+
+        REQUIRE(atSeam.r > 80);
+        REQUIRE(atSeam.r < 180);
+        REQUIRE(atSeam.b > 80);
+        REQUIRE(atSeam.b < 180);
+
+        REQUIRE(justAboveRect.r > 200);
+        REQUIRE(justAboveRect.b < 20);
+
+        REQUIRE(untouchedRed.r > 200);
+        REQUIRE(untouchedRed.b < 20);
+        REQUIRE(untouchedBlue.b > 200);
+        REQUIRE(untouchedBlue.r < 20);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererGL3 rate-limits DrawBackdropBlur at MaxBackdropBlurPerFrame, degrading "
+          "gracefully past the limit (Phase 34.6)",
+          "[unit]") {
+    GLFWOpenGL3Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        ScratchFramebuffer fb(WIDTH, HEIGHT);
+        fb.BindAndClear();
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, static_cast<float>(HEIGHT) / 2.0f},
+            .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        // Five non-overlapping backdrop-blur regions straddling the same seam -- default
+        // MaxBackdropBlurPerFrame is 4, so the 5th should be skipped entirely.
+        for (int i = 0; i < 5; ++i) {
+            buffer.Push(DrawBackdropBlur{
+                .Position = {10.0f + static_cast<float>(i) * 20.0f, 54.0f}, .Size = {16.0f, 20.0f}, .BlurRadius = 8.0f});
+        }
+
+        NativeRendererGL3 renderer;
+        renderer.Render(buffer);
+
+        auto pixels = fb.ReadPixels();
+        // y=59 is 5px above the seam (y=64), inside every region's own Y range [54,74] but nowhere
+        // near the geometric seam itself -- a processed (blurred) region bleeds some blue this far
+        // into the red band; a skipped region leaves this pixel exactly the original pure red.
+        for (int i = 0; i < 4; ++i) {
+            const int x = 10 + i * 20 + 8; // center-x of region i
+            const Pixel processed = Sample(pixels, x, 59, WIDTH);
+            REQUIRE(processed.b > 15);
+        }
+        const Pixel skipped = Sample(pixels, 10 + 4 * 20 + 8, 59, WIDTH);
+        REQUIRE(skipped.b == 0);
+        REQUIRE(skipped.r == 255);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
 TEST_CASE("NativeRendererGL3 renders interleaved Rect and Image batches, each with the "
           "correct kind's geometry and texture",
           "[unit]") {

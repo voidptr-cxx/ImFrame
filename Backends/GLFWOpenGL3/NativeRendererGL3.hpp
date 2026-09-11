@@ -10,9 +10,12 @@
  * `BatchKind::Shadow` (Phase 34.4, via `RenderShadowBatch()` — render the
  * shadow's silhouette into an offscreen texture, blur it with `_blurPass`,
  * then composite the tinted result behind the shape at its offset, per
- * `PHASE_34_PROPOSAL.md`'s `DrawShadow` section), and `BatchKind::Layer`
+ * `PHASE_34_PROPOSAL.md`'s `DrawShadow` section), `BatchKind::Layer`
  * (Phase 34.5, via `PushLayer()`/`PopLayer()` — see those methods' own
- * comments for the offscreen-layer-stack design).
+ * comments for the offscreen-layer-stack design), and `BatchKind::BackdropBlur`
+ * (Phase 34.6, via `RenderBackdropBlurBatch()` — copy the region behind the
+ * blur into a texture, blur it, composite it back in place, cropped to the
+ * requested rect; rate-limited per `Render()` call by `MaxBackdropBlurPerFrame`).
  * `DrawPath` still has no live producer anywhere in the tree, so CPU
  * polyline tesselation stays speculative and there is no `BatchKind::Path`.
  *
@@ -169,6 +172,17 @@ public:
      */
     void AttachTextRenderer(ITextRenderer* textRenderer) noexcept { _textRenderer = textRenderer; }
 
+    /**
+     * @brief    Sets how many `Rendering::DrawBackdropBlur` operations `Render()` processes per call.
+     * @param[in] maxPerFrame  Default 4, per `PHASE_34_PROPOSAL.md`'s Backdrop Blur section.
+     *
+     * Additional `DrawBackdropBlur` commands beyond this in the same `Render()` call degrade
+     * gracefully — that region is left showing its already-rendered (unblurred) content, logged at
+     * `Logger::Debug`, rather than failing or unconditionally paying an unbounded per-frame cost
+     * for an expensive effect.
+     */
+    void SetMaxBackdropBlurPerFrame(int maxPerFrame) noexcept { _maxBackdropBlurPerFrame = maxPerFrame; }
+
 private:
     void EnsureInitialized();
     void RenderImmediate();
@@ -179,6 +193,8 @@ private:
     void RenderShadowBatch(const Batch& batch);
     void EnsureShadowSilhouetteTarget(int width, int height);
     void HandleLayerMarker(const Batch& batch);
+    void RenderBackdropBlurBatch(const Batch& batch);
+    void EnsureBackdropBlurCopyTarget(int width, int height);
 
     /// `ImDrawList::AddCallback()` trampoline for `RenderMode::DeferredReplay` — see NativeRendererGL3.cpp.
     static void ExecuteDeferredDraw(const ImDrawList* parentList, const ImDrawCmd* cmd);
@@ -309,6 +325,18 @@ private:
     unsigned int _backdropTex    = 0;
     int          _backdropWidth  = 0;
     int          _backdropHeight = 0;
+
+    /// `RenderBackdropBlurBatch()`'s own copy-then-blur target (Phase 34.6) — separate from
+    /// `_backdropTex` (Phase 34.5's blend-layer backdrop copy): different purpose, different
+    /// expected size, and there's no guarantee the two operations can never nest in the future.
+    unsigned int _backdropBlurCopyTex    = 0;
+    int          _backdropBlurCopyWidth  = 0;
+    int          _backdropBlurCopyHeight = 0;
+
+    /// See `SetMaxBackdropBlurPerFrame()`. `_backdropBlurCountThisFrame` resets to 0 at the start
+    /// of every `Render()` call — "per frame" means "per `Render()` call" for this renderer.
+    int _maxBackdropBlurPerFrame    = 4;
+    int _backdropBlurCountThisFrame = 0;
 };
 
 } // namespace ImFrame::Internal
