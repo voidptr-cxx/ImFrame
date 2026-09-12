@@ -322,9 +322,11 @@ target_compile_features(ImFrame PUBLIC cxx_std_23)
 
 # ─── Phase 32.2: NativeRenderer shader pipeline (opt-in) ──────────────────────
 # Compiles Shaders/*.glsl to SPIR-V at build time via glslang and embeds the result as
-# generated C++ headers — see cmake/CompileShader.cmake. No target links against
-# ImFrame_Shaders yet (NativeRenderer itself doesn't exist until a later 32.x sub-phase);
-# this section exists purely to prove the pipeline compiles real, valid shaders.
+# generated C++ headers — see cmake/CompileShader.cmake. NativeRendererGL3 (Phase 32.4+) only
+# ever consumes a generated header's raw-GLSL-source half, hand-writing its own #version 330
+# equivalents instead (see NativeRendererGL3.hpp's own comment on why). NativeRendererVulkan
+# (Phase 35.1) is the first target to actually link ImFrame_Shaders and consume the compiled
+# SPIR-V half directly — see Backends/SDL3Vulkan/CMakeLists.txt.
 if(IMF_BUILD_NATIVE_RENDERER)
     include(cmake/CompileShader.cmake)
 

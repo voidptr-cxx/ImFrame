@@ -180,6 +180,29 @@ public:
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
     /**
+     * @brief    Real, already-typed Vulkan handles for a backend-internal `NativeRendererVulkan`
+     *           (or a test) to construct itself against this backend's live device.
+     *
+     * @internal
+     * Unlike `GetNativeGraphicsContext()` (the *public* `void*`-typed accessor for Phase 24
+     * Viewport's application-facing use, deliberately kept free of any Vulkan header dependency),
+     * this returns real types directly — `Backends/SDL3Vulkan/` is itself an internal-only header
+     * directory (not `include/ImFrame/`), so there's no API-leak concern in exposing them as-is.
+     * Does not include a colour format — an offscreen render target
+     * (`VK_FORMAT_R8G8B8A8_UNORM`, matching `CreateViewportFramebuffer()`'s own convention) and a
+     * direct-to-swapchain target (`_primary.swapChain.format`) are different formats for different
+     * purposes; the caller picks whichever matches what it's actually rendering into.
+     */
+    struct VulkanRendererHandles {
+        VkDevice      Device              = VK_NULL_HANDLE;
+        VmaAllocator  Allocator           = VK_NULL_HANDLE;
+        VkQueue       GraphicsQueue       = VK_NULL_HANDLE;
+        std::uint32_t GraphicsQueueFamily = 0;
+        VkCommandPool CommandPool         = VK_NULL_HANDLE;
+    };
+    [[nodiscard]] VulkanRendererHandles GetRendererHandles() const noexcept;
+
+    /**
      * @brief    Allocate a Vulkan VkImage framebuffer for Viewport use.
      */
     std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(

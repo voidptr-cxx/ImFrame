@@ -1280,6 +1280,19 @@ NativeGraphicsContext SDL3VulkanBackend::GetNativeGraphicsContext() const
     };
 }
 
+// ─── GetRendererHandles ───────────────────────────────────────────────────────
+
+SDL3VulkanBackend::VulkanRendererHandles SDL3VulkanBackend::GetRendererHandles() const noexcept
+{
+    return VulkanRendererHandles{
+        .Device              = _device,
+        .Allocator           = _vmaAllocator,
+        .GraphicsQueue       = _graphicsQueue,
+        .GraphicsQueueFamily = _graphicsFamily,
+        .CommandPool         = _viewportCmdPool,
+    };
+}
+
 // ─── CreateViewportFramebuffer ────────────────────────────────────────────────
 
 std::unique_ptr<IViewportFramebuffer> SDL3VulkanBackend::CreateViewportFramebuffer(
