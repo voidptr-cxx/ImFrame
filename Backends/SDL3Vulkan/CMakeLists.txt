@@ -8,6 +8,19 @@ add_library(ImFrame_SDL3Vulkan STATIC
     ViewportVulkan.cpp
 )
 
+# ── Phase 35.1: NativeRendererVulkan (opt-in, same IMF_BUILD_NATIVE_RENDERER gate and
+# Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererGL3 —
+# see .claude/DECISIONS.md, Phase 32.4 and Phase 35.1) ──
+if(IMF_BUILD_NATIVE_RENDERER)
+    target_sources(ImFrame_SDL3Vulkan PRIVATE NativeRendererVulkan.cpp)
+    # NativeRendererVulkan.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
+    # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
+    # include interface. It also consumes Shaders/SDFRect.{vert,frag}.hpp's embedded SPIR-V
+    # (Phase 32.2's cmake/CompileShader.cmake pipeline) — the first real consumer of that output.
+    target_include_directories(ImFrame_SDL3Vulkan PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(ImFrame_SDL3Vulkan PRIVATE ImFrame_Shaders)
+endif()
+
 # Expose own source directory so consumers can:
 #   #include "SDL3VulkanBackend.hpp"
 target_include_directories(ImFrame_SDL3Vulkan
