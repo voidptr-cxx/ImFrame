@@ -339,6 +339,11 @@ if(IMF_BUILD_NATIVE_RENDERER)
         list(APPEND IMF_SHADER_HEADERS "${IMF_SHADER_VERT_HEADER}" "${IMF_SHADER_FRAG_HEADER}")
     endforeach()
 
+    # Phase 35.3: GaussianBlur.glsl is compute-only (one STAGE_COMPUTE section, no vert/frag pair).
+    compile_shader("${CMAKE_SOURCE_DIR}/Shaders/GaussianBlur.glsl" comp GaussianBlur
+        OUT_HEADER IMF_SHADER_COMP_HEADER)
+    list(APPEND IMF_SHADER_HEADERS "${IMF_SHADER_COMP_HEADER}")
+
     add_library(ImFrame_Shaders INTERFACE ${IMF_SHADER_HEADERS})
     target_include_directories(ImFrame_Shaders INTERFACE ${IMF_SHADER_GENERATED_DIR}/..)
 endif()
