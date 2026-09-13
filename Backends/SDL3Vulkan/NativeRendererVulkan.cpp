@@ -15,6 +15,8 @@
 
 #include "ImFrame/Core/Error.hpp"
 
+#include "Shaders/Blend.frag.hpp"
+#include "Shaders/Blend.vert.hpp"
 #include "Shaders/Image.frag.hpp"
 #include "Shaders/Image.vert.hpp"
 #include "Shaders/SDFRect.frag.hpp"
@@ -112,7 +114,9 @@ NativeRendererVulkan::NativeRendererVulkan(VkDevice device, VmaAllocator allocat
 
 NativeRendererVulkan::~NativeRendererVulkan() { Shutdown(); }
 
-void NativeRendererVulkan::SetTarget(VkImageView targetView, std::uint32_t width, std::uint32_t height) noexcept {
+void NativeRendererVulkan::SetTarget(VkImage targetImage, VkImageView targetView, std::uint32_t width,
+                                     std::uint32_t height) noexcept {
+    _targetImage  = targetImage;
     _targetView   = targetView;
     _targetWidth  = width;
     _targetHeight = height;
@@ -489,6 +493,145 @@ void NativeRendererVulkan::EnsureInitialized() {
         vkUpdateDescriptorSets(_device, 1, &compositeWrite, 0, nullptr);
     }
 
+    // ─── Phase 35.5: premultiplied-alpha Image pipeline, for compositing renderer-owned content ──
+    // (a popped opacity layer, whose own captured render is already premultiplied by its own
+    // coverage) -- CompositeOpacityLayer() needs GL_ONE/GL_ONE_MINUS_SRC_ALPHA-equivalent blending,
+    // not _imagePipeline's own SRC_ALPHA/ONE_MINUS_SRC_ALPHA (correct for a real, non-premultiplied
+    // DrawImage source, wrong here -- see NativeRendererGL3::CompositeOpacityLayer()'s own comment
+    // for the derivation). Vulkan bakes blend factors into the pipeline (no dynamic per-draw
+    // override without an extension this codebase doesn't require), so this needs its own
+    // VkPipeline -- shader modules, vertex input, and pipeline layout are all identical to
+    // _imagePipeline's own (imageStages/imageVertexInputCi/_imagePipelineLayout, still in scope),
+    // reused directly; only the blend state differs.
+    {
+        VkPipelineColorBlendAttachmentState premultipliedAttachment{};
+        premultipliedAttachment.blendEnable         = VK_TRUE;
+        premultipliedAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        premultipliedAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        premultipliedAttachment.colorBlendOp        = VK_BLEND_OP_ADD;
+        premultipliedAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        premultipliedAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        premultipliedAttachment.alphaBlendOp        = VK_BLEND_OP_ADD;
+        premultipliedAttachment.colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo premultipliedBlendCi{};
+        premultipliedBlendCi.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        premultipliedBlendCi.attachmentCount = 1;
+        premultipliedBlendCi.pAttachments    = &premultipliedAttachment;
+
+        VkGraphicsPipelineCreateInfo premultipliedPipelineCi = imagePipelineCi;
+        premultipliedPipelineCi.pColorBlendState             = &premultipliedBlendCi;
+        vkCreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &premultipliedPipelineCi, nullptr,
+                                 &_premultipliedImagePipeline);
+    }
+
+    // ─── Phase 35.5: Blend.glsl pipeline (PushBlendLayer/PopLayer real blend-mode compositing) ───
+    {
+        VkShaderModuleCreateInfo blendVertModuleCi{};
+        blendVertModuleCi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        blendVertModuleCi.codeSize = Shaders::kBlendVertexSpirvByteCount;
+        blendVertModuleCi.pCode    = reinterpret_cast<const std::uint32_t*>(Shaders::kBlendVertexSpirv);
+        vkCreateShaderModule(_device, &blendVertModuleCi, nullptr, &_blendVertexModule);
+
+        VkShaderModuleCreateInfo blendFragModuleCi{};
+        blendFragModuleCi.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        blendFragModuleCi.codeSize = Shaders::kBlendFragmentSpirvByteCount;
+        blendFragModuleCi.pCode    = reinterpret_cast<const std::uint32_t*>(Shaders::kBlendFragmentSpirv);
+        vkCreateShaderModule(_device, &blendFragModuleCi, nullptr, &_blendFragmentModule);
+
+        // Blend.glsl: binding=0 source texture, binding=1 backdrop texture, both fragment-stage only.
+        std::array<VkDescriptorSetLayoutBinding, 2> blendBindings{};
+        blendBindings[0].binding         = 0;
+        blendBindings[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        blendBindings[0].descriptorCount = 1;
+        blendBindings[0].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        blendBindings[1].binding         = 1;
+        blendBindings[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        blendBindings[1].descriptorCount = 1;
+        blendBindings[1].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo blendSetLayoutCi{};
+        blendSetLayoutCi.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        blendSetLayoutCi.bindingCount = static_cast<std::uint32_t>(blendBindings.size());
+        blendSetLayoutCi.pBindings    = blendBindings.data();
+        vkCreateDescriptorSetLayout(_device, &blendSetLayoutCi, nullptr, &_blendDescriptorSetLayout);
+
+        VkPushConstantRange blendPushRange{};
+        blendPushRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        blendPushRange.offset     = 0;
+        blendPushRange.size       = sizeof(std::int32_t);
+
+        VkPipelineLayoutCreateInfo blendPipelineLayoutCi{};
+        blendPipelineLayoutCi.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        blendPipelineLayoutCi.setLayoutCount         = 1;
+        blendPipelineLayoutCi.pSetLayouts            = &_blendDescriptorSetLayout;
+        blendPipelineLayoutCi.pushConstantRangeCount = 1;
+        blendPipelineLayoutCi.pPushConstantRanges    = &blendPushRange;
+        vkCreatePipelineLayout(_device, &blendPipelineLayoutCi, nullptr, &_blendPipelineLayout);
+
+        // No vertex bindings/attributes at all -- Blend.glsl's vertex shader generates its fixed,
+        // full-viewport quad from gl_VertexIndex alone (see that file's own comment).
+        VkPipelineVertexInputStateCreateInfo blendVertexInputCi{};
+        blendVertexInputCi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        std::array<VkPipelineShaderStageCreateInfo, 2> blendStages{};
+        blendStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        blendStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        blendStages[0].module = _blendVertexModule;
+        blendStages[0].pName  = "main";
+        blendStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        blendStages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        blendStages[1].module = _blendFragmentModule;
+        blendStages[1].pName  = "main";
+
+        // blendEnable=false -- the shader itself computes the full Porter-Duff-composited result;
+        // fixed-function blending on top of that output would double-composite it.
+        VkPipelineColorBlendAttachmentState blendReplaceAttachment{};
+        blendReplaceAttachment.blendEnable    = VK_FALSE;
+        blendReplaceAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo blendReplaceCi{};
+        blendReplaceCi.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blendReplaceCi.attachmentCount = 1;
+        blendReplaceCi.pAttachments    = &blendReplaceAttachment;
+
+        VkGraphicsPipelineCreateInfo blendPipelineCi{};
+        blendPipelineCi.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        blendPipelineCi.pNext               = &renderingCi;
+        blendPipelineCi.stageCount          = static_cast<std::uint32_t>(blendStages.size());
+        blendPipelineCi.pStages             = blendStages.data();
+        blendPipelineCi.pVertexInputState   = &blendVertexInputCi;
+        blendPipelineCi.pInputAssemblyState = &inputAssemblyCi;
+        blendPipelineCi.pViewportState      = &viewportStateCi;
+        blendPipelineCi.pRasterizationState = &rasterizationCi;
+        blendPipelineCi.pMultisampleState   = &multisampleCi;
+        blendPipelineCi.pColorBlendState    = &blendReplaceCi;
+        blendPipelineCi.pDynamicState       = &dynamicStateCi;
+        blendPipelineCi.layout              = _blendPipelineLayout;
+        blendPipelineCi.renderPass          = VK_NULL_HANDLE;
+        vkCreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &blendPipelineCi, nullptr, &_blendPipeline);
+
+        VkDescriptorPoolSize blendPoolSize{};
+        blendPoolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        blendPoolSize.descriptorCount = 2;
+
+        VkDescriptorPoolCreateInfo blendPoolCi{};
+        blendPoolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        blendPoolCi.maxSets       = 1;
+        blendPoolCi.poolSizeCount = 1;
+        blendPoolCi.pPoolSizes    = &blendPoolSize;
+        vkCreateDescriptorPool(_device, &blendPoolCi, nullptr, &_blendDescriptorPool);
+
+        VkDescriptorSetAllocateInfo blendSetAllocInfo{};
+        blendSetAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        blendSetAllocInfo.descriptorPool     = _blendDescriptorPool;
+        blendSetAllocInfo.descriptorSetCount = 1;
+        blendSetAllocInfo.pSetLayouts        = &_blendDescriptorSetLayout;
+        vkAllocateDescriptorSets(_device, &blendSetAllocInfo, &_blendDescriptorSet);
+    }
+
     _initialized = true;
 }
 
@@ -637,6 +780,410 @@ void NativeRendererVulkan::EnsureShadowSilhouetteTarget(std::uint32_t width, std
 
     _shadowSilhouetteWidth  = width;
     _shadowSilhouetteHeight = height;
+}
+
+void NativeRendererVulkan::EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height) {
+    if (_layerTargets.size() <= depth) { _layerTargets.resize(depth + 1); }
+
+    LayerTarget& target = _layerTargets[depth];
+    if (target.Image != VK_NULL_HANDLE && target.Width == width && target.Height == height) { return; }
+
+    if (target.View != VK_NULL_HANDLE) { vkDestroyImageView(_device, target.View, nullptr); }
+    if (target.Image != VK_NULL_HANDLE) { vmaDestroyImage(_allocator, target.Image, target.Allocation); }
+
+    VkImageCreateInfo imageCi{};
+    imageCi.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageCi.imageType     = VK_IMAGE_TYPE_2D;
+    imageCi.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    imageCi.extent        = {width, height, 1};
+    imageCi.mipLevels     = 1;
+    imageCi.arrayLayers   = 1;
+    imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imageCi.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    vmaCreateImage(_allocator, &imageCi, &allocCi, &target.Image, &target.Allocation, nullptr);
+
+    VkImageViewCreateInfo viewCi{};
+    viewCi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewCi.image            = target.Image;
+    viewCi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    viewCi.format           = VK_FORMAT_R8G8B8A8_UNORM;
+    viewCi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(_device, &viewCi, nullptr, &target.View);
+
+    // One-time UNDEFINED -> GENERAL transition -- valid for both the colour-attachment render and
+    // later sampling during compositing, so no further transition is ever needed (matches
+    // _shadowSilhouetteImage's identical convention, Phase 35.4).
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool        = _commandPool;
+    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier toGeneral{};
+    toGeneral.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toGeneral.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    toGeneral.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.image               = target.Image;
+    toGeneral.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    toGeneral.srcAccessMask       = 0;
+    toGeneral.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                        nullptr, 0, nullptr, 1, &toGeneral);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(_graphicsQueue);
+    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+
+    target.Width  = width;
+    target.Height = height;
+}
+
+void NativeRendererVulkan::EnsureBackdropTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropImage != VK_NULL_HANDLE && _backdropWidth == width && _backdropHeight == height) { return; }
+
+    if (_backdropView != VK_NULL_HANDLE) { vkDestroyImageView(_device, _backdropView, nullptr); }
+    if (_backdropImage != VK_NULL_HANDLE) { vmaDestroyImage(_allocator, _backdropImage, _backdropImageAllocation); }
+
+    VkImageCreateInfo imageCi{};
+    imageCi.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageCi.imageType     = VK_IMAGE_TYPE_2D;
+    imageCi.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    imageCi.extent        = {width, height, 1};
+    imageCi.mipLevels     = 1;
+    imageCi.arrayLayers   = 1;
+    imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imageCi.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    vmaCreateImage(_allocator, &imageCi, &allocCi, &_backdropImage, &_backdropImageAllocation, nullptr);
+
+    VkImageViewCreateInfo viewCi{};
+    viewCi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewCi.image            = _backdropImage;
+    viewCi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    viewCi.format           = VK_FORMAT_R8G8B8A8_UNORM;
+    viewCi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(_device, &viewCi, nullptr, &_backdropView);
+
+    // One-time UNDEFINED -> GENERAL transition -- valid for both a copy destination and sampling
+    // (see this class's own .hpp comment on _backdropImage).
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool        = _commandPool;
+    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier toGeneral{};
+    toGeneral.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toGeneral.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    toGeneral.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.image               = _backdropImage;
+    toGeneral.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    toGeneral.srcAccessMask       = 0;
+    toGeneral.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                        nullptr, 1, &toGeneral);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(_graphicsQueue);
+    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+
+    _backdropWidth  = width;
+    _backdropHeight = height;
+}
+
+void NativeRendererVulkan::HandleLayerMarker(VkCommandBuffer cmd, const Batch& batch) {
+    const auto& markers = std::get<std::vector<LayerVertex>>(batch.Vertices);
+    if (markers.empty()) { return; }
+    const LayerVertex& marker = markers.front();
+
+    switch (marker.Op) {
+        case LayerOp::PushOpacity:
+        case LayerOp::PushBlend:
+            PushLayer(cmd, marker.Op, marker.Opacity, marker.Mode);
+            break;
+        case LayerOp::Pop:
+            PopLayer(cmd);
+            break;
+    }
+}
+
+void NativeRendererVulkan::PushLayer(VkCommandBuffer cmd, LayerOp op, float opacity, Rendering::BlendMode mode) {
+    const std::size_t depth = _layerStack.size();
+
+    // What this push's own PopLayer() must resume rendering into, and in what layout -- the real
+    // target at depth 0 (COLOR_ATTACHMENT_OPTIMAL, per SetTarget()'s own contract), or the
+    // enclosing layer's own target otherwise (GENERAL, this class's own layer-target convention).
+    LayerFrame frame;
+    frame.Op      = op;
+    frame.Opacity = opacity;
+    frame.Mode    = mode;
+    if (_layerStack.empty()) {
+        frame.ParentImage  = _targetImage;
+        frame.ParentView   = _targetView;
+        frame.ParentLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    } else {
+        const LayerTarget& enclosing = _layerTargets[_layerStack.back().TargetIndex];
+        frame.ParentImage  = enclosing.Image;
+        frame.ParentView   = enclosing.View;
+        frame.ParentLayout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+    frame.TargetIndex = depth;
+    _layerStack.push_back(frame);
+
+    EnsureLayerTarget(depth, _targetWidth, _targetHeight);
+    const LayerTarget& target = _layerTargets[depth];
+
+    // End whatever rendering instance was active (the parent's, or an enclosing layer's) --
+    // vkCmdBeginRendering can't be called again until the current instance ends.
+    vkCmdEndRendering(cmd);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView   = target.View;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea           = {{0, 0}, {_targetWidth, _targetHeight}};
+    renderingInfo.layerCount           = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments    = &colorAttachment;
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    const VkViewport viewport{0.0f,
+                              0.0f,
+                              static_cast<float>(_targetWidth),
+                              static_cast<float>(_targetHeight),
+                              0.0f,
+                              1.0f};
+    const VkRect2D scissor{{0, 0}, {_targetWidth, _targetHeight}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+}
+
+void NativeRendererVulkan::CompositeOpacityLayer(VkCommandBuffer cmd, const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    VkDescriptorImageInfo texInfo{};
+    texInfo.sampler     = _linearSampler;
+    texInfo.imageView   = target.View;
+    texInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = _compositeDescriptorSet;
+    write.dstBinding      = 1;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo      = &texInfo;
+    vkUpdateDescriptorSets(_device, 1, &write, 0, nullptr);
+
+    // TintColor = (Opacity,Opacity,Opacity,Opacity) scales every channel of the already-
+    // premultiplied source texture uniformly by Opacity -- matches
+    // NativeRendererGL3::CompositeOpacityLayer()'s identical reasoning.
+    const std::vector<ImageVertex> vertices = BuildImageQuadVertices(
+        {0.0f, 0.0f}, {static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)},
+        {frame.Opacity, frame.Opacity, frame.Opacity, frame.Opacity});
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _premultipliedImagePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
+                            0, nullptr);
+    const VkDeviceSize vbOffset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+}
+
+void NativeRendererVulkan::CopyBackdropForBlend(VkCommandBuffer cmd, const LayerFrame& frame) {
+    EnsureBackdropTarget(_targetWidth, _targetHeight);
+
+    // Copy the parent's CURRENT content into _backdropImage -- a fragment shader has no other way
+    // to read a colour attachment's own existing pixel value (mirrors
+    // NativeRendererGL3::CompositeBlendLayer()'s identical glCopyTexSubImage2D role). Must happen
+    // with no rendering instance active (vkCmdCopyImage is a transfer command); PopLayer() calls
+    // this before beginning the parent's own rendering instance, and CompositeBlendLayer()'s own
+    // draw (which needs that instance active) after.
+    const bool parentNeedsTransition = frame.ParentLayout != VK_IMAGE_LAYOUT_GENERAL;
+    if (parentNeedsTransition) {
+        VkImageMemoryBarrier toTransferSrc{};
+        toTransferSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransferSrc.oldLayout           = frame.ParentLayout;
+        toTransferSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransferSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.image               = frame.ParentImage;
+        toTransferSrc.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toTransferSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toTransferSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                            nullptr, 0, nullptr, 1, &toTransferSrc);
+    }
+
+    VkImageCopy copyRegion{};
+    copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    copyRegion.extent         = {_targetWidth, _targetHeight, 1};
+    vkCmdCopyImage(cmd, frame.ParentImage,
+                   parentNeedsTransition ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
+                   _backdropImage, VK_IMAGE_LAYOUT_GENERAL, 1, &copyRegion);
+
+    if (parentNeedsTransition) {
+        VkImageMemoryBarrier backToColor{};
+        backToColor.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        backToColor.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        backToColor.newLayout           = frame.ParentLayout;
+        backToColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        backToColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        backToColor.image               = frame.ParentImage;
+        backToColor.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        backToColor.srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+        backToColor.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+                            nullptr, 0, nullptr, 1, &backToColor);
+    }
+
+    // Barrier: the copy just wrote _backdropImage; the draw below reads it via a sampler.
+    VkImageMemoryBarrier backdropReady{};
+    backdropReady.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    backdropReady.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    backdropReady.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    backdropReady.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backdropReady.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    backdropReady.image               = _backdropImage;
+    backdropReady.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    backdropReady.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+    backdropReady.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                        nullptr, 1, &backdropReady);
+}
+
+void NativeRendererVulkan::CompositeBlendLayer(VkCommandBuffer cmd, const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    std::array<VkDescriptorImageInfo, 2> texInfos{};
+    texInfos[0].sampler     = _linearSampler;
+    texInfos[0].imageView   = target.View;
+    texInfos[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    texInfos[1].sampler     = _linearSampler;
+    texInfos[1].imageView   = _backdropView;
+    texInfos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet          = _blendDescriptorSet;
+    writes[0].dstBinding      = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo      = &texInfos[0];
+    writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet          = _blendDescriptorSet;
+    writes[1].dstBinding      = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo      = &texInfos[1];
+    vkUpdateDescriptorSets(_device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    const auto mode = static_cast<std::int32_t>(frame.Mode);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _blendPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _blendPipelineLayout, 0, 1, &_blendDescriptorSet, 0,
+                            nullptr);
+    vkCmdPushConstants(cmd, _blendPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(mode), &mode);
+    vkCmdDraw(cmd, 6, 1, 0, 0); // no vertex buffer -- Blend.glsl generates the quad from gl_VertexIndex
+}
+
+void NativeRendererVulkan::PopLayer(VkCommandBuffer cmd) {
+    // A PopLayer with no matching Push{Opacity,Blend}Layer is a malformed Rendering::CommandBuffer
+    // -- a caller bug, not a runtime condition this internal renderer recovers from.
+    IMF_ASSERT(!_layerStack.empty());
+
+    const LayerFrame frame = _layerStack.back();
+    _layerStack.pop_back();
+
+    // Ends the layer's own rendering instance -- CopyBackdropForBlend() (below, for a PushBlend
+    // frame) is a transfer command and illegal while one is still active.
+    vkCmdEndRendering(cmd);
+
+    if (frame.Op == LayerOp::PushBlend) {
+        // Resolves _backdropImage entirely before the parent's own rendering instance (re)starts
+        // below -- CompositeBlendLayer()'s own draw call needs that instance active, so it runs
+        // after, not here.
+        CopyBackdropForBlend(cmd, frame);
+    }
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView   = frame.ParentView;
+    colorAttachment.imageLayout = frame.ParentLayout;
+    colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea           = {{0, 0}, {_targetWidth, _targetHeight}};
+    renderingInfo.layerCount           = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments    = &colorAttachment;
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    const VkViewport viewport{0.0f,
+                              0.0f,
+                              static_cast<float>(_targetWidth),
+                              static_cast<float>(_targetHeight),
+                              0.0f,
+                              1.0f};
+    const VkRect2D scissor{{0, 0}, {_targetWidth, _targetHeight}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    if (frame.Op == LayerOp::PushOpacity) {
+        CompositeOpacityLayer(cmd, frame);
+    } else {
+        CompositeBlendLayer(cmd, frame);
+    }
 }
 
 VkCommandBuffer NativeRendererVulkan::BeginMainCommandBuffer() {
@@ -915,6 +1462,7 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t totalIndexBytes  = 0;
     std::size_t imageBatchCount  = 0;
     std::size_t shadowBatchCount = 0;
+    std::size_t layerBatchCount  = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -925,10 +1473,12 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
             ++imageBatchCount;
         } else if (batch.Kind == BatchKind::Shadow) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
+        } else if (batch.Kind == BatchKind::Layer) {
+            ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
         }
-        // Every other BatchKind (Text/Layer/BackdropBlur) is out of scope through Phase 35.4.
+        // Every other BatchKind (Text/BackdropBlur) is out of scope through Phase 35.5.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -1003,6 +1553,8 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
             // on why a shadow's silhouette-render + blur can't be recorded into the same command
             // buffer as everything around it.
             RenderShadowBatch(cmd, batch);
+        } else if (batch.Kind == BatchKind::Layer) {
+            HandleLayerMarker(cmd, batch);
         }
     }
 
@@ -1114,6 +1666,49 @@ void NativeRendererVulkan::Shutdown() {
         _compositeDescriptorPool = VK_NULL_HANDLE;
         _compositeDescriptorSet  = VK_NULL_HANDLE;
     }
+
+    if (_premultipliedImagePipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(_device, _premultipliedImagePipeline, nullptr);
+        _premultipliedImagePipeline = VK_NULL_HANDLE;
+    }
+
+    for (LayerTarget& target : _layerTargets) {
+        if (target.View != VK_NULL_HANDLE) { vkDestroyImageView(_device, target.View, nullptr); }
+        if (target.Image != VK_NULL_HANDLE) { vmaDestroyImage(_allocator, target.Image, target.Allocation); }
+    }
+    _layerTargets.clear();
+    _layerStack.clear();
+
+    if (_blendDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(_device, _blendDescriptorPool, nullptr);
+        _blendDescriptorPool = VK_NULL_HANDLE;
+        _blendDescriptorSet  = VK_NULL_HANDLE;
+    }
+    if (_blendPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(_device, _blendPipeline, nullptr); _blendPipeline = VK_NULL_HANDLE; }
+    if (_blendPipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(_device, _blendPipelineLayout, nullptr);
+        _blendPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (_blendDescriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(_device, _blendDescriptorSetLayout, nullptr);
+        _blendDescriptorSetLayout = VK_NULL_HANDLE;
+    }
+    if (_blendFragmentModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(_device, _blendFragmentModule, nullptr);
+        _blendFragmentModule = VK_NULL_HANDLE;
+    }
+    if (_blendVertexModule != VK_NULL_HANDLE) {
+        vkDestroyShaderModule(_device, _blendVertexModule, nullptr);
+        _blendVertexModule = VK_NULL_HANDLE;
+    }
+
+    if (_backdropView != VK_NULL_HANDLE) { vkDestroyImageView(_device, _backdropView, nullptr); _backdropView = VK_NULL_HANDLE; }
+    if (_backdropImage != VK_NULL_HANDLE) {
+        vmaDestroyImage(_allocator, _backdropImage, _backdropImageAllocation);
+        _backdropImage = VK_NULL_HANDLE;
+    }
+    _backdropWidth  = 0;
+    _backdropHeight = 0;
 
     _initialized = false;
 }
