@@ -72,6 +72,7 @@
 
 #pragma once
 
+#include "BlurPassVulkan.hpp"
 #include "Rendering/Renderers/BatchBuilder.hpp"
 #include "Rendering/Renderers/IRenderer.hpp"
 
@@ -162,6 +163,38 @@ private:
     void RenderImageBatch(VkCommandBuffer cmd, const Batch& batch, VkDescriptorSet imageDescriptorSet,
                         std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
 
+    /**
+     * @brief    Renders one `BatchKind::Shadow` batch: silhouette, blur, composite (Phase 35.4).
+     * @param[in,out] cmd  The main frame command buffer `Render()`'s loop is otherwise recording
+     *                     into. Replaced with a *new* command buffer on return — see this class's
+     *                     own file comment on why a shadow can't be recorded into the same command
+     *                     buffer as everything around it the way `Rect`/`Image` batches are.
+     *
+     * `BlurPassVulkan::Apply()` is a fully self-contained, synchronously-awaited submission on its
+     * own — it cannot be recorded as commands into `Render()`'s own not-yet-submitted command
+     * buffer the way `RenderRectBatch()`/`RenderImageBatch()` are. So this method: (1) ends and
+     * submits `cmd` as accumulated so far, (2) renders the shape's silhouette into
+     * `_shadowSilhouetteView` via its own one-shot command buffer (reusing `_rectPipeline`), (3)
+     * calls `_blurPass.Apply()`, (4) records the blurred, tinted composite draw and returns it as
+     * a brand new, freshly-begun `cmd` for `Render()`'s loop to keep recording into.
+     */
+    void RenderShadowBatch(VkCommandBuffer& cmd, const Batch& batch);
+
+    void EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height);
+
+    /// Begins (allocates, `vkBeginCommandBuffer`s, `vkCmdBeginRendering`s with `LOAD_OP_LOAD`
+    /// against `_targetView`, sets viewport/scissor) a fresh one-shot command buffer targeting
+    /// the real render target — the shape every `Render()` call's *initial* command buffer
+    /// already had, factored out so `RenderShadowBatch()` can resume it identically after its own
+    /// side submissions.
+    [[nodiscard]] VkCommandBuffer BeginMainCommandBuffer();
+
+    /// Ends the current rendering instance and command buffer, submits it, and synchronously
+    /// waits (`_submitFence`) — the second half of `Render()`'s own "deliberate synchronous
+    /// stall" convention (see this class's own file comment), factored out so `RenderShadowBatch()`
+    /// can flush the accumulated command buffer before its own side submissions.
+    void EndAndSubmitMainCommandBuffer(VkCommandBuffer cmd);
+
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     VkDevice              _device              = VK_NULL_HANDLE;
     VmaAllocator          _allocator           = VK_NULL_HANDLE;
@@ -242,6 +275,48 @@ private:
     /// Reused every `Render()` call — signalled once the one-shot command buffer completes, so
     /// `Render()` can safely reuse/overwrite the streaming buffers on its *next* call.
     VkFence _submitFence = VK_NULL_HANDLE;
+
+    // ─── BatchKind::Shadow (Phase 35.4) ──────────────────────────────────────────
+    BlurPassVulkan _blurPass;
+
+    /// Offscreen target `RenderShadowBatch()` renders a shadow's rounded-rect silhouette into,
+    /// before handing it to `_blurPass`. Usage includes both `COLOR_ATTACHMENT_BIT` (the
+    /// silhouette render) and `STORAGE_BIT` (`_blurPass`'s own `imageLoad`), kept in
+    /// `VK_IMAGE_LAYOUT_GENERAL` permanently — `GENERAL` is valid for both a colour attachment and
+    /// a storage image, so no layout transition is needed between the two uses, matching
+    /// `BlurPassVulkan`'s own "stay in `GENERAL` forever" convention for its ping-pong targets.
+    /// Resized on demand, same as `BlurPassVulkan`'s own targets.
+    VkImage       _shadowSilhouetteImage           = VK_NULL_HANDLE;
+    VmaAllocation _shadowSilhouetteImageAllocation = VK_NULL_HANDLE;
+    VkImageView   _shadowSilhouetteView            = VK_NULL_HANDLE;
+    std::uint32_t _shadowSilhouetteWidth           = 0;
+    std::uint32_t _shadowSilhouetteHeight          = 0;
+
+    /// A small, dedicated one-quad vertex/index buffer pair for `RenderShadowBatch()`'s own two
+    /// internal draws (the silhouette rect, then the blurred composite image) — kept separate
+    /// from `_vertexBuffer`/`_indexBuffer` (the main per-`Render()`-call streaming buffers) because
+    /// a shadow's silhouette render happens in its *own* one-shot command buffer, temporally
+    /// disjoint from the main command buffer's own offset bookkeeping; reusing the shared buffer
+    /// would mean growing its upfront size computation to account for `Shadow` batches too, for no
+    /// real benefit given how small one quad is. Sized for the larger of `RectVertex`/`ImageVertex`
+    /// (`RectVertex`) x 4 so either draw fits; reused sequentially, never simultaneously.
+    VkBuffer      _shadowQuadVertexBuffer       = VK_NULL_HANDLE;
+    VmaAllocation _shadowQuadVertexAllocation   = VK_NULL_HANDLE;
+    void*         _shadowQuadVertexMapped       = nullptr;
+    VkBuffer      _shadowQuadIndexBuffer        = VK_NULL_HANDLE;
+    VmaAllocation _shadowQuadIndexAllocation    = VK_NULL_HANDLE;
+    void*         _shadowQuadIndexMapped        = nullptr;
+
+    /// A second, dedicated `_imagePipeline`-compatible descriptor set (reusing
+    /// `_imageDescriptorSetLayout`) for compositing a *renderer-owned* `VK_IMAGE_LAYOUT_GENERAL`
+    /// texture (`_blurPass`'s own blurred output) — unlike every real `DrawImage` texture (always
+    /// `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`, see `Render()`'s per-batch Image descriptor
+    /// writes), `_blurPass`'s output view never leaves `GENERAL`. Rewritten after every
+    /// `_blurPass.Apply()` call — cheap, and always correct regardless of whether that call's
+    /// return handle actually changed (it does, whenever `_blurPass`'s own ping-pong targets are
+    /// reallocated for a new size).
+    VkDescriptorPool _compositeDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet  _compositeDescriptorSet  = VK_NULL_HANDLE;
 
     BatchBuilder _batchBuilder;
 };

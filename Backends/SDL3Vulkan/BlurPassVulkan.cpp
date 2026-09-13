@@ -54,8 +54,11 @@ void CreateStorageImage(VkDevice device, VmaAllocator allocator, VkImage& image,
     imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
     imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
     // TRANSFER_SRC lets a caller (or a test) read back / copy the result -- Apply() itself never
-    // needs it, but a STORAGE_BIT-only image can't be the source of any copy at all.
-    imageCi.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    // needs it, but a STORAGE_BIT-only image can't be the source of any copy at all. SAMPLED lets
+    // a caller bind the result through a real VkSampler/combined-image-sampler descriptor (e.g.
+    // NativeRendererVulkan::RenderShadowBatch()'s composite draw) -- imageLoad/imageStore alone
+    // don't need it, but nothing else about this image works as a sampled texture without it.
+    imageCi.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VmaAllocationCreateInfo allocCi{};

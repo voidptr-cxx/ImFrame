@@ -20,12 +20,84 @@
 #include "Shaders/SDFRect.frag.hpp"
 #include "Shaders/SDFRect.vert.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 namespace ImFrame::Internal {
+
+namespace {
+
+/// Builds one axis-aligned quad's `RectVertex`es — `RenderShadowBatch()`'s own silhouette pass
+/// reuses the existing Rect pipeline via a direct draw call rather than a third hand-written
+/// pipeline, mirroring `NativeRendererGL3::BuildRectQuadVertices()`'s identical role/formula.
+std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Rendering::CornerRadii radii,
+                                              Widgets::Vec4 fillColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+
+    std::vector<RectVertex> vertices;
+    vertices.reserve(4);
+    for (const Widgets::Vec2& corner : corners) {
+        vertices.push_back(RectVertex{
+            .Position = corner,
+            .Local = {corner.x - center.x, corner.y - center.y},
+            .HalfSize = halfSize,
+            .Radii = radii,
+            .FillColor = fillColor,
+            .StrokeColor = {},
+            .StrokeWidth = 0.0f,
+        });
+    }
+    return vertices;
+}
+
+/// Builds one axis-aligned quad's `ImageVertex`es, unrounded — `RenderShadowBatch()`'s own
+/// composite pass reuses the existing Image pipeline to draw a renderer-produced offscreen
+/// texture (a blurred shadow), tinted, as a plain rectangle. Mirrors
+/// `NativeRendererGL3::BuildImageQuadVertices()`'s role, but **without** that function's own
+/// V-flipped UV table: that flip exists specifically to compensate for two GL-only facts (its
+/// vertex shader negates Y, and GL's texture row order is bottom-up) — neither holds here. This
+/// backend's own vertex shader stopped negating Y in Phase 35.2 (the Y-flip bug that phase found
+/// and fixed), and a Vulkan image's row 0 is its top row already, matching pixel space directly.
+/// A plain, unflipped UV mapping is therefore the *correct* choice for Vulkan, not a simplification
+/// — using GL3's flipped formula here would sample the wrong row.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+    const Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+
+    std::vector<ImageVertex> vertices;
+    vertices.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        vertices.push_back(ImageVertex{
+            .Position = corners[i],
+            .Local = {corners[i].x - center.x, corners[i].y - center.y},
+            .HalfSize = halfSize,
+            .Radii = {},
+            .Uv = uvs[i],
+            .TintColor = tintColor,
+        });
+    }
+    return vertices;
+}
+
+} // namespace
 
 NativeRendererVulkan::NativeRendererVulkan(VkDevice device, VmaAllocator allocator, VkQueue graphicsQueue,
                                           std::uint32_t graphicsQueueFamily, VkCommandPool commandPool,
@@ -35,7 +107,8 @@ NativeRendererVulkan::NativeRendererVulkan(VkDevice device, VmaAllocator allocat
     , _graphicsQueue(graphicsQueue)
     , _graphicsQueueFamily(graphicsQueueFamily)
     , _commandPool(commandPool)
-    , _colorFormat(colorFormat) {}
+    , _colorFormat(colorFormat)
+    , _blurPass(device, allocator, graphicsQueue, commandPool) {}
 
 NativeRendererVulkan::~NativeRendererVulkan() { Shutdown(); }
 
@@ -340,6 +413,82 @@ void NativeRendererVulkan::EnsureInitialized() {
     fenceCi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     vkCreateFence(_device, &fenceCi, nullptr, &_submitFence);
 
+    // ─── Phase 35.4: BatchKind::Shadow support ──────────────────────────────────
+    // Small, fixed-size, dedicated buffers for RenderShadowBatch()'s own two one-quad draws
+    // (silhouette rect, composite image) -- see this class's own .hpp comment on why these are
+    // kept separate from _vertexBuffer/_indexBuffer.
+    {
+        VkBufferCreateInfo quadVertexCi{};
+        quadVertexCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        quadVertexCi.size        = 4 * sizeof(RectVertex); // RectVertex is the larger of the two kinds
+        quadVertexCi.usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        quadVertexCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo quadAllocCi{};
+        quadAllocCi.usage = VMA_MEMORY_USAGE_AUTO;
+        quadAllocCi.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+        VmaAllocationInfo quadVertexAllocInfo{};
+        vmaCreateBuffer(_allocator, &quadVertexCi, &quadAllocCi, &_shadowQuadVertexBuffer, &_shadowQuadVertexAllocation,
+                        &quadVertexAllocInfo);
+        _shadowQuadVertexMapped = quadVertexAllocInfo.pMappedData;
+
+        VkBufferCreateInfo quadIndexCi{};
+        quadIndexCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        quadIndexCi.size        = 6 * sizeof(std::uint32_t);
+        quadIndexCi.usage       = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        quadIndexCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationInfo quadIndexAllocInfo{};
+        vmaCreateBuffer(_allocator, &quadIndexCi, &quadAllocCi, &_shadowQuadIndexBuffer, &_shadowQuadIndexAllocation,
+                        &quadIndexAllocInfo);
+        _shadowQuadIndexMapped = quadIndexAllocInfo.pMappedData;
+
+        constexpr std::array<std::uint32_t, 6> kQuadIndices{0, 1, 2, 0, 2, 3};
+        std::memcpy(_shadowQuadIndexMapped, kQuadIndices.data(), kQuadIndices.size() * sizeof(std::uint32_t));
+    }
+
+    // A second _imagePipeline-compatible descriptor set for compositing _blurPass's own
+    // VK_IMAGE_LAYOUT_GENERAL output -- see this class's own .hpp comment on why this can't reuse
+    // the per-DrawImage-batch _imageDescriptorPool (sized/reset for real user textures, which are
+    // always VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).
+    {
+        std::array<VkDescriptorPoolSize, 2> poolSizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+
+        VkDescriptorPoolCreateInfo compositePoolCi{};
+        compositePoolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        compositePoolCi.maxSets       = 1;
+        compositePoolCi.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
+        compositePoolCi.pPoolSizes    = poolSizes.data();
+        vkCreateDescriptorPool(_device, &compositePoolCi, nullptr, &_compositeDescriptorPool);
+
+        VkDescriptorSetAllocateInfo compositeSetAllocInfo{};
+        compositeSetAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        compositeSetAllocInfo.descriptorPool     = _compositeDescriptorPool;
+        compositeSetAllocInfo.descriptorSetCount = 1;
+        compositeSetAllocInfo.pSetLayouts        = &_imageDescriptorSetLayout;
+        vkAllocateDescriptorSets(_device, &compositeSetAllocInfo, &_compositeDescriptorSet);
+
+        // Binding 0 (the PerFrame UBO) never changes -- write it once here, matching
+        // _rectDescriptorSet's own one-time binding-0 write. Binding 1 (the texture) is rewritten
+        // after every _blurPass.Apply() call instead, once that call's own output view is known.
+        VkDescriptorBufferInfo compositeBufferInfo{};
+        compositeBufferInfo.buffer = _perFrameUbo;
+        compositeBufferInfo.offset = 0;
+        compositeBufferInfo.range  = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet compositeWrite{};
+        compositeWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        compositeWrite.dstSet          = _compositeDescriptorSet;
+        compositeWrite.dstBinding      = 0;
+        compositeWrite.descriptorCount = 1;
+        compositeWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        compositeWrite.pBufferInfo     = &compositeBufferInfo;
+        vkUpdateDescriptorSets(_device, 1, &compositeWrite, 0, nullptr);
+    }
+
     _initialized = true;
 }
 
@@ -406,6 +555,295 @@ void NativeRendererVulkan::EnsureImageDescriptorCapacity(std::size_t neededSets)
 
     _imageDescriptorSets.assign(neededSets, VK_NULL_HANDLE);
     _imageDescriptorPoolCapacitySets = neededSets;
+}
+
+void NativeRendererVulkan::EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height) {
+    if (_shadowSilhouetteWidth == width && _shadowSilhouetteHeight == height &&
+        _shadowSilhouetteImage != VK_NULL_HANDLE) {
+        return;
+    }
+
+    if (_shadowSilhouetteView != VK_NULL_HANDLE) { vkDestroyImageView(_device, _shadowSilhouetteView, nullptr); }
+    if (_shadowSilhouetteImage != VK_NULL_HANDLE) {
+        vmaDestroyImage(_allocator, _shadowSilhouetteImage, _shadowSilhouetteImageAllocation);
+    }
+
+    VkImageCreateInfo imageCi{};
+    imageCi.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageCi.imageType     = VK_IMAGE_TYPE_2D;
+    imageCi.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    imageCi.extent        = {width, height, 1};
+    imageCi.mipLevels     = 1;
+    imageCi.arrayLayers   = 1;
+    imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imageCi.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    vmaCreateImage(_allocator, &imageCi, &allocCi, &_shadowSilhouetteImage, &_shadowSilhouetteImageAllocation,
+                   nullptr);
+
+    VkImageViewCreateInfo viewCi{};
+    viewCi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewCi.image            = _shadowSilhouetteImage;
+    viewCi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    viewCi.format           = VK_FORMAT_R8G8B8A8_UNORM;
+    viewCi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(_device, &viewCi, nullptr, &_shadowSilhouetteView);
+
+    // One-time UNDEFINED -> GENERAL transition -- see this class's own .hpp comment on why GENERAL
+    // is kept forever after this (valid for both the colour-attachment render and _blurPass's own
+    // imageLoad, so no further transition is ever needed).
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool        = _commandPool;
+    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier toGeneral{};
+    toGeneral.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toGeneral.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    toGeneral.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.image               = _shadowSilhouetteImage;
+    toGeneral.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    toGeneral.srcAccessMask       = 0;
+    toGeneral.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+    // dstStageMask must cover every stage any dstAccessMask flag is valid for -- SHADER_READ_BIT
+    // (for _blurPass's own later imageLoad) is only valid at COMPUTE_SHADER, not
+    // COLOR_ATTACHMENT_OUTPUT alone.
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                        nullptr, 0, nullptr, 1, &toGeneral);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(_graphicsQueue);
+    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+
+    _shadowSilhouetteWidth  = width;
+    _shadowSilhouetteHeight = height;
+}
+
+VkCommandBuffer NativeRendererVulkan::BeginMainCommandBuffer() {
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool        = _commandPool;
+    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkRenderingAttachmentInfo colorAttachment{};
+    colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    colorAttachment.imageView   = _targetView;
+    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_LOAD;
+    colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea           = {{0, 0}, {_targetWidth, _targetHeight}};
+    renderingInfo.layerCount           = 1;
+    renderingInfo.colorAttachmentCount = 1;
+    renderingInfo.pColorAttachments    = &colorAttachment;
+    vkCmdBeginRendering(cmd, &renderingInfo);
+
+    const VkViewport viewport{0.0f,
+                              0.0f,
+                              static_cast<float>(_targetWidth),
+                              static_cast<float>(_targetHeight),
+                              0.0f,
+                              1.0f};
+    const VkRect2D scissor{{0, 0}, {_targetWidth, _targetHeight}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    return cmd;
+}
+
+void NativeRendererVulkan::EndAndSubmitMainCommandBuffer(VkCommandBuffer cmd) {
+    vkCmdEndRendering(cmd);
+    vkEndCommandBuffer(cmd);
+
+    vkResetFences(_device, 1, &_submitFence);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, _submitFence);
+
+    // Block until this call's GPU work completes before returning -- see this class's own file
+    // comment on this deliberate, documented stopgap.
+    vkWaitForFences(_device, 1, &_submitFence, VK_TRUE, UINT64_MAX);
+    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+}
+
+void NativeRendererVulkan::RenderShadowBatch(VkCommandBuffer& cmd, const Batch& batch) {
+    const auto& shadows = std::get<std::vector<ShadowVertex>>(batch.Vertices);
+    if (shadows.empty()) { return; }
+    const ShadowVertex& shadow = shadows.front();
+
+    // Spread grows the silhouette outward on all sides before blurring -- matches
+    // Rendering::DrawShadow::Spread's documented meaning (see CommandBuffer.hpp), mirroring
+    // NativeRendererGL3::RenderShadowBatch()'s own identical formula.
+    const float spreadWidth  = shadow.Size.x + 2.0f * shadow.Spread;
+    const float spreadHeight = shadow.Size.y + 2.0f * shadow.Spread;
+    if (spreadWidth <= 0.0f || spreadHeight <= 0.0f) { return; }
+
+    // Pad the offscreen silhouette by the blur radius on every side so _blurPass's kernel has real
+    // surrounding content to read at the silhouette's own edges, instead of clamped-edge repeats.
+    const float pad = std::max(shadow.BlurRadius, 0.0f);
+    const auto texWidth  = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadWidth + 2.0f * pad))));
+    const auto texHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadHeight + 2.0f * pad))));
+
+    // Flush everything recorded so far -- _blurPass.Apply() below is its own fully self-contained,
+    // synchronously-awaited submission; it cannot be recorded as commands into `cmd` (see this
+    // class's own file comment).
+    EndAndSubmitMainCommandBuffer(cmd);
+
+    EnsureShadowSilhouetteTarget(texWidth, texHeight);
+
+    // ─── Silhouette: an opaque-white rounded rect, in the silhouette's own small coordinate space ───
+    {
+        struct PerFrameUbo { float ViewportSizeX; float ViewportSizeY; };
+        const PerFrameUbo perFrame{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+        std::memcpy(_perFrameUboMapped, &perFrame, sizeof(perFrame));
+
+        const std::vector<RectVertex> silhouetteVertices =
+            BuildRectQuadVertices({static_cast<float>(pad), static_cast<float>(pad)}, {spreadWidth, spreadHeight},
+                                 shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
+        constexpr std::array<std::uint32_t, 6> silhouetteIndices{0, 1, 2, 0, 2, 3};
+        std::memcpy(_shadowQuadVertexMapped, silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex));
+        std::memcpy(_shadowQuadIndexMapped, silhouetteIndices.data(), silhouetteIndices.size() * sizeof(std::uint32_t));
+
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool        = _commandPool;
+        cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+        VkCommandBuffer silhouetteCmd = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(_device, &cmdAllocInfo, &silhouetteCmd);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(silhouetteCmd, &beginInfo);
+
+        VkRenderingAttachmentInfo colorAttachment{};
+        colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        colorAttachment.imageView   = _shadowSilhouetteView;
+        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        colorAttachment.loadOp      = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+
+        VkRenderingInfo renderingInfo{};
+        renderingInfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        renderingInfo.renderArea           = {{0, 0}, {texWidth, texHeight}};
+        renderingInfo.layerCount           = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments    = &colorAttachment;
+        vkCmdBeginRendering(silhouetteCmd, &renderingInfo);
+
+        const VkViewport viewport{0.0f, 0.0f, static_cast<float>(texWidth), static_cast<float>(texHeight), 0.0f, 1.0f};
+        const VkRect2D   scissor{{0, 0}, {texWidth, texHeight}};
+        vkCmdSetViewport(silhouetteCmd, 0, 1, &viewport);
+        vkCmdSetScissor(silhouetteCmd, 0, 1, &scissor);
+
+        vkCmdBindPipeline(silhouetteCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _rectPipeline);
+        vkCmdBindDescriptorSets(silhouetteCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _rectPipelineLayout, 0, 1,
+                                &_rectDescriptorSet, 0, nullptr);
+        const VkDeviceSize vbOffset = 0;
+        vkCmdBindVertexBuffers(silhouetteCmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
+        vkCmdBindIndexBuffer(silhouetteCmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(silhouetteCmd, 6, 1, 0, 0, 0);
+
+        vkCmdEndRendering(silhouetteCmd);
+        vkEndCommandBuffer(silhouetteCmd);
+
+        vkResetFences(_device, 1, &_submitFence);
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers    = &silhouetteCmd;
+        vkQueueSubmit(_graphicsQueue, 1, &submitInfo, _submitFence);
+        vkWaitForFences(_device, 1, &_submitFence, VK_TRUE, UINT64_MAX);
+        vkFreeCommandBuffers(_device, _commandPool, 1, &silhouetteCmd);
+    }
+
+    const BlurResult blurred = _blurPass.Apply(BlurResult{_shadowSilhouetteImage, _shadowSilhouetteView}, texWidth,
+                                               texHeight, shadow.BlurRadius);
+
+    // _blurPass's output view is stable across calls only until its own targets are reallocated
+    // for a new size -- rewrite binding 1 unconditionally, cheap and always correct (see this
+    // class's own .hpp comment).
+    VkDescriptorImageInfo blurredInfo{};
+    blurredInfo.sampler     = _linearSampler;
+    blurredInfo.imageView   = blurred.View;
+    blurredInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet blurredWrite{};
+    blurredWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    blurredWrite.dstSet          = _compositeDescriptorSet;
+    blurredWrite.dstBinding      = 1;
+    blurredWrite.descriptorCount = 1;
+    blurredWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    blurredWrite.pImageInfo      = &blurredInfo;
+    vkUpdateDescriptorSets(_device, 1, &blurredWrite, 0, nullptr);
+
+    // ─── Composite: resume the main command buffer, restore its own PerFrame UBO, draw ───
+    cmd = BeginMainCommandBuffer();
+
+    struct PerFrameUbo { float ViewportSizeX; float ViewportSizeY; };
+    const PerFrameUbo mainPerFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
+    std::memcpy(_perFrameUboMapped, &mainPerFrame, sizeof(mainPerFrame));
+
+    // Top-left of the padded silhouette texture, in the shape's own coordinate space, plus the
+    // shadow's drop offset -- per PHASE_34_PROPOSAL.md's DrawShadow section ("composite it behind
+    // the shape at the specified offset"), matching NativeRendererGL3::RenderShadowBatch()'s
+    // identical placement formula.
+    const Widgets::Vec2 compositePosition{
+        shadow.Position.x - shadow.Spread - pad + shadow.Offset.x,
+        shadow.Position.y - shadow.Spread - pad + shadow.Offset.y,
+    };
+    const Widgets::Vec2 compositeSize{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+    // Unlike NativeRendererGL3::BuildImageQuadVertices() (which V-flips its UV table to compensate
+    // for its own vertex shader's Y-negation and GL's bottom-up texture row order), no flip is
+    // needed here: this backend's vertex shader no longer negates Y (Phase 35.2), and a Vulkan
+    // image's row 0 is its top row -- both already directly match pixel space, so a plain,
+    // unflipped UV mapping samples the correct row.
+    const std::vector<ImageVertex> compositeVertices =
+        BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
+    constexpr std::array<std::uint32_t, 6> compositeIndices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, compositeIndices.data(), compositeIndices.size() * sizeof(std::uint32_t));
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
+                            0, nullptr);
+    const VkDeviceSize vbOffset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 }
 
 void NativeRendererVulkan::RenderRectBatch(VkCommandBuffer cmd, const Batch& batch, std::size_t& vertexByteOffset,
@@ -476,6 +914,7 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t totalVertexBytes = 0;
     std::size_t totalIndexBytes  = 0;
     std::size_t imageBatchCount  = 0;
+    std::size_t shadowBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -484,10 +923,12 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
             totalVertexBytes += std::get<std::vector<ImageVertex>>(batch.Vertices).size() * sizeof(ImageVertex);
             totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
             ++imageBatchCount;
+        } else if (batch.Kind == BatchKind::Shadow) {
+            ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         }
-        // Every other BatchKind (Text/Shadow/Layer/BackdropBlur) is out of Phase 35.1/35.2's scope.
+        // Every other BatchKind (Text/Layer/BackdropBlur) is out of scope through Phase 35.4.
     }
-    if (totalVertexBytes == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -546,45 +987,7 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
         }
     }
 
-    VkCommandBufferAllocateInfo cmdAllocInfo{};
-    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmdAllocInfo.commandPool        = _commandPool;
-    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdAllocInfo.commandBufferCount = 1;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(cmd, &beginInfo);
-
-    VkRenderingAttachmentInfo colorAttachment{};
-    colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    colorAttachment.imageView   = _targetView;
-    colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    // LOAD (not CLEAR) -- matches NativeRendererGL3's own "draws into whatever's already there,
-    // never clears" convention; the caller (test, or later a real viewport) owns clearing.
-    colorAttachment.loadOp  = VK_ATTACHMENT_LOAD_OP_LOAD;
-    colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-
-    VkRenderingInfo renderingInfo{};
-    renderingInfo.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO;
-    renderingInfo.renderArea           = {{0, 0}, {_targetWidth, _targetHeight}};
-    renderingInfo.layerCount           = 1;
-    renderingInfo.colorAttachmentCount = 1;
-    renderingInfo.pColorAttachments    = &colorAttachment;
-    vkCmdBeginRendering(cmd, &renderingInfo);
-
-    const VkViewport viewport{0.0f,
-                              0.0f,
-                              static_cast<float>(_targetWidth),
-                              static_cast<float>(_targetHeight),
-                              0.0f,
-                              1.0f};
-    const VkRect2D scissor{{0, 0}, {_targetWidth, _targetHeight}};
-    vkCmdSetViewport(cmd, 0, 1, &viewport);
-    vkCmdSetScissor(cmd, 0, 1, &scissor);
+    VkCommandBuffer cmd = BeginMainCommandBuffer();
 
     std::size_t vertexByteOffset      = 0;
     std::size_t indexByteOffset       = 0;
@@ -595,24 +998,15 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
         } else if (batch.Kind == BatchKind::Image) {
             RenderImageBatch(cmd, batch, _imageDescriptorSets[imageDescriptorIndex++], vertexByteOffset,
                             indexByteOffset);
+        } else if (batch.Kind == BatchKind::Shadow) {
+            // Replaces `cmd` with a brand new command buffer -- see this class's own file comment
+            // on why a shadow's silhouette-render + blur can't be recorded into the same command
+            // buffer as everything around it.
+            RenderShadowBatch(cmd, batch);
         }
     }
 
-    vkCmdEndRendering(cmd);
-    vkEndCommandBuffer(cmd);
-
-    vkResetFences(_device, 1, &_submitFence);
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers    = &cmd;
-    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, _submitFence);
-
-    // Block until this Render() call's GPU work completes before returning -- a deliberate,
-    // documented stopgap (see this class's own .hpp comment) so the streaming vertex/index/UBO
-    // buffers are always safe to overwrite again on the very next call.
-    vkWaitForFences(_device, 1, &_submitFence, VK_TRUE, UINT64_MAX);
-    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+    EndAndSubmitMainCommandBuffer(cmd);
 }
 
 void NativeRendererVulkan::Shutdown() {
@@ -692,6 +1086,34 @@ void NativeRendererVulkan::Shutdown() {
     }
 
     if (_submitFence != VK_NULL_HANDLE) { vkDestroyFence(_device, _submitFence, nullptr); _submitFence = VK_NULL_HANDLE; }
+
+    _blurPass.Shutdown();
+    if (_shadowSilhouetteView != VK_NULL_HANDLE) {
+        vkDestroyImageView(_device, _shadowSilhouetteView, nullptr);
+        _shadowSilhouetteView = VK_NULL_HANDLE;
+    }
+    if (_shadowSilhouetteImage != VK_NULL_HANDLE) {
+        vmaDestroyImage(_allocator, _shadowSilhouetteImage, _shadowSilhouetteImageAllocation);
+        _shadowSilhouetteImage = VK_NULL_HANDLE;
+    }
+    _shadowSilhouetteWidth  = 0;
+    _shadowSilhouetteHeight = 0;
+
+    if (_shadowQuadVertexBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_allocator, _shadowQuadVertexBuffer, _shadowQuadVertexAllocation);
+        _shadowQuadVertexBuffer = VK_NULL_HANDLE;
+        _shadowQuadVertexMapped = nullptr;
+    }
+    if (_shadowQuadIndexBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_allocator, _shadowQuadIndexBuffer, _shadowQuadIndexAllocation);
+        _shadowQuadIndexBuffer = VK_NULL_HANDLE;
+        _shadowQuadIndexMapped = nullptr;
+    }
+    if (_compositeDescriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(_device, _compositeDescriptorPool, nullptr);
+        _compositeDescriptorPool = VK_NULL_HANDLE;
+        _compositeDescriptorSet  = VK_NULL_HANDLE;
+    }
 
     _initialized = false;
 }
