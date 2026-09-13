@@ -348,6 +348,27 @@ if(IMF_BUILD_NATIVE_RENDERER)
     target_include_directories(ImFrame_Shaders INTERFACE ${IMF_SHADER_GENERATED_DIR}/..)
 endif()
 
+# ─── Phase 35.7: NativeRendererDX12 HLSL shader pipeline (opt-in) ──────────────
+# Compiles Shaders/*.hlsl to DXIL at build time via dxc.exe and embeds the result as generated
+# C++ headers — see cmake/CompileShaderDXC.cmake. Windows-only (DX12 itself is Windows-only), and
+# only when NativeRenderer's own shader pipeline is enabled too — a DX12-only host with
+# NativeRenderer disabled has no need for dxc.exe at all.
+if(WIN32 AND IMF_BUILD_NATIVE_RENDERER AND IMF_BUILD_DX12_BACKEND)
+    include(cmake/CompileShaderDXC.cmake)
+
+    set(IMF_SHADER_DXIL_HEADERS "")
+    foreach(IMF_HLSL_SHADER_NAME SDFRect)
+        compile_shader_hlsl("${CMAKE_SOURCE_DIR}/Shaders/${IMF_HLSL_SHADER_NAME}.hlsl" vs_6_0 VSMain
+            ${IMF_HLSL_SHADER_NAME} OUT_HEADER IMF_SHADER_VS_HEADER)
+        compile_shader_hlsl("${CMAKE_SOURCE_DIR}/Shaders/${IMF_HLSL_SHADER_NAME}.hlsl" ps_6_0 PSMain
+            ${IMF_HLSL_SHADER_NAME} OUT_HEADER IMF_SHADER_PS_HEADER)
+        list(APPEND IMF_SHADER_DXIL_HEADERS "${IMF_SHADER_VS_HEADER}" "${IMF_SHADER_PS_HEADER}")
+    endforeach()
+
+    add_library(ImFrame_ShadersDXIL INTERFACE ${IMF_SHADER_DXIL_HEADERS})
+    target_include_directories(ImFrame_ShadersDXIL INTERFACE ${IMF_SHADER_DXIL_GENERATED_DIR}/..)
+endif()
+
 # ─── Backends ─────────────────────────────────────────────────────────────────
 if(IMF_BACKEND_GLFW_OPENGL3)
     add_subdirectory(Backends/GLFWOpenGL3)

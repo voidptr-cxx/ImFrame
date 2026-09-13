@@ -1022,6 +1022,16 @@ NativeGraphicsContext SDL3DX12Backend::GetNativeGraphicsContext() const
     };
 }
 
+// ─── GetRendererHandles ────────────────────────────────────────────────────────
+
+SDL3DX12Backend::DX12RendererHandles SDL3DX12Backend::GetRendererHandles() const noexcept
+{
+    return DX12RendererHandles{
+        .Device      = _device.Get(),
+        .DirectQueue = _directQueue.Get(),
+    };
+}
+
 // ─── CreateViewportFramebuffer ────────────────────────────────────────────────
 
 std::unique_ptr<IViewportFramebuffer> SDL3DX12Backend::CreateViewportFramebuffer(

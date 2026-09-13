@@ -481,6 +481,24 @@ if(IMF_BUILD_DX12_BACKEND)
     catch_discover_tests(ImFrame_Tests_Backends_DX12Leak PROPERTIES LABELS dx12 TIMEOUT 60)
 endif()
 
+# ─── Phase 35.7: NativeRendererDX12 real-pixel tests ─────────────────────────────────────────
+if(IMF_BUILD_DX12_BACKEND AND IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Rendering_NativeRendererDX12
+        Rendering/NativeRendererDX12_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_NativeRendererDX12 PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_NativeRendererDX12
+        PRIVATE ImFrame ImFrame_SDL3DX12 Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_NativeRendererDX12 PRIVATE cxx_std_23)
+    # TIMEOUT guards against hangs if no D3D12-capable GPU/driver is present in CI, matching the
+    # existing DX12Backend/DX12Conformance test targets above.
+    catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererDX12 PROPERTIES LABELS dx12 TIMEOUT 60)
+endif()
+
 # ─── Phase 23: SDL3 Dawn WebGPU backend tests ────────────────────────────────
 # WebGPUInput_test: pure InputTranslation unit tests — no GPU required.
 # WebGPUBackend_test / WebGPUConformance_test: full backend integration —
