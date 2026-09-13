@@ -1,6 +1,6 @@
 /**
  * @file     NativeRendererVulkan_test.cpp
- * @brief    Real-pixel tests for NativeRendererVulkan's DrawRect rendering (Phase 35.1)
+ * @brief    Real-pixel tests for NativeRendererVulkan's DrawRect (Phase 35.1) and DrawImage (Phase 35.2) rendering
  *
  * @internal
  * Mirrors `NativeRendererGL3_test.cpp`'s own pattern (a hand-created offscreen render target,
@@ -75,7 +75,12 @@ public:
         imgCi.arrayLayers   = 1;
         imgCi.samples       = VK_SAMPLE_COUNT_1_BIT;
         imgCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
-        imgCi.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        // TRANSFER_DST is needed for TransitionAndClear()'s own vkCmdClearColorImage below --
+        // omitting it is undefined behaviour per the Vulkan spec (VUID-vkCmdClearColorImage-image-00002),
+        // silently caught by the validation layer but otherwise easy to miss since some drivers still
+        // produce a plausible-looking result in isolation.
+        imgCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         VmaAllocationCreateInfo allocCi{};
@@ -243,6 +248,146 @@ private:
     VmaAllocation _allocation = VK_NULL_HANDLE;
 };
 
+/// A small, solid-colour `VkImage` — known content to assert against after compositing.
+/// `NativeRendererVulkan` treats `DrawImage::Texture`'s value as a raw `VkImageView` handle (see
+/// `NativeRendererVulkan.hpp`'s own file comment), so this real image view's handle is what gets
+/// pushed. Uploads via a staging buffer, then transitions to `SHADER_READ_ONLY_OPTIMAL` — the
+/// layout `RenderImageBatch()`'s descriptor write expects.
+class ScratchTexture {
+public:
+    ScratchTexture(VkDevice device, VmaAllocator allocator, VkQueue queue, VkCommandPool cmdPool, std::uint8_t r,
+                  std::uint8_t g, std::uint8_t b, std::uint8_t a)
+        : _device(device), _allocator(allocator), _queue(queue), _cmdPool(cmdPool) {
+        constexpr int kSize = 8;
+        std::vector<std::byte> pixels(static_cast<std::size_t>(kSize) * kSize * 4);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i + 0] = std::byte{r};
+            pixels[i + 1] = std::byte{g};
+            pixels[i + 2] = std::byte{b};
+            pixels[i + 3] = std::byte{a};
+        }
+
+        VkImageCreateInfo imgCi{};
+        imgCi.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imgCi.imageType     = VK_IMAGE_TYPE_2D;
+        imgCi.format        = VK_FORMAT_R8G8B8A8_UNORM;
+        imgCi.extent        = {kSize, kSize, 1};
+        imgCi.mipLevels     = 1;
+        imgCi.arrayLayers   = 1;
+        imgCi.samples       = VK_SAMPLE_COUNT_1_BIT;
+        imgCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
+        imgCi.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imgCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        VmaAllocationCreateInfo allocCi{};
+        allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+        vmaCreateImage(_allocator, &imgCi, &allocCi, &_image, &_allocation, nullptr);
+
+        VkImageViewCreateInfo viewCi{};
+        viewCi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewCi.image            = _image;
+        viewCi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        viewCi.format           = VK_FORMAT_R8G8B8A8_UNORM;
+        viewCi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(_device, &viewCi, nullptr, &_view);
+
+        UploadAndTransition(pixels, kSize);
+    }
+
+    ~ScratchTexture() {
+        vkDestroyImageView(_device, _view, nullptr);
+        vmaDestroyImage(_allocator, _image, _allocation);
+    }
+
+    ScratchTexture(const ScratchTexture&) = delete;
+    ScratchTexture& operator=(const ScratchTexture&) = delete;
+
+    [[nodiscard]] TextureId Id() const {
+        return TextureId(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(_view)));
+    }
+
+private:
+    void UploadAndTransition(const std::vector<std::byte>& pixels, int size) {
+        VkBufferCreateInfo bufCi{};
+        bufCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufCi.size        = static_cast<VkDeviceSize>(pixels.size());
+        bufCi.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocCi{};
+        allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+        allocCi.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+        VkBuffer          stagingBuf   = VK_NULL_HANDLE;
+        VmaAllocation     stagingAlloc = VK_NULL_HANDLE;
+        VmaAllocationInfo stagingInfo{};
+        vmaCreateBuffer(_allocator, &bufCi, &allocCi, &stagingBuf, &stagingAlloc, &stagingInfo);
+        std::memcpy(stagingInfo.pMappedData, pixels.data(), pixels.size());
+
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool        = _cmdPool;
+        cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &beginInfo);
+
+        VkImageMemoryBarrier toTransferDst{};
+        toTransferDst.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransferDst.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        toTransferDst.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toTransferDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferDst.image               = _image;
+        toTransferDst.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toTransferDst.srcAccessMask       = 0;
+        toTransferDst.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                            nullptr, 1, &toTransferDst);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent      = {static_cast<std::uint32_t>(size), static_cast<std::uint32_t>(size), 1};
+        vkCmdCopyBufferToImage(cmd, stagingBuf, _image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+        VkImageMemoryBarrier toShaderRead{};
+        toShaderRead.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toShaderRead.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toShaderRead.newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        toShaderRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShaderRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toShaderRead.image               = _image;
+        toShaderRead.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toShaderRead.srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toShaderRead.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                            0, nullptr, 1, &toShaderRead);
+
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers    = &cmd;
+        vkQueueSubmit(_queue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(_queue);
+        vkFreeCommandBuffers(_device, _cmdPool, 1, &cmd);
+        vmaDestroyBuffer(_allocator, stagingBuf, stagingAlloc);
+    }
+
+    VkDevice      _device     = VK_NULL_HANDLE;
+    VmaAllocator  _allocator  = VK_NULL_HANDLE;
+    VkQueue       _queue      = VK_NULL_HANDLE;
+    VkCommandPool _cmdPool    = VK_NULL_HANDLE;
+    VkImage       _image      = VK_NULL_HANDLE;
+    VkImageView   _view       = VK_NULL_HANDLE;
+    VmaAllocation _allocation = VK_NULL_HANDLE;
+};
+
 } // namespace
 
 TEST_CASE("NativeRendererVulkan draws a filled DrawRect at the recorded position", "[vulkan]") {
@@ -315,6 +460,97 @@ TEST_CASE("NativeRendererVulkan renders rounded corners: the extreme corner pixe
 
         REQUIRE(corner.a < 100);
         REQUIRE(middleEdge.a > 200);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan draws a DrawImage at the recorded position, sampling the bound "
+          "VkImageView and applying TintColor (Phase 35.2)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+        ScratchTexture texture(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, 0, 0,
+                              255, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawImage{
+            .Position  = {0.0f, 0.0f},
+            .Size      = {64.0f, 64.0f},
+            .Texture   = texture.Id(),
+            .TintColor = {0.5f, 1.0f, 1.0f, 1.0f}});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel inside  = Sample(pixels, 32, 32, WIDTH);
+        const Pixel outside = Sample(pixels, WIDTH - 4, HEIGHT - 4, WIDTH);
+
+        REQUIRE(inside.b > 200);
+        REQUIRE(inside.r < 150); // TintColor.r == 0.5 darkens the source texture's zero red further
+        REQUIRE(inside.a > 200);
+        REQUIRE(outside.a == 0); // untouched -- still the target's transparent clear colour
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan renders a Rect and two differently-textured Image batches "
+          "correctly in the same frame (Phase 35.2)",
+          "[vulkan]") {
+    // Directly validates the per-batch descriptor set scheme (see NativeRendererVulkan.hpp's own
+    // file comment): a single reused Image descriptor set would make every draw in this frame
+    // sample whichever texture was written *last*, once all these commands actually execute on
+    // the GPU (recording all of them happens before any of them run).
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+        ScratchTexture redTexture(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, 255,
+                                 0, 0, 255);
+        ScratchTexture greenTexture(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, 0,
+                                   255, 0, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{.Position = {0.0f, 0.0f}, .Size = {32.0f, 32.0f}, .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawImage{.Position = {48.0f, 0.0f}, .Size = {32.0f, 32.0f}, .Texture = redTexture.Id()});
+        buffer.Push(DrawImage{.Position = {96.0f, 96.0f}, .Size = {32.0f, 32.0f}, .Texture = greenTexture.Id()});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel rectPixel  = Sample(pixels, 16, 16, WIDTH);
+        const Pixel redPixel   = Sample(pixels, 64, 16, WIDTH);
+        const Pixel greenPixel = Sample(pixels, 112, 112, WIDTH);
+
+        REQUIRE(rectPixel.b > 200);
+        REQUIRE(rectPixel.r < 50);
+
+        REQUIRE(redPixel.r > 200);
+        REQUIRE(redPixel.g < 50);
+        REQUIRE(redPixel.b < 50);
+
+        REQUIRE(greenPixel.g > 200);
+        REQUIRE(greenPixel.r < 50);
+        REQUIRE(greenPixel.b < 50);
 
         renderer.Shutdown();
     }

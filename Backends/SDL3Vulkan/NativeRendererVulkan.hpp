@@ -9,6 +9,26 @@
  * follow in later 35.x sub-phases, exactly the same incremental order GL3
  * itself was built in across Phases 32-34.
  *
+ * Phase 35.2 adds `BatchKind::Image`. `Rendering::TextureId::Value()` is
+ * reinterpreted as a raw `VkImageView` handle, sampled through one
+ * renderer-owned shared `VkSampler` — the Vulkan analogue of
+ * `NativeRendererGL3`'s own "raw handle, reinterpreted directly, no registry
+ * indirection" convention for its own (GL) texture type. Unlike a GL texture
+ * name, a `VkImageView` alone isn't enough to bind+sample in a single step —
+ * Vulkan's descriptor-set model needs an explicit combined-image-sampler
+ * descriptor naming both the view and a sampler, updated to point at
+ * whichever texture the current batch uses. Because a descriptor set's
+ * *content* is resolved by the GPU at command-buffer *execution* time, not
+ * at `vkCmdBindDescriptorSets` *recording* time, reusing a single Image
+ * descriptor set object across multiple different-textured `Image` batches
+ * recorded into the same not-yet-submitted command buffer would make every
+ * one of those draws sample whichever texture was written *last* — see
+ * `RenderImageBatch()`'s own comment. `Render()` therefore allocates one
+ * fresh descriptor set per `Image` batch from a pool it resets every call
+ * (`EnsureImageDescriptorCapacity()`), the same "grow, never shrink,
+ * recreate-on-demand" convention `EnsureVertexIndexCapacity()` already uses
+ * for the streaming vertex/index buffers.
+ *
  * Unlike `NativeRendererGL3` (which relies on OpenGL's implicit "currently
  * bound context/framebuffer" — a real `GLFWOpenGL3Backend` window makes its
  * GL context current on the calling thread, and `glGetIntegerv(GL_VIEWPORT,
@@ -126,8 +146,21 @@ public:
 private:
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
+    void EnsureImageDescriptorCapacity(std::size_t neededSets);
     void RenderRectBatch(VkCommandBuffer cmd, const Batch& batch, std::size_t& vertexByteOffset,
                         std::size_t& indexByteOffset);
+
+    /**
+     * @brief    Records one `BatchKind::Image` batch's draw call.
+     * @param[in] imageDescriptorSet  A descriptor set from `_imageDescriptorSets`, already written
+     *                                (by `Render()`, before this call) with `batch.Texture`'s view
+     *                                at binding 1 and `_perFrameUbo` at binding 0 — see this
+     *                                class's own file comment on why the write can't happen inside
+     *                                this method, reused across batches, the way `RenderRectBatch()`
+     *                                reuses `_rectDescriptorSet` (which has no per-batch texture).
+     */
+    void RenderImageBatch(VkCommandBuffer cmd, const Batch& batch, VkDescriptorSet imageDescriptorSet,
+                        std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     VkDevice              _device              = VK_NULL_HANDLE;
@@ -151,22 +184,51 @@ private:
     VkPipelineLayout      _rectPipelineLayout     = VK_NULL_HANDLE;
     VkPipeline            _rectPipeline           = VK_NULL_HANDLE;
 
-    /// Small private pool for this renderer's own `PerFrame` UBO descriptor set — not the
-    /// backend's shared descriptor pool (`ViewportFramebufferVulkan`'s own `descriptorPool`
-    /// constructor parameter is sized/typed for ImGui's combined-image-sampler descriptors, not a
-    /// uniform buffer; owning a dedicated pool here avoids a type/capacity mismatch entirely).
-    VkDescriptorPool _descriptorPool       = VK_NULL_HANDLE;
-    VkDescriptorSet  _perFrameDescriptorSet = VK_NULL_HANDLE;
+    /// Small private pool for this renderer's own *stable* (created-once, never-reallocated)
+    /// descriptor sets — `_rectDescriptorSet` only; Image's own per-batch sets live in
+    /// `_imageDescriptorPool` instead (see this class's own file comment on why they can't be
+    /// stable). Not the backend's shared descriptor pool (`ViewportFramebufferVulkan`'s own
+    /// `descriptorPool` constructor parameter is sized/typed for ImGui's combined-image-sampler
+    /// descriptors, not a uniform buffer; owning a dedicated pool here avoids a type/capacity
+    /// mismatch entirely).
+    VkDescriptorPool _descriptorPool   = VK_NULL_HANDLE;
+    VkDescriptorSet  _rectDescriptorSet = VK_NULL_HANDLE;
 
-    /// `SDFRect.glsl`'s `layout(binding=0) uniform PerFrame { vec2 ViewportSize; }`. Host-visible,
-    /// persistently mapped (VMA `HOST_ACCESS_SEQUENTIAL_WRITE`) — updated once per `Render()` call.
+    /// `SDFRect.glsl`/`Image.glsl`'s shared `layout(binding=0) uniform PerFrame { vec2 ViewportSize; }`
+    /// — one buffer, referenced by both `_rectDescriptorSet`'s and every per-batch Image descriptor
+    /// set's own binding 0 (a descriptor is just a reference to this buffer; nothing stops two
+    /// different descriptor sets, even across different set layouts, from pointing at the same
+    /// one). Host-visible, persistently mapped (VMA `HOST_ACCESS_SEQUENTIAL_WRITE`) — updated once
+    /// per `Render()` call.
     VkBuffer      _perFrameUbo           = VK_NULL_HANDLE;
     VmaAllocation _perFrameUboAllocation = VK_NULL_HANDLE;
     void*         _perFrameUboMapped     = nullptr;
 
+    // ─── BatchKind::Image (Phase 35.2) ──────────────────────────────────────────
+    VkShaderModule        _imageVertexModule        = VK_NULL_HANDLE;
+    VkShaderModule        _imageFragmentModule      = VK_NULL_HANDLE;
+    VkDescriptorSetLayout _imageDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      _imagePipelineLayout      = VK_NULL_HANDLE;
+    VkPipeline            _imagePipeline            = VK_NULL_HANDLE;
+
+    /// Shared by every `Image` batch — the Vulkan equivalent of the fixed `GL_LINEAR`/
+    /// `GL_CLAMP_TO_EDGE` texture parameters `NativeRendererGL3`'s own textures are created with;
+    /// there is no per-`DrawImage`-command sampling-parameter field to honour differently.
+    VkSampler _linearSampler = VK_NULL_HANDLE;
+
+    /// Reset (`vkResetDescriptorPool`) at the start of every `Render()` call, then one fresh
+    /// descriptor set is allocated per `Image` batch that frame — see this class's own file
+    /// comment on why these can't be stable, reused sets the way `_rectDescriptorSet` is. Grown
+    /// (never shrunk), the same "recreate on demand" convention `_vertexBuffer`/`_indexBuffer`
+    /// already use.
+    VkDescriptorPool             _imageDescriptorPool         = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> _imageDescriptorSets; ///< Reused capacity across `Render()` calls.
+    std::size_t                 _imageDescriptorPoolCapacitySets = 0;
+
     /// Streaming vertex/index buffers, re-uploaded per `Render()` call — host-visible, persistently
     /// mapped, grown (never shrunk) on demand, matching `NativeRendererGL3`'s own `GL_STREAM_DRAW`
-    /// re-upload-every-batch convention.
+    /// re-upload-every-batch convention. Shared by `Rect` and `Image` batches alike — plain bytes at
+    /// a growing offset, kind-agnostic.
     VkBuffer      _vertexBuffer               = VK_NULL_HANDLE;
     VmaAllocation _vertexBufferAllocation     = VK_NULL_HANDLE;
     void*         _vertexBufferMapped         = nullptr;

@@ -43,8 +43,13 @@ layout(binding = 0) uniform PerFrame {
 } uFrame;
 
 void main() {
+    // Unlike NativeRendererGL3's own equivalent shader, Y is NOT negated here: GL's NDC is
+    // bottom-up (Y=+1 is the top of the viewport), so GL3 negates to match this codebase's
+    // top-down pixel-space convention. Vulkan's NDC is already top-down (Y=-1 is the viewport's
+    // top with a standard positive-height viewport), so it already matches without any flip --
+    // negating here would introduce one. See DECISIONS.md, Phase 35.2, for how this was found.
     vec2 ndc = (inPosition / uFrame.ViewportSize) * 2.0 - 1.0;
-    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
 
     vLocal = inLocal;
     vHalfSize = inHalfSize;

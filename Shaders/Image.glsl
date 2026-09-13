@@ -31,8 +31,11 @@ layout(binding = 0) uniform PerFrame {
 } uFrame;
 
 void main() {
+    // See SDFRect.glsl's identical comment: unlike NativeRendererGL3's own shader (which negates Y
+    // to convert GL's bottom-up NDC into this codebase's top-down pixel-space convention), Vulkan's
+    // NDC is already top-down, so no negation is needed here -- negating would introduce a flip.
     vec2 ndc = (inPosition / uFrame.ViewportSize) * 2.0 - 1.0;
-    gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+    gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
 
     vLocal = inLocal;
     vHalfSize = inHalfSize;
