@@ -72,8 +72,13 @@ graphify-out/
 # ─── Session / diagnostic logs ────────────────────────────────────────────────
 *.log
 
-# ─── Claude Code local settings (machine-specific, not project config) ────────
-.claude/settings.json
+# ─── Claude Code local session state (machine-specific, never tracked) ────────
+# Contains local absolute paths, session scratch notes, and other machine-
+# specific content that has no place in a public repo. Removed from all git
+# history on 2026-09-13 after being found tracked on the public GitHub remote
+# (see CLAUDE.md's "Public Repo / Git Hygiene Rules" section) — do not re-add
+# any path under here to version control.
+.claude/
 
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
