@@ -553,6 +553,24 @@ if(IMF_BUILD_WEBGPU_BACKEND)
     target_compile_features(ImFrame_Tests_Backends_WebGPUConformance PRIVATE cxx_std_23)
     catch_discover_tests(ImFrame_Tests_Backends_WebGPUConformance PROPERTIES LABELS webgpu TIMEOUT 60)
 
+    # ─── Phase 35.8: NativeRendererWebGPU real-pixel tests ───────────────────────────────────────
+    if(IMF_BUILD_NATIVE_RENDERER)
+        add_executable(ImFrame_Tests_Rendering_NativeRendererWebGPU
+            Rendering/NativeRendererWebGPU_test.cpp
+        )
+        target_include_directories(ImFrame_Tests_Rendering_NativeRendererWebGPU PRIVATE
+            ${CMAKE_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/src
+        )
+        target_link_libraries(ImFrame_Tests_Rendering_NativeRendererWebGPU
+            PRIVATE ImFrame ImFrame_DawnWebGPU Catch2::Catch2WithMain
+        )
+        target_compile_features(ImFrame_Tests_Rendering_NativeRendererWebGPU PRIVATE cxx_std_23)
+        # TIMEOUT guards against hangs if no WebGPU-capable GPU/driver is present in CI, matching
+        # the existing WebGPUBackend/WebGPUConformance test targets above.
+        catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererWebGPU PROPERTIES LABELS webgpu TIMEOUT 60)
+    endif()
+
     if(WIN32 AND NOT EMSCRIPTEN)
         # Dawn's D3D12 backend probes dxil.dll at device-init time (EnsureDXCLibraries, called
         # before any shader compilation). The DLL ships with the directx-dxc vcpkg package but
@@ -560,9 +578,13 @@ if(IMF_BUILD_WEBGPU_BACKEND)
         # dxcompiler.dll is copied too — it is loaded at shader-compile time.
         set(_dxc_dir_debug   "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/debug/bin")
         set(_dxc_dir_release "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-windows/bin")
-        foreach(_tgt
+        set(_dxc_dll_targets
             ImFrame_Tests_Backends_WebGPUBackend
             ImFrame_Tests_Backends_WebGPUConformance)
+        if(IMF_BUILD_NATIVE_RENDERER)
+            list(APPEND _dxc_dll_targets ImFrame_Tests_Rendering_NativeRendererWebGPU)
+        endif()
+        foreach(_tgt ${_dxc_dll_targets})
             add_custom_command(TARGET ${_tgt} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "$<IF:$<CONFIG:Debug>,${_dxc_dir_debug},${_dxc_dir_release}>/dxil.dll"
