@@ -9,6 +9,13 @@
  * heap, clears it up front, then reads it back via a one-shot command list copying into a
  * `D3D12_HEAP_TYPE_READBACK` buffer.
  *
+ * Phase 35.9 adds `ScratchTexture` and two `DrawImage` tests, mirroring
+ * `NativeRendererVulkan_test.cpp`'s own Phase 35.2 `ScratchTexture`/tests: a small
+ * `D3D12_HEAP_TYPE_DEFAULT` texture uploaded via a `D3D12_HEAP_TYPE_UPLOAD` staging buffer, then
+ * transitioned to `D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE` — the state
+ * `NativeRendererDX12::RenderImageBatch()`'s SRV expects, matching
+ * `NativeRendererVulkan`'s own `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` contract.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-13
  * @version  3.0.1
@@ -218,6 +225,133 @@ private:
     HANDLE                                              _fenceEvent = nullptr;
 };
 
+/// `NativeRendererDX12` treats `DrawImage::Texture`'s value as a raw `ID3D12Resource*` (see
+/// `NativeRendererDX12.hpp`'s own file comment), so this real texture resource's pointer is what
+/// gets pushed. Uploads via a staging buffer, then transitions to
+/// `D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE` -- the state `RenderImageBatch()`'s SRV expects.
+class ScratchTexture {
+public:
+    ScratchTexture(ID3D12Device4* device, ID3D12CommandQueue* queue, std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                  std::uint8_t a)
+        : _device(device), _queue(queue) {
+        constexpr int kSize = 8;
+        std::vector<std::byte> pixels(static_cast<std::size_t>(kSize) * kSize * 4);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i + 0] = std::byte{r};
+            pixels[i + 1] = std::byte{g};
+            pixels[i + 2] = std::byte{b};
+            pixels[i + 3] = std::byte{a};
+        }
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        D3D12_RESOURCE_DESC texDesc{};
+        texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texDesc.Width            = kSize;
+        texDesc.Height           = kSize;
+        texDesc.DepthOrArraySize = 1;
+        texDesc.MipLevels        = 1;
+        texDesc.Format           = kColorFormat;
+        texDesc.SampleDesc.Count = 1;
+
+        _device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &texDesc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                         nullptr, IID_PPV_ARGS(&_resource));
+
+        UploadAndTransition(pixels, kSize);
+    }
+
+    ScratchTexture(const ScratchTexture&)            = delete;
+    ScratchTexture& operator=(const ScratchTexture&) = delete;
+
+    [[nodiscard]] TextureId Id() const {
+        return TextureId(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(_resource.Get())));
+    }
+
+private:
+    void UploadAndTransition(const std::vector<std::byte>& pixels, int size) {
+        constexpr std::size_t kRowPitchAlignment = 256;
+        const std::size_t rowPitch = (static_cast<std::size_t>(size) * 4 + kRowPitchAlignment - 1) &
+                                      ~(kRowPitchAlignment - 1);
+        const std::size_t uploadSize = rowPitch * static_cast<std::size_t>(size);
+
+        D3D12_HEAP_PROPERTIES uploadHeapProps{};
+        uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+        D3D12_RESOURCE_DESC bufDesc{};
+        bufDesc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bufDesc.Width            = static_cast<UINT64>(uploadSize);
+        bufDesc.Height           = 1;
+        bufDesc.DepthOrArraySize = 1;
+        bufDesc.MipLevels        = 1;
+        bufDesc.SampleDesc.Count = 1;
+        bufDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuf;
+        _device->CreateCommittedResource(&uploadHeapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                                         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&uploadBuf));
+
+        void* mapped = nullptr;
+        const D3D12_RANGE noRead{0, 0};
+        uploadBuf->Map(0, &noRead, &mapped);
+        for (int y = 0; y < size; ++y) {
+            std::memcpy(static_cast<std::byte*>(mapped) + static_cast<std::size_t>(y) * rowPitch,
+                       pixels.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(size) * 4,
+                       static_cast<std::size_t>(size) * 4);
+        }
+        uploadBuf->Unmap(0, nullptr);
+
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    cmdAlloc;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> cmdList;
+        _device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&cmdAlloc));
+        _device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE,
+                                    IID_PPV_ARGS(&cmdList));
+        cmdList->Reset(cmdAlloc.Get(), nullptr);
+
+        D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+        dstLoc.pResource        = _resource.Get();
+        dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dstLoc.SubresourceIndex = 0;
+
+        D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+        srcLoc.pResource                          = uploadBuf.Get();
+        srcLoc.Type                               = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        srcLoc.PlacedFootprint.Footprint.Format   = kColorFormat;
+        srcLoc.PlacedFootprint.Footprint.Width    = static_cast<UINT>(size);
+        srcLoc.PlacedFootprint.Footprint.Height   = static_cast<UINT>(size);
+        srcLoc.PlacedFootprint.Footprint.Depth    = 1;
+        srcLoc.PlacedFootprint.Footprint.RowPitch = static_cast<UINT>(rowPitch);
+
+        cmdList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+        D3D12_RESOURCE_BARRIER toShaderResource{};
+        toShaderResource.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toShaderResource.Transition.pResource   = _resource.Get();
+        toShaderResource.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        toShaderResource.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        toShaderResource.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList->ResourceBarrier(1, &toShaderResource);
+
+        cmdList->Close();
+        ID3D12CommandList* lists[] = {cmdList.Get()};
+        _queue->ExecuteCommandLists(1, lists);
+
+        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        _device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+        HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        _queue->Signal(fence.Get(), 1);
+        if (fence->GetCompletedValue() < 1) {
+            fence->SetEventOnCompletion(1, fenceEvent);
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+        CloseHandle(fenceEvent);
+    }
+
+    ID3D12Device4*      _device = nullptr;
+    ID3D12CommandQueue* _queue  = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> _resource;
+};
+
 } // namespace
 
 TEST_CASE("NativeRendererDX12 draws a filled DrawRect at the recorded position", "[dx12]") {
@@ -321,6 +455,87 @@ TEST_CASE("NativeRendererDX12 renders rounded corners: the extreme corner pixel 
 
         REQUIRE(corner.a < 100);
         REQUIRE(middleEdge.a > 200);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererDX12 draws a DrawImage at the recorded position, sampling the bound "
+          "ID3D12Resource and applying TintColor (Phase 35.9)",
+          "[dx12]") {
+    SDL3DX12Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.DirectQueue, WIDTH, HEIGHT);
+        ScratchTexture texture(handles.Device, handles.DirectQueue, 0, 0, 255, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawImage{
+            .Position  = {0.0f, 0.0f},
+            .Size      = {64.0f, 64.0f},
+            .Texture   = texture.Id(),
+            .TintColor = {0.5f, 1.0f, 1.0f, 1.0f}});
+
+        NativeRendererDX12 renderer(handles.Device, handles.DirectQueue, kColorFormat);
+        renderer.SetTarget(target.Resource(), target.Rtv(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto [pixels, rowPitch] = target.ReadPixels();
+        const Pixel inside  = Sample(pixels, 32, 32, WIDTH, rowPitch);
+        const Pixel outside = Sample(pixels, WIDTH - 4, HEIGHT - 4, WIDTH, rowPitch);
+
+        REQUIRE(inside.b > 200);
+        REQUIRE(inside.r < 150); // TintColor.r == 0.5 darkens the source texture's zero red further
+        REQUIRE(inside.a > 200);
+        REQUIRE(outside.a == 0); // untouched -- still the target's transparent clear colour
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererDX12 renders a Rect and two differently-textured Image batches "
+          "correctly in the same frame (Phase 35.9)",
+          "[dx12]") {
+    // Directly validates the per-batch SRV-heap scheme (see NativeRendererDX12.hpp's own file
+    // comment): a single reused SRV slot would make every draw in this frame sample whichever
+    // texture was written *last*, once all these commands actually execute on the GPU (recording
+    // all of them happens before any of them run) -- mirrors
+    // NativeRendererVulkan_test.cpp's own identical Phase 35.2 test.
+    SDL3DX12Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.DirectQueue, WIDTH, HEIGHT);
+        ScratchTexture redTexture(handles.Device, handles.DirectQueue, 255, 0, 0, 255);
+        ScratchTexture greenTexture(handles.Device, handles.DirectQueue, 0, 255, 0, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{.Position = {0.0f, 0.0f}, .Size = {32.0f, 32.0f}, .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawImage{.Position = {48.0f, 0.0f}, .Size = {32.0f, 32.0f}, .Texture = redTexture.Id()});
+        buffer.Push(DrawImage{.Position = {96.0f, 96.0f}, .Size = {32.0f, 32.0f}, .Texture = greenTexture.Id()});
+
+        NativeRendererDX12 renderer(handles.Device, handles.DirectQueue, kColorFormat);
+        renderer.SetTarget(target.Resource(), target.Rtv(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto [pixels, rowPitch] = target.ReadPixels();
+        const Pixel rect  = Sample(pixels, 16, 16, WIDTH, rowPitch);
+        const Pixel red   = Sample(pixels, 64, 16, WIDTH, rowPitch);
+        const Pixel green = Sample(pixels, 112, 112, WIDTH, rowPitch);
+
+        REQUIRE(rect.b > 200);
+        REQUIRE(rect.a > 200);
+        REQUIRE(red.r > 200);
+        REQUIRE(red.g < 50);
+        REQUIRE(green.g > 200);
+        REQUIRE(green.r < 50);
 
         renderer.Shutdown();
     }

@@ -168,8 +168,9 @@ void ViewportFramebufferDX12::Allocate(std::uint32_t width, std::uint32_t height
     UINT rtvSlot = UINT_MAX;
     // IMF_ASSERT's own condition must have no side-effects (elided entirely in Release/NDEBUG
     // builds, see Core/Error.hpp) -- Allocate() itself must run unconditionally, only the
-    // resulting bool is conditionally checked.
-    const bool rtvAllocated = _rtvAlloc->Allocate(rtvSlot);
+    // resulting bool is conditionally checked. [[maybe_unused]] because IMF_ASSERT's whole body
+    // compiles to ((void)0) in Release, leaving this local genuinely unreferenced there.
+    [[maybe_unused]] const bool rtvAllocated = _rtvAlloc->Allocate(rtvSlot);
     IMF_ASSERT(rtvAllocated); // heap exhaustion here is a real, if rare, allocator bug
     _rtvSlot = rtvSlot;
     _rtvHandle = { _rtvAlloc->heap->GetCPUDescriptorHandleForHeapStart().ptr
@@ -181,7 +182,7 @@ void ViewportFramebufferDX12::Allocate(std::uint32_t width, std::uint32_t height
 
     // SRV descriptor (shader-visible heap).
     UINT srvSlot = UINT_MAX;
-    const bool srvAllocated = _srvAlloc->Allocate(srvSlot);
+    [[maybe_unused]] const bool srvAllocated = _srvAlloc->Allocate(srvSlot);
     IMF_ASSERT(srvAllocated);
     _srvSlot = srvSlot;
     D3D12_CPU_DESCRIPTOR_HANDLE srvCpu = {
