@@ -9,12 +9,26 @@
  * `src/Rendering/Renderers/BatchBuilder.hpp`/`RectVertex` every other `NativeRenderer*` already
  * does — only the graphics-API-specific plumbing (root signature, PSO, command list) is new here.
  *
- * Consumes `Shaders/SDFRect.hlsl`'s compiled DXIL directly (Phase 35.7's own
+ * Phase 35.9 adds `BatchKind::Image`, mirroring `NativeRendererVulkan`'s own Phase 35.2:
+ * `Rendering::TextureId::Value()` is reinterpreted as a raw `ID3D12Resource*`, already in
+ * `D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE` at `Render()` time. Unlike Vulkan's combined-
+ * image-sampler descriptor (one binding for both view and sampler), D3D12 has no such combined
+ * type — `Shaders/Image.hlsl` binds a `Texture2D` SRV (t0, via a descriptor table) and a fixed
+ * root-signature *static sampler* (s0, the D3D12 analogue of Vulkan's one shared `VkSampler`).
+ * Because a descriptor heap's *content* is resolved by the GPU at command-list *execution* time,
+ * not at `SetGraphicsRootDescriptorTable()` *recording* time, `Render()` allocates/writes one SRV
+ * per `Image` batch into `_srvHeap` — a shader-visible `CBV_SRV_UAV` heap grown on demand
+ * (`EnsureImageDescriptorCapacity()`) — entirely before any command-list recording begins, the
+ * exact same reasoning `NativeRendererVulkan::Render()`'s own per-batch descriptor-set allocation
+ * already established.
+ *
+ * Consumes `Shaders/SDFRect.hlsl`/`Shaders/Image.hlsl`'s compiled DXIL directly (Phase 35.7's own
  * `cmake/CompileShaderDXC.cmake` pipeline, embedded as
- * `ImFrame::Internal::Shaders::kSDFRectVertexDxil`/`kSDFRectPixelDxil`). `SDFRect.hlsl`'s own
- * vertex shader negates Y, matching `NativeRendererGL3`'s own convention rather than
- * `NativeRendererVulkan`'s — D3D's NDC is Y-up (same as GL), unlike Vulkan's Y-down NDC. See that
- * file's own comment, and `.claude/DECISIONS.md`'s Phase 35.7 entry, for the full derivation.
+ * `ImFrame::Internal::Shaders::kSDFRectVertexDxil`/`kSDFRectPixelDxil`/`kImageVertexDxil`/
+ * `kImagePixelDxil`). Both shaders' own vertex stage negates Y, matching `NativeRendererGL3`'s own
+ * convention rather than `NativeRendererVulkan`'s — D3D's NDC is Y-up (same as GL), unlike
+ * Vulkan's Y-down NDC. See `SDFRect.hlsl`'s own comment, and `.claude/DECISIONS.md`'s Phase 35.7
+ * entry, for the full derivation.
  *
  * Like `NativeRendererVulkan`, this class is constructed with explicit D3D12 handles (not routed
  * through the public `Rendering::DX12Context` — that struct exists for Phase 24 Viewport's own,
@@ -113,7 +127,23 @@ public:
 private:
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
+    void EnsureImageDescriptorCapacity(std::size_t neededSlots);
     void RenderRectBatch(const Batch& batch, std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
+
+    /**
+     * @brief    Records one `BatchKind::Image` batch's draw call.
+     * @param[in] srvGpuHandle  A GPU-visible descriptor-table handle into `_srvHeap`, already
+     *                          written (by `Render()`, before this call, before any command-list
+     *                          recording began) with `batch.Texture` reinterpreted as a raw
+     *                          `ID3D12Resource*` — the D3D12 analogue of
+     *                          `NativeRendererVulkan::RenderImageBatch()`'s own `imageDescriptorSet`
+     *                          parameter, for the identical reason: the SRV heap's *content* is
+     *                          resolved by the GPU at command-list *execution* time, so every
+     *                          differently-textured `Image` batch in one `Render()` call needs its
+     *                          own descriptor slot, written before recording starts.
+     */
+    void RenderImageBatch(D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle, const Batch& batch,
+                          std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     ID3D12Device4*      _device      = nullptr;
@@ -131,6 +161,21 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> _rootSignature;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> _rectPipelineState;
+
+    /// `Shaders/Image.hlsl`'s own root signature (root CBV b0 + one-SRV descriptor table t0, with
+    /// a fixed static sampler s0) and PSO -- kept separate from `_rootSignature`/`_rectPipelineState`
+    /// rather than shared, mirroring `NativeRendererVulkan`'s own separate `_imagePipelineLayout`/
+    /// `_imagePipeline` (Phase 35.2).
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> _imageRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> _imagePipelineState;
+
+    /// One shader-visible `CBV_SRV_UAV` descriptor heap, holding one SRV slot per `BatchKind::Image`
+    /// batch in the current `Render()` call -- the D3D12 analogue of `NativeRendererVulkan`'s own
+    /// `_imageDescriptorPool`/`_imageDescriptorSets` (Phase 35.2): grown (never shrunk), all slots
+    /// written before any command-list recording begins, one draw's worth of state per slot.
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _srvHeap;
+    std::size_t                                  _srvHeapCapacitySlots = 0;
+    UINT                                          _srvDescriptorSize    = 0;
 
     Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    _commandAllocator;
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> _commandList;

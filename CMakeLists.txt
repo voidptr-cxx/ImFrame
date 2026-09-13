@@ -357,7 +357,7 @@ if(WIN32 AND IMF_BUILD_NATIVE_RENDERER AND IMF_BUILD_DX12_BACKEND)
     include(cmake/CompileShaderDXC.cmake)
 
     set(IMF_SHADER_DXIL_HEADERS "")
-    foreach(IMF_HLSL_SHADER_NAME SDFRect)
+    foreach(IMF_HLSL_SHADER_NAME SDFRect Image)
         compile_shader_hlsl("${CMAKE_SOURCE_DIR}/Shaders/${IMF_HLSL_SHADER_NAME}.hlsl" vs_6_0 VSMain
             ${IMF_HLSL_SHADER_NAME} OUT_HEADER IMF_SHADER_VS_HEADER)
         compile_shader_hlsl("${CMAKE_SOURCE_DIR}/Shaders/${IMF_HLSL_SHADER_NAME}.hlsl" ps_6_0 PSMain
