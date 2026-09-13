@@ -63,17 +63,22 @@ std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::V
     return vertices;
 }
 
-/// Builds one axis-aligned quad's `ImageVertex`es, unrounded — `RenderShadowBatch()`'s own
-/// composite pass reuses the existing Image pipeline to draw a renderer-produced offscreen
-/// texture (a blurred shadow), tinted, as a plain rectangle. Mirrors
+/// Builds one axis-aligned quad's `ImageVertex`es — `RenderShadowBatch()`/`CompositeOpacityLayer()`'s
+/// own composite passes reuse the existing Image pipeline to draw a renderer-produced offscreen
+/// texture (a blurred shadow, or a popped layer), tinted, as a plain rectangle; `RenderBackdropBlurBatch()`
+/// (Phase 35.6) additionally crops via `uvMin`/`uvMax` and rounds via `radii`. Mirrors
 /// `NativeRendererGL3::BuildImageQuadVertices()`'s role, but **without** that function's own
 /// V-flipped UV table: that flip exists specifically to compensate for two GL-only facts (its
 /// vertex shader negates Y, and GL's texture row order is bottom-up) — neither holds here. This
 /// backend's own vertex shader stopped negating Y in Phase 35.2 (the Y-flip bug that phase found
 /// and fixed), and a Vulkan image's row 0 is its top row already, matching pixel space directly.
 /// A plain, unflipped UV mapping is therefore the *correct* choice for Vulkan, not a simplification
-/// — using GL3's flipped formula here would sample the wrong row.
-std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+/// — using GL3's flipped formula here would sample the wrong row. `uvMin`/`uvMax` are in the same
+/// "author pixel-space, not yet normalized" sense `position`/`size` are; default `{0,0}`/`{1,1}`
+/// samples the whole texture.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor,
+                                                Widgets::Vec2 uvMin = {0.0f, 0.0f}, Widgets::Vec2 uvMax = {1.0f, 1.0f},
+                                                Rendering::CornerRadii radii = {}) {
     const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
     const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
     const Widgets::Vec2 corners[4] = {
@@ -82,7 +87,8 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
         {position.x + size.x, position.y + size.y},
         {position.x, position.y + size.y},
     };
-    const Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    const Widgets::Vec2 uvs[4] = {
+        {uvMin.x, uvMin.y}, {uvMax.x, uvMin.y}, {uvMax.x, uvMax.y}, {uvMin.x, uvMax.y}};
 
     std::vector<ImageVertex> vertices;
     vertices.reserve(4);
@@ -91,7 +97,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
             .Position = corners[i],
             .Local = {corners[i].x - center.x, corners[i].y - center.y},
             .HalfSize = halfSize,
-            .Radii = {},
+            .Radii = radii,
             .Uv = uvs[i],
             .TintColor = tintColor,
         });
@@ -930,6 +936,223 @@ void NativeRendererVulkan::EnsureBackdropTarget(std::uint32_t width, std::uint32
     _backdropHeight = height;
 }
 
+void NativeRendererVulkan::EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropBlurCopyImage != VK_NULL_HANDLE && _backdropBlurCopyWidth == width &&
+        _backdropBlurCopyHeight == height) {
+        return;
+    }
+
+    if (_backdropBlurCopyView != VK_NULL_HANDLE) { vkDestroyImageView(_device, _backdropBlurCopyView, nullptr); }
+    if (_backdropBlurCopyImage != VK_NULL_HANDLE) {
+        vmaDestroyImage(_allocator, _backdropBlurCopyImage, _backdropBlurCopyImageAllocation);
+    }
+
+    VkImageCreateInfo imageCi{};
+    imageCi.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageCi.imageType     = VK_IMAGE_TYPE_2D;
+    imageCi.format        = VK_FORMAT_R8G8B8A8_UNORM;
+    imageCi.extent        = {width, height, 1};
+    imageCi.mipLevels     = 1;
+    imageCi.arrayLayers   = 1;
+    imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
+    imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    imageCi.usage         = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    vmaCreateImage(_allocator, &imageCi, &allocCi, &_backdropBlurCopyImage, &_backdropBlurCopyImageAllocation,
+                   nullptr);
+
+    VkImageViewCreateInfo viewCi{};
+    viewCi.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewCi.image            = _backdropBlurCopyImage;
+    viewCi.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    viewCi.format           = VK_FORMAT_R8G8B8A8_UNORM;
+    viewCi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(_device, &viewCi, nullptr, &_backdropBlurCopyView);
+
+    // One-time UNDEFINED -> GENERAL transition -- valid for both a copy destination and
+    // _blurPass's own imageLoad/imageStore (see this class's own .hpp comment).
+    VkCommandBufferAllocateInfo cmdAllocInfo{};
+    cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool        = _commandPool;
+    cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    vkAllocateCommandBuffers(_device, &cmdAllocInfo, &cmd);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &beginInfo);
+
+    VkImageMemoryBarrier toGeneral{};
+    toGeneral.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toGeneral.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    toGeneral.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toGeneral.image               = _backdropBlurCopyImage;
+    toGeneral.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    toGeneral.srcAccessMask       = 0;
+    toGeneral.dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                        nullptr, 1, &toGeneral);
+
+    vkEndCommandBuffer(cmd);
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers    = &cmd;
+    vkQueueSubmit(_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(_graphicsQueue);
+    vkFreeCommandBuffers(_device, _commandPool, 1, &cmd);
+
+    _backdropBlurCopyWidth  = width;
+    _backdropBlurCopyHeight = height;
+}
+
+void NativeRendererVulkan::RenderBackdropBlurBatch(VkCommandBuffer& cmd, const Batch& batch) {
+    const auto& blurs = std::get<std::vector<BackdropBlurVertex>>(batch.Vertices);
+    if (blurs.empty()) { return; }
+    const BackdropBlurVertex& blur = blurs.front();
+    if (blur.Size.x <= 0.0f || blur.Size.y <= 0.0f) { return; }
+
+    if (_backdropBlurCountThisFrame >= _maxBackdropBlurPerFrame) {
+        return; // matches NativeRendererGL3::RenderBackdropBlurBatch()'s identical rate-limit
+    }
+    ++_backdropBlurCountThisFrame;
+
+    // Pad the copied region by the blur radius on every side (clamped to the target's own bounds)
+    // so _blurPass's kernel has real surrounding content to read, the same reasoning as
+    // RenderShadowBatch()'s silhouette padding -- then crop the composite back down to exactly
+    // blur.Position/blur.Size, since (unlike a shadow, which is expected to bleed past its shape)
+    // backdrop blur is documented as replacing exactly the requested rect, nothing more.
+    const float pad    = std::max(blur.BlurRadius, 0.0f);
+    const float left   = std::max(blur.Position.x - pad, 0.0f);
+    const float top    = std::max(blur.Position.y - pad, 0.0f);
+    const float right  = std::min(blur.Position.x + blur.Size.x + pad, static_cast<float>(_targetWidth));
+    const float bottom = std::min(blur.Position.y + blur.Size.y + pad, static_cast<float>(_targetHeight));
+    const float copyWidthF  = right - left;
+    const float copyHeightF = bottom - top;
+    if (copyWidthF <= 0.0f || copyHeightF <= 0.0f) { return; }
+
+    const auto copyWidth  = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(copyWidthF))));
+    const auto copyHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(copyHeightF))));
+
+    // Flush everything recorded so far -- the copy below needs this Render() call's own prior
+    // batches' content actually on the GPU already (not merely recorded), and _blurPass.Apply() is
+    // its own separate submission, exactly like RenderShadowBatch()'s identical first step.
+    EndAndSubmitMainCommandBuffer(cmd);
+
+    EnsureBackdropBlurCopyTarget(copyWidth, copyHeight);
+
+    // Copy [left,top]-[right,bottom] (already in this renderer's own top-down pixel space -- no
+    // GL-style window-coordinate flip needed, unlike NativeRendererGL3::RenderBackdropBlurBatch()'s
+    // own glY computation) from _targetImage into _backdropBlurCopyImage.
+    {
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool        = _commandPool;
+        cmdAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+        VkCommandBuffer copyCmd = VK_NULL_HANDLE;
+        vkAllocateCommandBuffers(_device, &cmdAllocInfo, &copyCmd);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(copyCmd, &beginInfo);
+
+        VkImageMemoryBarrier toTransferSrc{};
+        toTransferSrc.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toTransferSrc.oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        toTransferSrc.newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        toTransferSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toTransferSrc.image               = _targetImage;
+        toTransferSrc.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        toTransferSrc.srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        toTransferSrc.dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                            0, nullptr, 0, nullptr, 1, &toTransferSrc);
+
+        VkImageCopy copyRegion{};
+        copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copyRegion.srcOffset      = {static_cast<std::int32_t>(left), static_cast<std::int32_t>(top), 0};
+        copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copyRegion.extent         = {copyWidth, copyHeight, 1};
+        vkCmdCopyImage(copyCmd, _targetImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, _backdropBlurCopyImage,
+                       VK_IMAGE_LAYOUT_GENERAL, 1, &copyRegion);
+
+        VkImageMemoryBarrier backToColor{};
+        backToColor.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        backToColor.oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        backToColor.newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        backToColor.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        backToColor.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        backToColor.image               = _targetImage;
+        backToColor.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        backToColor.srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT;
+        backToColor.dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        vkCmdPipelineBarrier(copyCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                            0, nullptr, 0, nullptr, 1, &backToColor);
+
+        vkEndCommandBuffer(copyCmd);
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers    = &copyCmd;
+        vkQueueSubmit(_graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+        vkQueueWaitIdle(_graphicsQueue);
+        vkFreeCommandBuffers(_device, _commandPool, 1, &copyCmd);
+    }
+
+    const BlurResult blurred = _blurPass.Apply(BlurResult{_backdropBlurCopyImage, _backdropBlurCopyView}, copyWidth,
+                                               copyHeight, blur.BlurRadius);
+
+    VkDescriptorImageInfo blurredInfo{};
+    blurredInfo.sampler     = _linearSampler;
+    blurredInfo.imageView   = blurred.View;
+    blurredInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+    VkWriteDescriptorSet blurredWrite{};
+    blurredWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    blurredWrite.dstSet          = _compositeDescriptorSet;
+    blurredWrite.dstBinding      = 1;
+    blurredWrite.descriptorCount = 1;
+    blurredWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    blurredWrite.pImageInfo      = &blurredInfo;
+    vkUpdateDescriptorSets(_device, 1, &blurredWrite, 0, nullptr);
+
+    cmd = BeginMainCommandBuffer();
+
+    struct PerFrameUbo { float ViewportSizeX; float ViewportSizeY; };
+    const PerFrameUbo mainPerFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
+    std::memcpy(_perFrameUboMapped, &mainPerFrame, sizeof(mainPerFrame));
+
+    // Crop the composite to exactly the requested rect: uvMin/uvMax select the sub-rectangle of
+    // the padded, blurred copy that corresponds to blur.Position/blur.Size.
+    const Widgets::Vec2 uvMin{(blur.Position.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y - top) / static_cast<float>(copyHeight)};
+    const Widgets::Vec2 uvMax{(blur.Position.x + blur.Size.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y + blur.Size.y - top) / static_cast<float>(copyHeight)};
+    const std::vector<ImageVertex> vertices =
+        BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
+                            0, nullptr);
+    const VkDeviceSize vbOffset = 0;
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+}
+
 void NativeRendererVulkan::HandleLayerMarker(VkCommandBuffer cmd, const Batch& batch) {
     const auto& markers = std::get<std::vector<LayerVertex>>(batch.Vertices);
     if (markers.empty()) { return; }
@@ -1455,6 +1678,10 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
     // viewport" contract, just made explicit here since Vulkan has no implicit "currently bound".
     IMF_ASSERT(_targetView != VK_NULL_HANDLE);
 
+    // "Per frame" == "per Render() call" -- matches NativeRendererGL3's own identical reset point
+    // for its own rate limit.
+    _backdropBlurCountThisFrame = 0;
+
     _batchBuilder.Build(buffer);
     const std::vector<Batch>& batches = _batchBuilder.Batches();
 
@@ -1463,6 +1690,7 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t imageBatchCount  = 0;
     std::size_t shadowBatchCount = 0;
     std::size_t layerBatchCount  = 0;
+    std::size_t backdropBlurBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -1475,10 +1703,14 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         } else if (batch.Kind == BatchKind::Layer) {
             ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            ++backdropBlurBatchCount; // uses its own dedicated buffers too
         }
-        // Every other BatchKind (Text/BackdropBlur) is out of scope through Phase 35.5.
+        // BatchKind::Text is out of scope through Phase 35.6.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0 && backdropBlurBatchCount == 0) {
+        return;
+    }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -1555,6 +1787,9 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
             RenderShadowBatch(cmd, batch);
         } else if (batch.Kind == BatchKind::Layer) {
             HandleLayerMarker(cmd, batch);
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            // Replaces `cmd` with a brand new command buffer, same reason as RenderShadowBatch().
+            RenderBackdropBlurBatch(cmd, batch);
         }
     }
 
@@ -1709,6 +1944,18 @@ void NativeRendererVulkan::Shutdown() {
     }
     _backdropWidth  = 0;
     _backdropHeight = 0;
+
+    if (_backdropBlurCopyView != VK_NULL_HANDLE) {
+        vkDestroyImageView(_device, _backdropBlurCopyView, nullptr);
+        _backdropBlurCopyView = VK_NULL_HANDLE;
+    }
+    if (_backdropBlurCopyImage != VK_NULL_HANDLE) {
+        vmaDestroyImage(_allocator, _backdropBlurCopyImage, _backdropBlurCopyImageAllocation);
+        _backdropBlurCopyImage = VK_NULL_HANDLE;
+    }
+    _backdropBlurCopyWidth      = 0;
+    _backdropBlurCopyHeight     = 0;
+    _backdropBlurCountThisFrame = 0;
 
     _initialized = false;
 }

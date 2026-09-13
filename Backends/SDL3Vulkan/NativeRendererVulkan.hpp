@@ -147,6 +147,11 @@ public:
 
     void Render(const Rendering::CommandBuffer& buffer) override;
 
+    /// Caps how many `Rendering::DrawBackdropBlur` commands actually run their (real GPU cost)
+    /// copy+blur+composite per `Render()` call — matches
+    /// `NativeRendererGL3::SetMaxBackdropBlurPerFrame()`'s identical rate-limiting role and default.
+    void SetMaxBackdropBlurPerFrame(int maxPerFrame) noexcept { _maxBackdropBlurPerFrame = maxPerFrame; }
+
     /// Always fails — no text pipeline exists yet (Phase 35.1's scope is `BatchKind::Rect` only).
     [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) override;
 
@@ -240,6 +245,18 @@ private:
     void CompositeBlendLayer(VkCommandBuffer cmd, const LayerFrame& frame);
     void EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height);
     void EnsureBackdropTarget(std::uint32_t width, std::uint32_t height);
+
+    /**
+     * @brief    Renders one `BatchKind::BackdropBlur` batch (Phase 35.6): copy, blur, cropped composite.
+     * @param[in,out] cmd  See `RenderShadowBatch()` — replaced with a *new* command buffer on
+     *                     return, for the same reason: `_blurPass.Apply()` is its own separate,
+     *                     synchronously-awaited submission, and the backdrop copy itself needs the
+     *                     target's content from every batch recorded (not yet submitted) so far to
+     *                     actually be on the GPU already, which means flushing first, exactly like
+     *                     `RenderShadowBatch()`'s own first step.
+     */
+    void RenderBackdropBlurBatch(VkCommandBuffer& cmd, const Batch& batch);
+    void EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height);
 
     /// Begins (allocates, `vkBeginCommandBuffer`s, `vkCmdBeginRendering`s with `LOAD_OP_LOAD`
     /// against `_targetView`, sets viewport/scissor) a fresh one-shot command buffer targeting
@@ -419,6 +436,27 @@ private:
     VkImageView   _backdropView            = VK_NULL_HANDLE;
     std::uint32_t _backdropWidth           = 0;
     std::uint32_t _backdropHeight          = 0;
+
+    // ─── BatchKind::BackdropBlur (Phase 35.6) ───────────────────────────────────
+    /// A copy of the padded region `RenderBackdropBlurBatch()` is about to blur — kept separate
+    /// from `_backdropImage` (different role/lifecycle: sized to the padded *requested rect*, not
+    /// the whole target, and read by `_blurPass` via `imageLoad`/`imageStore` rather than sampled),
+    /// matching `NativeRendererGL3`'s own identical choice to keep `_backdropBlurCopyTex` distinct
+    /// from `_backdropTex` despite the conceptual overlap. `STORAGE_BIT` (this is `_blurPass`'s own
+    /// `Apply()` source) `| TRANSFER_DST_BIT` (the copy destination), kept in
+    /// `VK_IMAGE_LAYOUT_GENERAL` permanently, the same "valid for both roles" convention every
+    /// other renderer-owned image in this class already uses.
+    VkImage       _backdropBlurCopyImage           = VK_NULL_HANDLE;
+    VmaAllocation _backdropBlurCopyImageAllocation = VK_NULL_HANDLE;
+    VkImageView   _backdropBlurCopyView            = VK_NULL_HANDLE;
+    std::uint32_t _backdropBlurCopyWidth           = 0;
+    std::uint32_t _backdropBlurCopyHeight          = 0;
+
+    /// See `SetMaxBackdropBlurPerFrame()`. `_backdropBlurCountThisFrame` resets to 0 at the start
+    /// of every `Render()` call — "per frame" means "per `Render()` call", matching
+    /// `NativeRendererGL3`'s own identical rate-limit and reset point.
+    int _maxBackdropBlurPerFrame    = 4;
+    int _backdropBlurCountThisFrame = 0;
 
     BatchBuilder _batchBuilder;
 };
