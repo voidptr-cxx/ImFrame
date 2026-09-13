@@ -17,6 +17,19 @@ target_include_directories(ImFrame_SDL3DX12
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# ── Phase 35.7: NativeRendererDX12 (opt-in, same IMF_BUILD_NATIVE_RENDERER gate and
+# Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererVulkan --
+# see .claude/DECISIONS.md, Phase 32.4 and Phase 35.1) ──
+if(IMF_BUILD_NATIVE_RENDERER)
+    target_sources(ImFrame_SDL3DX12 PRIVATE NativeRendererDX12.cpp)
+    # NativeRendererDX12.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
+    # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
+    # include interface. It also consumes Shaders/SDFRect.{Vertex,Pixel}.hpp's embedded DXIL
+    # (Phase 35.7's own cmake/CompileShaderDXC.cmake pipeline).
+    target_include_directories(ImFrame_SDL3DX12 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(ImFrame_SDL3DX12 PRIVATE ImFrame_ShadersDXIL)
+endif()
+
 # d3d12.lib/dxgi.lib/dxguid.lib/shcore.lib ship with the Windows SDK, not
 # vcpkg — find_library() does not reliably locate them at configure time
 # under the MSVC generator, so they're linked by literal name instead and

@@ -171,6 +171,25 @@ public:
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
     /**
+     * @brief    Real, already-typed D3D12 handles for a backend-internal `NativeRendererDX12`
+     *           (or a test) to construct itself against this backend's live device.
+     *
+     * @internal
+     * Unlike `GetNativeGraphicsContext()` (the *public* accessor for Phase 24 Viewport's
+     * application-facing use), this returns real types directly — `Backends/SDL3DX12/` is itself
+     * an internal-only header directory (not `include/ImFrame/`), so there's no API-leak concern.
+     * Mirrors `SDL3VulkanBackend::GetRendererHandles()`'s identical role and rationale (Phase 35.1)
+     * — no command-allocator-equivalent handle is returned, unlike Vulkan's own `CommandPool`,
+     * since `NativeRendererDX12` creates its own `ID3D12CommandAllocator` from just the device,
+     * matching `ViewportFramebufferDX12`'s own identical convention.
+     */
+    struct DX12RendererHandles {
+        ID3D12Device4*      Device      = nullptr;
+        ID3D12CommandQueue* DirectQueue = nullptr;
+    };
+    [[nodiscard]] DX12RendererHandles GetRendererHandles() const noexcept;
+
+    /**
      * @brief    Allocate a D3D12 committed render target for Viewport use.
      */
     std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
