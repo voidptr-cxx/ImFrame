@@ -72,13 +72,19 @@ graphify-out/
 # ─── Session / diagnostic logs ────────────────────────────────────────────────
 *.log
 
-# ─── Claude Code local session state (machine-specific, never tracked) ────────
-# Contains local absolute paths, session scratch notes, and other machine-
-# specific content that has no place in a public repo. Removed from all git
-# history on 2026-09-13 after being found tracked on the public GitHub remote
-# (see CLAUDE.md's "Public Repo / Git Hygiene Rules" section) — do not re-add
-# any path under here to version control.
-.claude/
+# ─── Claude Code local settings (machine-specific, never tracked) ─────────────
+# settings.local.json is the per-developer override file and routinely
+# contains machine-specific absolute paths (it did — that's how .claude/ ended
+# up leaking a personal path to the public remote on 2026-09-13, see
+# CLAUDE.md's "Public Repo / Git Hygiene Rules" section and DECISIONS.md's
+# "Public Repo Hardening" entry). settings.json is project-level hook config,
+# also kept local by convention. Everything else under .claude/ (CLAUDE.md,
+# DECISIONS.md, PHASE_STATUS.md, QUICK_REF.md, SCRATCH.md, skills/) IS
+# tracked — it holds no personal paths and documents real project history.
+# Before ever adding a new file under .claude/ to git, re-scan it for
+# absolute local paths first.
+.claude/settings.json
+.claude/settings.local.json
 
 # ─── Secrets ─────────────────────────────────────────────────────────────────
 .env
