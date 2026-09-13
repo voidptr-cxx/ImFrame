@@ -56,6 +56,19 @@ target_include_directories(ImFrame_DawnWebGPU
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+# ── Phase 35.8: NativeRendererWebGPU (opt-in, same IMF_BUILD_NATIVE_RENDERER gate and
+# Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererVulkan/
+# NativeRendererDX12 -- see .claude/DECISIONS.md, Phase 32.4/35.1/35.7) ──
+if(IMF_BUILD_NATIVE_RENDERER)
+    target_sources(ImFrame_DawnWebGPU PRIVATE NativeRendererWebGPU.cpp)
+    # NativeRendererWebGPU.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
+    # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
+    # include interface. Unlike NativeRendererVulkan/NativeRendererDX12, no offline shader-embed
+    # library is needed here — WGSL is compiled at runtime by Dawn (see NativeRendererWebGPU.cpp's
+    # own inline kSDFRectWgsl comment).
+    target_include_directories(ImFrame_DawnWebGPU PRIVATE ${CMAKE_SOURCE_DIR}/src)
+endif()
+
 target_link_libraries(ImFrame_DawnWebGPU
     # SDL3 and Dawn are PUBLIC because DawnWebGPUBackend.hpp and WebGPUSurface.hpp
     # store WGPUDevice/WGPUQueue/WGPUSurface/SDL_Window* by value — consumers

@@ -99,6 +99,28 @@ public:
     std::span<const InputEvent> DrainInputEvents() override;
     NativeGraphicsContext GetNativeGraphicsContext() const override;
 
+    /**
+     * @brief    Real, already-typed WebGPU handles for a backend-internal `NativeRendererWebGPU`
+     *           (or a test) to construct itself against this backend's live device.
+     *
+     * @internal
+     * Unlike `GetNativeGraphicsContext()` (the *public* accessor for Phase 24 Viewport's
+     * application-facing use), this returns real types directly — `Backends/DawnWebGPU/` is
+     * itself an internal-only header directory, so there's no API-leak concern. Mirrors
+     * `SDL3VulkanBackend::GetRendererHandles()`/`SDL3DX12Backend::GetRendererHandles()`'s
+     * identical role and rationale (Phase 35.1/35.7).
+     */
+    struct WebGPURendererHandles {
+        WGPUDevice   Device   = nullptr;
+        WGPUQueue    Queue    = nullptr;
+        /// Needed only for `wgpuInstanceWaitAny()`-based synchronous readback (see
+        /// `NativeRendererWebGPU_test.cpp`'s own `ScratchTarget::ReadPixels()`, which mirrors this
+        /// class's own `ReadPixels()` above) — not needed to construct or drive a
+        /// `NativeRendererWebGPU` itself.
+        WGPUInstance Instance = nullptr;
+    };
+    [[nodiscard]] WebGPURendererHandles GetRendererHandles() const noexcept;
+
     /// Allocate a WGPUTexture framebuffer for Viewport use.
     std::unique_ptr<IViewportFramebuffer> CreateViewportFramebuffer(
         std::uint32_t width, std::uint32_t height) override;

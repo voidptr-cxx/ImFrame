@@ -707,6 +707,17 @@ NativeGraphicsContext DawnWebGPUBackend::GetNativeGraphicsContext() const
     };
 }
 
+// ─── GetRendererHandles ────────────────────────────────────────────────────────
+
+DawnWebGPUBackend::WebGPURendererHandles DawnWebGPUBackend::GetRendererHandles() const noexcept
+{
+    return WebGPURendererHandles{
+        .Device   = _device,
+        .Queue    = _queue,
+        .Instance = _instance,
+    };
+}
+
 // ─── CreateViewportFramebuffer ────────────────────────────────────────────────
 
 std::unique_ptr<IViewportFramebuffer> DawnWebGPUBackend::CreateViewportFramebuffer(
