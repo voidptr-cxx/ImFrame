@@ -12,11 +12,13 @@ add_library(ImFrame_SDL3Vulkan STATIC
 # Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererGL3 —
 # see .claude/DECISIONS.md, Phase 32.4 and Phase 35.1) ──
 if(IMF_BUILD_NATIVE_RENDERER)
-    target_sources(ImFrame_SDL3Vulkan PRIVATE NativeRendererVulkan.cpp)
+    target_sources(ImFrame_SDL3Vulkan PRIVATE NativeRendererVulkan.cpp BlurPassVulkan.cpp)
     # NativeRendererVulkan.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
     # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
     # include interface. It also consumes Shaders/SDFRect.{vert,frag}.hpp's embedded SPIR-V
     # (Phase 32.2's cmake/CompileShader.cmake pipeline) — the first real consumer of that output.
+    # BlurPassVulkan.cpp (Phase 35.3) consumes Shaders/GaussianBlur.comp.hpp's compiled SPIR-V
+    # the same way.
     target_include_directories(ImFrame_SDL3Vulkan PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(ImFrame_SDL3Vulkan PRIVATE ImFrame_Shaders)
 endif()

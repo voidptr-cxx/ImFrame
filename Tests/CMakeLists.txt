@@ -391,6 +391,24 @@ if(IMF_BACKEND_SDL3_VULKAN AND IMF_BUILD_NATIVE_RENDERER)
     catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererVulkan PROPERTIES LABELS vulkan TIMEOUT 60)
 endif()
 
+# ─── Phase 35.3: BlurPassVulkan real-pixel tests ─────────────────────────────────────────────
+if(IMF_BACKEND_SDL3_VULKAN AND IMF_BUILD_NATIVE_RENDERER)
+    add_executable(ImFrame_Tests_Rendering_BlurPassVulkan
+        Rendering/BlurPassVulkan_test.cpp
+    )
+    target_include_directories(ImFrame_Tests_Rendering_BlurPassVulkan PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_link_libraries(ImFrame_Tests_Rendering_BlurPassVulkan
+        PRIVATE ImFrame ImFrame_SDL3Vulkan Catch2::Catch2WithMain
+    )
+    target_compile_features(ImFrame_Tests_Rendering_BlurPassVulkan PRIVATE cxx_std_23)
+    # TIMEOUT guards against hangs if no Vulkan-capable GPU/driver is present in CI, matching
+    # ImFrame_Tests_Rendering_NativeRendererVulkan above.
+    catch_discover_tests(ImFrame_Tests_Rendering_BlurPassVulkan PROPERTIES LABELS vulkan TIMEOUT 60)
+endif()
+
 # ─── Phase 22: SDL3 DX12 backend tests ───────────────────────────────────────
 # DX12Input_test: pure InputTranslation unit tests — no GPU required.
 # DX12Backend_test / DX12Conformance_test: full backend integration — requires

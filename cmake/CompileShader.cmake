@@ -24,10 +24,12 @@ set(IMF_SHADER_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/Shaders")
 
 # compile_shader(<source.glsl> <stage> <symbol_prefix> OUT_HEADER <out_var>)
 #
-# <source.glsl>     Path to a GLSL file combining STAGE_VERTEX/STAGE_FRAGMENT sections
-#                    (see Shaders/Rect.glsl for the pattern).
-# <stage>            "vert" or "frag" — passed to glslangValidator's -S flag and used to
-#                    pick the matching -D STAGE_VERTEX / -D STAGE_FRAGMENT define.
+# <source.glsl>     Path to a GLSL file combining STAGE_VERTEX/STAGE_FRAGMENT sections, or a
+#                    single STAGE_COMPUTE section for a compute-only shader (see
+#                    Shaders/Rect.glsl and Shaders/GaussianBlur.glsl respectively).
+# <stage>            "vert", "frag", or "comp" — passed to glslangValidator's -S flag and used
+#                    to pick the matching -D STAGE_VERTEX / -D STAGE_FRAGMENT / -D STAGE_COMPUTE
+#                    define.
 # <symbol_prefix>    Base name for the generated C++ symbols, e.g. "Rect" -> kRectVertexSource.
 # OUT_HEADER <var>   Receives the path to the generated header; add it to a target's sources
 #                    (as a header-only dependency) so CMake tracks rebuilds correctly.
@@ -40,8 +42,11 @@ function(compile_shader SOURCE_FILE STAGE SYMBOL_PREFIX)
     elseif(STAGE STREQUAL "frag")
         set(STAGE_DEFINE "STAGE_FRAGMENT")
         set(STAGE_LABEL "Fragment")
+    elseif(STAGE STREQUAL "comp")
+        set(STAGE_DEFINE "STAGE_COMPUTE")
+        set(STAGE_LABEL "Compute")
     else()
-        message(FATAL_ERROR "compile_shader: unknown stage '${STAGE}' (expected vert or frag)")
+        message(FATAL_ERROR "compile_shader: unknown stage '${STAGE}' (expected vert, frag, or comp)")
     endif()
 
     get_filename_component(SHADER_NAME "${SOURCE_FILE}" NAME_WE)
