@@ -106,6 +106,7 @@ public:
     ScratchImage(const ScratchImage&) = delete;
     ScratchImage& operator=(const ScratchImage&) = delete;
 
+    [[nodiscard]] VkImage Image() const noexcept { return _image; }
     [[nodiscard]] VkImageView View() const noexcept { return _view; }
 
     [[nodiscard]] std::vector<std::byte> ReadPixels() const {
@@ -411,7 +412,7 @@ TEST_CASE("NativeRendererVulkan draws a filled DrawRect at the recorded position
 
         NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
                                       handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
-        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         auto pixels = image.ReadPixels();
@@ -451,7 +452,7 @@ TEST_CASE("NativeRendererVulkan renders rounded corners: the extreme corner pixe
 
         NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
                                       handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
-        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         auto pixels = image.ReadPixels();
@@ -489,7 +490,7 @@ TEST_CASE("NativeRendererVulkan draws a DrawImage at the recorded position, samp
 
         NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
                                       handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
-        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         auto pixels = image.ReadPixels();
@@ -533,7 +534,7 @@ TEST_CASE("NativeRendererVulkan renders a Rect and two differently-textured Imag
 
         NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
                                       handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
-        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         auto pixels = image.ReadPixels();
@@ -586,7 +587,7 @@ TEST_CASE("NativeRendererVulkan renders a DrawShadow behind and offset from the 
 
         NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
                                       handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
-        renderer.SetTarget(image.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         auto pixels = image.ReadPixels();
@@ -604,6 +605,90 @@ TEST_CASE("NativeRendererVulkan renders a DrawShadow behind and offset from the 
         REQUIRE(rectOnTop.r > 200);
         REQUIRE(rectOnTop.a > 200);
         REQUIRE(untouched.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan composites a PushOpacityLayer at the recorded opacity (Phase 35.5)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+
+        CommandBuffer buffer;
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel inside  = Sample(pixels, 40, 40, WIDTH);
+        const Pixel outside = Sample(pixels, 5, 5, WIDTH);
+
+        // Correct premultiplied-alpha compositing: an opaque red rect at Opacity=0.5 ends up with
+        // both its alpha AND its stored (premultiplied) red channel scaled to roughly half -- the
+        // same scenario NativeRendererGL3_test.cpp's own Phase 34.5 test covers.
+        REQUIRE(inside.a > 100);
+        REQUIRE(inside.a < 150);
+        REQUIRE(inside.r > 100);
+        REQUIRE(inside.r < 150);
+        REQUIRE(inside.g < 20);
+        REQUIRE(outside.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan composites a PushBlendLayer using the Multiply formula (Phase 35.5)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop filling the whole viewport, then a Multiply layer with an
+        // opaque mid-gray rect over part of it -- the same scenario
+        // NativeRendererGL3_test.cpp's own Phase 34.5 test covers.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel overlap      = Sample(pixels, 40, 40, WIDTH); // inside the blended rect
+        const Pixel backdropOnly = Sample(pixels, 5, 5, WIDTH);  // outside it -- backdrop untouched
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255. Backdrop-only area stays 0.8 -> ~204/255.
+        REQUIRE(overlap.r > 90);
+        REQUIRE(overlap.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
 
         renderer.Shutdown();
     }

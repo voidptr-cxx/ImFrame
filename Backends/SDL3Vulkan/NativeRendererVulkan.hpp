@@ -122,18 +122,28 @@ public:
 
     /**
      * @brief    Sets the offscreen target `Render()` draws into.
-     * @param[in] targetView  A `VkImageView` of format `colorFormat` (the constructor's own
-     *                        parameter), usage including `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`,
-     *                        already in `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` layout at the
-     *                        time `Render()` is called (this class does not transition it — see
-     *                        this file's own comment on why there is no implicit "currently bound"
-     *                        target the way `NativeRendererGL3` has via `GL_VIEWPORT`).
+     * @param[in] targetImage  The `VkImage` `targetView` is a view of — Phase 35.5's
+     *                         `CompositeBlendLayer()` needs the real image (to `vkCmdCopyImage`
+     *                         its current content into `_backdropImage`), which no Vulkan call can
+     *                         recover from a `VkImageView` alone (the same reason `BlurPassVulkan`'s
+     *                         `Apply()` returns a `BlurResult{Image; View}` pair, not a bare view —
+     *                         see that class's own `.hpp` comment).
+     * @param[in] targetView  A `VkImageView` of `targetImage`, format `colorFormat` (the
+     *                        constructor's own parameter), usage including
+     *                        `VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT`, already in
+     *                        `VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL` layout at the time
+     *                        `Render()` is called (this class does not transition it — see this
+     *                        file's own comment on why there is no implicit "currently bound"
+     *                        target the way `NativeRendererGL3` has via `GL_VIEWPORT`) — except
+     *                        for the brief, internal `COLOR_ATTACHMENT_OPTIMAL <-> TRANSFER_SRC_OPTIMAL`
+     *                        round-trip `CompositeBlendLayer()` performs around its own backdrop
+     *                        copy, always restoring it before `Render()` returns.
      * @param[in] width       Target width, in pixels.
      * @param[in] height      Target height, in pixels.
      *
      * Must be called at least once before the first `Render()` call.
      */
-    void SetTarget(VkImageView targetView, std::uint32_t width, std::uint32_t height) noexcept;
+    void SetTarget(VkImage targetImage, VkImageView targetView, std::uint32_t width, std::uint32_t height) noexcept;
 
     void Render(const Rendering::CommandBuffer& buffer) override;
 
@@ -145,6 +155,34 @@ public:
     void Shutdown() override;
 
 private:
+    /// One entry on the layer stack (Phase 35.5) — mirrors `NativeRendererGL3::LayerFrame` field
+    /// for field, `ParentFbo`/`ParentViewport` replaced by `ParentView` (this renderer has no
+    /// separate "current viewport" state to restore — every layer, and the real target, is always
+    /// `_targetWidth` x `_targetHeight`).
+    struct LayerFrame {
+        LayerOp               Op      = LayerOp::PushOpacity;
+        float                  Opacity = 1.0f;
+        Rendering::BlendMode   Mode    = Rendering::BlendMode::Normal;
+        VkImage                ParentImage  = VK_NULL_HANDLE; ///< Needed only by `CompositeBlendLayer()`'s backdrop copy.
+        VkImageView            ParentView   = VK_NULL_HANDLE; ///< What to resume rendering into on `PopLayer()`.
+        VkImageLayout          ParentLayout = VK_IMAGE_LAYOUT_GENERAL; ///< `_targetImage`'s own layout at depth 0
+                                                                       ///< (`COLOR_ATTACHMENT_OPTIMAL`); `GENERAL`
+                                                                       ///< for any nested layer parent.
+        std::size_t            TargetIndex = 0;              ///< Index into `_layerTargets`.
+    };
+
+    /// One depth level's offscreen layer target — mirrors `NativeRendererGL3::LayerTarget`.
+    /// `COLOR_ATTACHMENT_BIT | SAMPLED_BIT` usage, kept in `VK_IMAGE_LAYOUT_GENERAL` permanently,
+    /// the same "valid for both roles, so never transitioned" convention `_shadowSilhouetteImage`
+    /// already uses (Phase 35.4).
+    struct LayerTarget {
+        VkImage       Image      = VK_NULL_HANDLE;
+        VmaAllocation Allocation = VK_NULL_HANDLE;
+        VkImageView   View       = VK_NULL_HANDLE;
+        std::uint32_t Width      = 0;
+        std::uint32_t Height     = 0;
+    };
+
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
     void EnsureImageDescriptorCapacity(std::size_t neededSets);
@@ -182,6 +220,27 @@ private:
 
     void EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height);
 
+    /**
+     * @brief    Dispatches one `BatchKind::Layer` marker (Phase 35.5) to `PushLayer()`/`PopLayer()`.
+     * @param[in,out] cmd  See `RenderShadowBatch()` — unlike that method, `cmd` is never replaced
+     *                     here (no separate submission is needed for layer push/pop, only ending
+     *                     and re-beginning rendering instances within the same command buffer),
+     *                     but is still taken by reference for signature symmetry with the loop
+     *                     that calls both.
+     */
+    void HandleLayerMarker(VkCommandBuffer cmd, const Batch& batch);
+    void PushLayer(VkCommandBuffer cmd, LayerOp op, float opacity, Rendering::BlendMode mode);
+    void PopLayer(VkCommandBuffer cmd);
+    void CompositeOpacityLayer(VkCommandBuffer cmd, const LayerFrame& frame);
+    /// Copies `frame.ParentImage`'s current content into `_backdropImage` — must run with no
+    /// rendering instance active (`vkCmdCopyImage` is a transfer command). `PopLayer()` calls this
+    /// *before* beginning the parent's own rendering instance; `CompositeBlendLayer()` below (the
+    /// actual draw) runs *after*, once that instance is active.
+    void CopyBackdropForBlend(VkCommandBuffer cmd, const LayerFrame& frame);
+    void CompositeBlendLayer(VkCommandBuffer cmd, const LayerFrame& frame);
+    void EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height);
+    void EnsureBackdropTarget(std::uint32_t width, std::uint32_t height);
+
     /// Begins (allocates, `vkBeginCommandBuffer`s, `vkCmdBeginRendering`s with `LOAD_OP_LOAD`
     /// against `_targetView`, sets viewport/scissor) a fresh one-shot command buffer targeting
     /// the real render target — the shape every `Render()` call's *initial* command buffer
@@ -204,6 +263,7 @@ private:
     VkFormat              _colorFormat         = VK_FORMAT_UNDEFINED;
 
     // ─── Render target (set via SetTarget()) ───────────────────────────────────
+    VkImage       _targetImage  = VK_NULL_HANDLE;
     VkImageView   _targetView   = VK_NULL_HANDLE;
     std::uint32_t _targetWidth  = 0;
     std::uint32_t _targetHeight = 0;
@@ -243,6 +303,14 @@ private:
     VkDescriptorSetLayout _imageDescriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout      _imagePipelineLayout      = VK_NULL_HANDLE;
     VkPipeline            _imagePipeline            = VK_NULL_HANDLE;
+
+    /// Same shader modules/vertex input/pipeline layout as `_imagePipeline` — only the blend state
+    /// differs (`ONE`/`ONE_MINUS_SRC_ALPHA`, correct for compositing an already-premultiplied
+    /// renderer-owned source, vs. `_imagePipeline`'s own `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` for a
+    /// real, non-premultiplied `DrawImage` source). Used by `CompositeOpacityLayer()` (Phase 35.5)
+    /// — see that method's own comment, mirroring `NativeRendererGL3::CompositeOpacityLayer()`'s
+    /// identical blend-factor override.
+    VkPipeline _premultipliedImagePipeline = VK_NULL_HANDLE;
 
     /// Shared by every `Image` batch — the Vulkan equivalent of the fixed `GL_LINEAR`/
     /// `GL_CLAMP_TO_EDGE` texture parameters `NativeRendererGL3`'s own textures are created with;
@@ -309,14 +377,48 @@ private:
 
     /// A second, dedicated `_imagePipeline`-compatible descriptor set (reusing
     /// `_imageDescriptorSetLayout`) for compositing a *renderer-owned* `VK_IMAGE_LAYOUT_GENERAL`
-    /// texture (`_blurPass`'s own blurred output) — unlike every real `DrawImage` texture (always
+    /// texture (`_blurPass`'s own blurred output, or — Phase 35.5 — a popped opacity layer's own
+    /// target) — unlike every real `DrawImage` texture (always
     /// `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`, see `Render()`'s per-batch Image descriptor
-    /// writes), `_blurPass`'s output view never leaves `GENERAL`. Rewritten after every
-    /// `_blurPass.Apply()` call — cheap, and always correct regardless of whether that call's
-    /// return handle actually changed (it does, whenever `_blurPass`'s own ping-pong targets are
-    /// reallocated for a new size).
+    /// writes), these renderer-owned sources never leave `GENERAL`. Rewritten before every such
+    /// composite draw — cheap, and always correct regardless of whether the bound view actually
+    /// changed since the last write. Never used by two composites at once (`RenderShadowBatch()`
+    /// and `CompositeOpacityLayer()` are never active simultaneously), so one shared set suffices.
     VkDescriptorPool _compositeDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet  _compositeDescriptorSet  = VK_NULL_HANDLE;
+
+    // ─── BatchKind::Layer (Phase 35.5) ──────────────────────────────────────────
+    std::vector<LayerFrame>  _layerStack;
+    std::vector<LayerTarget> _layerTargets; ///< Indexed by stack depth, grown on demand, never shrunk.
+
+    /// `Blend.glsl`'s pipeline — real per-pixel Porter-Duff blend-mode compositing for
+    /// `PushBlendLayer`/`PopLayer`, mirroring `NativeRendererGL3`'s own blend shader/program.
+    /// Needs no vertex input state at all (the fullscreen quad is generated from `gl_VertexIndex`
+    /// in `Blend.glsl` itself) and no `PerFrame` UBO (its vertex shader outputs fixed NDC
+    /// coordinates directly, not a pixel-space-to-NDC conversion).
+    VkShaderModule        _blendVertexModule        = VK_NULL_HANDLE;
+    VkShaderModule        _blendFragmentModule      = VK_NULL_HANDLE;
+    VkDescriptorSetLayout _blendDescriptorSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      _blendPipelineLayout      = VK_NULL_HANDLE;
+    VkPipeline            _blendPipeline            = VK_NULL_HANDLE;
+
+    /// One descriptor set (two combined-image-sampler bindings: the popped layer's own texture,
+    /// and `_backdropImage`) — rewritten before every `CompositeBlendLayer()` call, the same
+    /// "cheap, always correct" convention `_compositeDescriptorSet` uses.
+    VkDescriptorPool _blendDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet  _blendDescriptorSet  = VK_NULL_HANDLE;
+
+    /// A copy of the parent target's current content at `PopLayer()` time (a fragment shader has
+    /// no other way to read a colour attachment's own existing pixel value) — `COLOR_ATTACHMENT_BIT`
+    /// would be unused here (never rendered into directly, only `vkCmdCopyImage`'d into), so usage
+    /// is `TRANSFER_DST_BIT | SAMPLED_BIT` only, kept in `VK_IMAGE_LAYOUT_GENERAL` permanently
+    /// (valid for both a copy destination and sampling, the same convention as this class's other
+    /// renderer-owned images).
+    VkImage       _backdropImage           = VK_NULL_HANDLE;
+    VmaAllocation _backdropImageAllocation = VK_NULL_HANDLE;
+    VkImageView   _backdropView            = VK_NULL_HANDLE;
+    std::uint32_t _backdropWidth           = 0;
+    std::uint32_t _backdropHeight          = 0;
 
     BatchBuilder _batchBuilder;
 };
