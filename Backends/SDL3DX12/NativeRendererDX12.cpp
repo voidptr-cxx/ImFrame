@@ -20,7 +20,9 @@
 #include "Shaders/SDFRect.Pixel.hpp"
 #include "Shaders/SDFRect.Vertex.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -66,11 +68,78 @@ ComPtr<ID3D12Resource> CreateUploadBuffer(ID3D12Device4* device, std::size_t siz
     return resource;
 }
 
+/// Builds one axis-aligned quad's `RectVertex`es — `RenderShadowBatch()`'s own silhouette pass
+/// reuses the existing Rect pipeline via a direct draw call rather than a third hand-written
+/// pipeline, mirroring `NativeRendererVulkan::BuildRectQuadVertices()`'s identical role/formula.
+std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Rendering::CornerRadii radii,
+                                              Widgets::Vec4 fillColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+
+    std::vector<RectVertex> vertices;
+    vertices.reserve(4);
+    for (const Widgets::Vec2& corner : corners) {
+        vertices.push_back(RectVertex{
+            .Position = corner,
+            .Local = {corner.x - center.x, corner.y - center.y},
+            .HalfSize = halfSize,
+            .Radii = radii,
+            .FillColor = fillColor,
+            .StrokeColor = {},
+            .StrokeWidth = 0.0f,
+        });
+    }
+    return vertices;
+}
+
+/// Builds one axis-aligned quad's `ImageVertex`es — `RenderShadowBatch()`'s own composite pass
+/// reuses the existing Image pipeline to draw a renderer-produced offscreen texture (a blurred
+/// shadow), tinted, as a plain rectangle. Mirrors `NativeRendererVulkan::BuildImageQuadVertices()`'s
+/// role, including its **unflipped** UV table -- not because this backend's own vertex shader
+/// matches Vulkan's (it doesn't; `Image.hlsl`'s `VSMain` negates Y like GL, Phase 35.9), but
+/// because a D3D12 texture's row 0 is its top row (the same top-down memory convention Vulkan's
+/// own images use), independent of whichever way a vertex shader happens to negate Y for
+/// clip-space purposes -- the two questions (screen-position handedness vs. texture-row order)
+/// are unrelated, and this backend's own DX12 texture-upload convention (already exercised
+/// correctly by every `BatchKind::Image` test, Phase 35.9) is top-down like Vulkan's, not
+/// bottom-up like GL's. A plain, unflipped mapping is therefore the correct choice here too.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+    constexpr Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+
+    std::vector<ImageVertex> vertices;
+    vertices.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        vertices.push_back(ImageVertex{
+            .Position = corners[i],
+            .Local = {corners[i].x - center.x, corners[i].y - center.y},
+            .HalfSize = halfSize,
+            .Radii = {},
+            .Uv = uvs[i],
+            .TintColor = tintColor,
+        });
+    }
+    return vertices;
+}
+
 } // namespace
 
 NativeRendererDX12::NativeRendererDX12(ID3D12Device4* device, ID3D12CommandQueue* directQueue,
                                        DXGI_FORMAT colorFormat)
-    : _device(device), _directQueue(directQueue), _colorFormat(colorFormat) {}
+    : _device(device), _directQueue(directQueue), _colorFormat(colorFormat), _blurPass(device, directQueue) {}
 
 NativeRendererDX12::~NativeRendererDX12() { Shutdown(); }
 
@@ -252,6 +321,14 @@ void NativeRendererDX12::EnsureInitialized() {
     _perFrameCb = CreateUploadBuffer(_device, AlignUp(sizeof(float) * 2, kConstantBufferAlignment),
                                      &_perFrameCbMapped);
 
+    // ─── Phase 35.12: BatchKind::Shadow's own small, dedicated quad buffers ───────────────────
+    // Sized for the larger of RectVertex/ImageVertex (4 vertices) -- reused sequentially (never
+    // concurrently) by the silhouette draw (RectVertex) and the composite draw (ImageVertex),
+    // mirroring NativeRendererVulkan's own _shadowQuadVertexBuffer/_shadowQuadIndexBuffer.
+    const std::size_t shadowQuadVertexBytes = 4 * std::max(sizeof(RectVertex), sizeof(ImageVertex));
+    _shadowQuadVertexBuffer = CreateUploadBuffer(_device, shadowQuadVertexBytes, &_shadowQuadVertexMapped);
+    _shadowQuadIndexBuffer  = CreateUploadBuffer(_device, 6 * sizeof(std::uint32_t), &_shadowQuadIndexMapped);
+
     _initialized = true;
 }
 
@@ -276,6 +353,274 @@ void NativeRendererDX12::EnsureImageDescriptorCapacity(std::size_t neededSlots) 
     _device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&_srvHeap));
 
     _srvHeapCapacitySlots = neededSlots;
+}
+
+void NativeRendererDX12::EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height) {
+    if (_shadowSilhouetteWidth == width && _shadowSilhouetteHeight == height && _shadowSilhouetteResource) {
+        return;
+    }
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = width;
+    desc.Height           = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    // Both roles this resource ever plays: the silhouette's own render target, and BlurPassDX12's
+    // UAV source -- see this class's own file comment on why, unlike Vulkan's single GENERAL
+    // layout, D3D12 still needs a real transition between the two (just not two separate resources).
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    // Created directly in UNORDERED_ACCESS -- its "at rest" state between RenderShadowBatch() calls
+    // (mirrors BlurPassDX12's own identical choice for its ping-pong targets, Phase 35.11).
+    _device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                                     nullptr, IID_PPV_ARGS(&_shadowSilhouetteResource));
+
+    if (!_shadowRtvHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
+        rtvHeapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.NumDescriptors = 1;
+        _device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&_shadowRtvHeap));
+        _shadowRtv = _shadowRtvHeap->GetCPUDescriptorHandleForHeapStart();
+    }
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    _device->CreateRenderTargetView(_shadowSilhouetteResource.Get(), &rtvDesc, _shadowRtv);
+
+    _shadowSilhouetteWidth  = width;
+    _shadowSilhouetteHeight = height;
+}
+
+void NativeRendererDX12::BeginMainCommandList() {
+    _commandAllocator->Reset();
+    _commandList->Reset(_commandAllocator.Get(), nullptr);
+
+    if (_srvHeap) {
+        ID3D12DescriptorHeap* heaps[] = {_srvHeap.Get()};
+        _commandList->SetDescriptorHeaps(1, heaps);
+    }
+
+    _commandList->OMSetRenderTargets(1, &_targetRtv, FALSE, nullptr);
+
+    const D3D12_VIEWPORT viewport{0.0f,
+                                 0.0f,
+                                 static_cast<float>(_targetWidth),
+                                 static_cast<float>(_targetHeight),
+                                 0.0f,
+                                 1.0f};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(_targetWidth), static_cast<LONG>(_targetHeight)};
+    _commandList->RSSetViewports(1, &viewport);
+    _commandList->RSSetScissorRects(1, &scissor);
+    _commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+}
+
+void NativeRendererDX12::EndAndSubmitMainCommandList() {
+    _commandList->Close();
+    ID3D12CommandList* lists[] = {_commandList.Get()};
+    _directQueue->ExecuteCommandLists(1, lists);
+
+    // Block until this call's GPU work completes before returning -- see this class's own file
+    // comment on this deliberate, documented stopgap.
+    ++_fenceValue;
+    _directQueue->Signal(_fence.Get(), _fenceValue);
+    if (_fence->GetCompletedValue() < _fenceValue) {
+        _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+        WaitForSingleObject(_fenceEvent, INFINITE);
+    }
+}
+
+void NativeRendererDX12::RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle,
+                                           D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle) {
+    const auto& shadows = std::get<std::vector<ShadowVertex>>(batch.Vertices);
+    if (shadows.empty()) { return; }
+    const ShadowVertex& shadow = shadows.front();
+
+    // Spread grows the silhouette outward on all sides before blurring -- matches
+    // Rendering::DrawShadow::Spread's documented meaning, mirroring NativeRendererVulkan's own
+    // identical formula.
+    const float spreadWidth  = shadow.Size.x + 2.0f * shadow.Spread;
+    const float spreadHeight = shadow.Size.y + 2.0f * shadow.Spread;
+    if (spreadWidth <= 0.0f || spreadHeight <= 0.0f) { return; }
+
+    // Pad the offscreen silhouette by the blur radius on every side so _blurPass's kernel has real
+    // surrounding content to read at the silhouette's own edges, instead of clamped-edge repeats.
+    const float pad = std::max(shadow.BlurRadius, 0.0f);
+    const auto texWidth  = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadWidth + 2.0f * pad))));
+    const auto texHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadHeight + 2.0f * pad))));
+
+    // Flush everything recorded so far -- _blurPass.Apply() below is its own fully self-contained,
+    // synchronously-awaited submission; it cannot be recorded into the not-yet-submitted main
+    // command list (see this class's own file comment).
+    EndAndSubmitMainCommandList();
+
+    EnsureShadowSilhouetteTarget(texWidth, texHeight);
+
+    // ─── Silhouette: an opaque-white rounded rect, in the silhouette's own small coordinate space ───
+    {
+        struct PerFrameCb { float ViewportSizeX; float ViewportSizeY; };
+        const PerFrameCb perFrame{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+        std::memcpy(_perFrameCbMapped, &perFrame, sizeof(perFrame));
+
+        const std::vector<RectVertex> silhouetteVertices =
+            BuildRectQuadVertices({static_cast<float>(pad), static_cast<float>(pad)}, {spreadWidth, spreadHeight},
+                                 shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
+        constexpr std::array<std::uint32_t, 6> silhouetteIndices{0, 1, 2, 0, 2, 3};
+        std::memcpy(_shadowQuadVertexMapped, silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex));
+        std::memcpy(_shadowQuadIndexMapped, silhouetteIndices.data(), silhouetteIndices.size() * sizeof(std::uint32_t));
+
+        _commandAllocator->Reset();
+        _commandList->Reset(_commandAllocator.Get(), nullptr);
+
+        D3D12_RESOURCE_BARRIER toRt{};
+        toRt.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toRt.Transition.pResource   = _shadowSilhouetteResource.Get();
+        toRt.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toRt.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toRt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toRt);
+
+        _commandList->OMSetRenderTargets(1, &_shadowRtv, FALSE, nullptr);
+        const float clearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        _commandList->ClearRenderTargetView(_shadowRtv, clearColor, 0, nullptr);
+
+        const D3D12_VIEWPORT viewport{
+            0.0f, 0.0f, static_cast<float>(texWidth), static_cast<float>(texHeight), 0.0f, 1.0f};
+        const D3D12_RECT scissor{0, 0, static_cast<LONG>(texWidth), static_cast<LONG>(texHeight)};
+        _commandList->RSSetViewports(1, &viewport);
+        _commandList->RSSetScissorRects(1, &scissor);
+        _commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        _commandList->SetPipelineState(_rectPipelineState.Get());
+        _commandList->SetGraphicsRootSignature(_rootSignature.Get());
+        _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
+
+        D3D12_VERTEX_BUFFER_VIEW vbView{};
+        vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
+        vbView.SizeInBytes    = static_cast<UINT>(silhouetteVertices.size() * sizeof(RectVertex));
+        vbView.StrideInBytes  = sizeof(RectVertex);
+        _commandList->IASetVertexBuffers(0, 1, &vbView);
+
+        D3D12_INDEX_BUFFER_VIEW ibView{};
+        ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
+        ibView.SizeInBytes    = static_cast<UINT>(silhouetteIndices.size() * sizeof(std::uint32_t));
+        ibView.Format         = DXGI_FORMAT_R32_UINT;
+        _commandList->IASetIndexBuffer(&ibView);
+
+        _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
+
+        D3D12_RESOURCE_BARRIER toUav{};
+        toUav.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toUav.Transition.pResource   = _shadowSilhouetteResource.Get();
+        toUav.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toUav.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toUav.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toUav);
+
+        _commandList->Close();
+        ID3D12CommandList* lists[] = {_commandList.Get()};
+        _directQueue->ExecuteCommandLists(1, lists);
+        ++_fenceValue;
+        _directQueue->Signal(_fence.Get(), _fenceValue);
+        if (_fence->GetCompletedValue() < _fenceValue) {
+            _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+            WaitForSingleObject(_fenceEvent, INFINITE);
+        }
+    }
+
+    const BlurResult blurred =
+        _blurPass.Apply(BlurResult{_shadowSilhouetteResource.Get()}, texWidth, texHeight, shadow.BlurRadius);
+
+    // Transition the borrowed blurred resource UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE for our
+    // own composite SRV -- BlurPassDX12 owns this resource and expects it back in
+    // UNORDERED_ACCESS by its own next Apply() call, so it must be transitioned back afterward too
+    // (see this class's own file comment on why Vulkan's GENERAL layout needed neither transition).
+    {
+        _commandAllocator->Reset();
+        _commandList->Reset(_commandAllocator.Get(), nullptr);
+
+        D3D12_RESOURCE_BARRIER toSrv{};
+        toSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toSrv.Transition.pResource   = blurred.Resource;
+        toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toSrv);
+
+        _commandList->Close();
+        ID3D12CommandList* lists[] = {_commandList.Get()};
+        _directQueue->ExecuteCommandLists(1, lists);
+        ++_fenceValue;
+        _directQueue->Signal(_fence.Get(), _fenceValue);
+        if (_fence->GetCompletedValue() < _fenceValue) {
+            _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+            WaitForSingleObject(_fenceEvent, INFINITE);
+        }
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                  = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels     = 1;
+    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, compositeSrvCpuHandle);
+
+    // ─── Composite: resume the main command list, restore its own PerFrame CB, draw ───────────
+    BeginMainCommandList();
+
+    struct PerFrameCb { float ViewportSizeX; float ViewportSizeY; };
+    const PerFrameCb mainPerFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
+    std::memcpy(_perFrameCbMapped, &mainPerFrame, sizeof(mainPerFrame));
+
+    // Top-left of the padded silhouette texture, in the shape's own coordinate space, plus the
+    // shadow's drop offset -- matches NativeRendererVulkan::RenderShadowBatch()'s identical
+    // placement formula.
+    const Widgets::Vec2 compositePosition{
+        shadow.Position.x - shadow.Spread - pad + shadow.Offset.x,
+        shadow.Position.y - shadow.Spread - pad + shadow.Offset.y,
+    };
+    const Widgets::Vec2 compositeSize{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+    const std::vector<ImageVertex> compositeVertices =
+        BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
+    constexpr std::array<std::uint32_t, 6> compositeIndices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, compositeIndices.data(), compositeIndices.size() * sizeof(std::uint32_t));
+
+    _commandList->SetPipelineState(_imagePipelineState.Get());
+    _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
+    _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
+    _commandList->SetGraphicsRootDescriptorTable(1, compositeSrvGpuHandle);
+
+    D3D12_VERTEX_BUFFER_VIEW vbView{};
+    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
+    vbView.SizeInBytes    = static_cast<UINT>(compositeVertices.size() * sizeof(ImageVertex));
+    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->IASetVertexBuffers(0, 1, &vbView);
+
+    D3D12_INDEX_BUFFER_VIEW ibView{};
+    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
+    ibView.SizeInBytes    = static_cast<UINT>(compositeIndices.size() * sizeof(std::uint32_t));
+    ibView.Format         = DXGI_FORMAT_R32_UINT;
+    _commandList->IASetIndexBuffer(&ibView);
+
+    _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
+
+    // Restore BlurPassDX12's own "always UNORDERED_ACCESS at rest" invariant for its next Apply()
+    // call -- see this method's own comment above on why this transition-back is necessary here,
+    // unlike Vulkan's zero-transition GENERAL layout.
+    D3D12_RESOURCE_BARRIER backToUav{};
+    backToUav.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backToUav.Transition.pResource   = blurred.Resource;
+    backToUav.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    backToUav.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    backToUav.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &backToUav);
 }
 
 void NativeRendererDX12::RenderRectBatch(const Batch& batch, std::size_t& vertexByteOffset,
@@ -364,6 +709,7 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t totalVertexBytes = 0;
     std::size_t totalIndexBytes  = 0;
     std::size_t imageBatchCount  = 0;
+    std::size_t shadowBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -372,11 +718,13 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
             totalVertexBytes += std::get<std::vector<ImageVertex>>(batch.Vertices).size() * sizeof(ImageVertex);
             totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
             ++imageBatchCount;
+        } else if (batch.Kind == BatchKind::Shadow) {
+            ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         }
-        // Every other BatchKind (Text/Shadow/Layer/BackdropBlur) is out of this sub-phase's scope,
-        // matching NativeRendererVulkan's own identical Phase 35.2 starting point.
+        // Every other BatchKind (Text/Layer/BackdropBlur) is out of this sub-phase's scope, matching
+        // NativeRendererVulkan's own identical Phase 35.4 starting point.
     }
-    if (totalVertexBytes == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -384,11 +732,20 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     const PerFrameCb perFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
     std::memcpy(_perFrameCbMapped, &perFrame, sizeof(perFrame));
 
+    // One extra, reserved slot (beyond one per Image batch) for RenderShadowBatch()'s own composite
+    // draw, if any Shadow batch exists this call -- see this class's own file comment on why this
+    // shares _srvHeap rather than using a second heap (D3D12 only allows one CBV_SRV_UAV heap bound
+    // via SetDescriptorHeaps() at a time per command list).
+    const std::size_t compositeSrvSlot  = imageBatchCount; // valid only when shadowBatchCount > 0
+    const std::size_t neededSrvSlots    = imageBatchCount + (shadowBatchCount > 0 ? 1 : 0);
+
     // Write every Image batch's SRV into _srvHeap entirely before command-list recording begins --
     // see RenderImageBatch()'s own comment, and NativeRendererVulkan::Render()'s identical Phase
-    // 35.2 reasoning, for why this can't happen per-batch inside the recording loop below.
-    if (imageBatchCount > 0) {
-        EnsureImageDescriptorCapacity(imageBatchCount);
+    // 35.2 reasoning, for why this can't happen per-batch inside the recording loop below. The
+    // composite slot (if reserved) is written later, by RenderShadowBatch() itself, once the blur
+    // it depends on has actually completed -- see that method's own comment for why that's safe.
+    if (neededSrvSlots > 0) {
+        EnsureImageDescriptorCapacity(neededSrvSlots);
 
         const D3D12_CPU_DESCRIPTOR_HANDLE srvHeapCpuStart = _srvHeap->GetCPUDescriptorHandleForHeapStart();
         std::size_t nextSrvSlot = 0;
@@ -413,27 +770,16 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
         }
     }
 
-    _commandAllocator->Reset();
-    _commandList->Reset(_commandAllocator.Get(), nullptr);
-
-    if (imageBatchCount > 0) {
-        ID3D12DescriptorHeap* heaps[] = {_srvHeap.Get()};
-        _commandList->SetDescriptorHeaps(1, heaps);
+    D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle{};
+    D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle{};
+    if (shadowBatchCount > 0) {
+        compositeSrvCpuHandle = _srvHeap->GetCPUDescriptorHandleForHeapStart();
+        compositeSrvCpuHandle.ptr += static_cast<SIZE_T>(compositeSrvSlot) * _srvDescriptorSize;
+        compositeSrvGpuHandle = _srvHeap->GetGPUDescriptorHandleForHeapStart();
+        compositeSrvGpuHandle.ptr += static_cast<UINT64>(compositeSrvSlot) * _srvDescriptorSize;
     }
 
-    _commandList->OMSetRenderTargets(1, &_targetRtv, FALSE, nullptr);
-
-    const D3D12_VIEWPORT viewport{0.0f,
-                                 0.0f,
-                                 static_cast<float>(_targetWidth),
-                                 static_cast<float>(_targetHeight),
-                                 0.0f,
-                                 1.0f};
-    const D3D12_RECT scissor{0, 0, static_cast<LONG>(_targetWidth), static_cast<LONG>(_targetHeight)};
-    _commandList->RSSetViewports(1, &viewport);
-    _commandList->RSSetScissorRects(1, &scissor);
-
-    _commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    BeginMainCommandList();
 
     const D3D12_GPU_DESCRIPTOR_HANDLE srvHeapGpuStart =
         imageBatchCount > 0 ? _srvHeap->GetGPUDescriptorHandleForHeapStart() : D3D12_GPU_DESCRIPTOR_HANDLE{};
@@ -448,22 +794,14 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
             D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle = srvHeapGpuStart;
             srvGpuHandle.ptr += static_cast<UINT64>(imageSrvSlot++) * _srvDescriptorSize;
             RenderImageBatch(srvGpuHandle, batch, vertexByteOffset, indexByteOffset);
+        } else if (batch.Kind == BatchKind::Shadow) {
+            // Ends and re-begins the main command list internally -- see this method's own comment
+            // on why (BlurPassDX12::Apply() is its own separate submission).
+            RenderShadowBatch(batch, compositeSrvCpuHandle, compositeSrvGpuHandle);
         }
     }
 
-    _commandList->Close();
-    ID3D12CommandList* lists[] = {_commandList.Get()};
-    _directQueue->ExecuteCommandLists(1, lists);
-
-    // Block until this Render() call's GPU work completes before returning -- a deliberate,
-    // documented stopgap (see this class's own .hpp comment) so the streaming vertex/index/
-    // constant buffers are always safe to overwrite again on the very next call.
-    ++_fenceValue;
-    _directQueue->Signal(_fence.Get(), _fenceValue);
-    if (_fence->GetCompletedValue() < _fenceValue) {
-        _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
-        WaitForSingleObject(_fenceEvent, INFINITE);
-    }
+    EndAndSubmitMainCommandList();
 }
 
 void NativeRendererDX12::Shutdown() {
@@ -491,6 +829,18 @@ void NativeRendererDX12::Shutdown() {
 
     if (_perFrameCb) { _perFrameCb->Unmap(0, nullptr); _perFrameCb.Reset(); }
     _perFrameCbMapped = nullptr;
+
+    if (_shadowQuadVertexBuffer) { _shadowQuadVertexBuffer->Unmap(0, nullptr); _shadowQuadVertexBuffer.Reset(); }
+    _shadowQuadVertexMapped = nullptr;
+    if (_shadowQuadIndexBuffer) { _shadowQuadIndexBuffer->Unmap(0, nullptr); _shadowQuadIndexBuffer.Reset(); }
+    _shadowQuadIndexMapped = nullptr;
+
+    _shadowSilhouetteResource.Reset();
+    _shadowRtvHeap.Reset();
+    _shadowRtv              = {};
+    _shadowSilhouetteWidth  = 0;
+    _shadowSilhouetteHeight = 0;
+    _blurPass.Shutdown();
 
     _srvHeap.Reset();
     _srvHeapCapacitySlots = 0;
