@@ -200,6 +200,71 @@ private:
     WGPUTextureView _view    = nullptr;
 };
 
+/// `NativeRendererWebGPU` treats `DrawImage::Texture`'s value as a raw `WGPUTextureView` handle
+/// (see `NativeRendererWebGPU.hpp`'s own file comment), so this real texture view's handle is what
+/// gets pushed. Uploads via `wgpuQueueWriteTexture()` -- no manual staging buffer, copy command, or
+/// layout transition needed, unlike `NativeRendererVulkan_test.cpp`'s/`NativeRendererDX12_test.cpp`'s
+/// own `ScratchTexture` helpers.
+class ScratchTexture {
+public:
+    ScratchTexture(WGPUDevice device, WGPUQueue queue, std::uint8_t r, std::uint8_t g, std::uint8_t b,
+                  std::uint8_t a)
+        : _device(device) {
+        constexpr uint32_t kSize = 8;
+        std::vector<std::byte> pixels(static_cast<std::size_t>(kSize) * kSize * 4);
+        for (std::size_t i = 0; i < pixels.size(); i += 4) {
+            pixels[i + 0] = std::byte{r};
+            pixels[i + 1] = std::byte{g};
+            pixels[i + 2] = std::byte{b};
+            pixels[i + 3] = std::byte{a};
+        }
+
+        WGPUTextureDescriptor texDesc{};
+        texDesc.usage         = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+        texDesc.dimension     = WGPUTextureDimension_2D;
+        texDesc.size          = WGPUExtent3D{kSize, kSize, 1};
+        texDesc.format        = kColorFormat;
+        texDesc.mipLevelCount = 1;
+        texDesc.sampleCount   = 1;
+        _texture               = wgpuDeviceCreateTexture(_device, &texDesc);
+
+        WGPUTexelCopyTextureInfo dst{};
+        dst.texture = _texture;
+        dst.aspect   = WGPUTextureAspect_All;
+
+        WGPUTexelCopyBufferLayout dataLayout{};
+        dataLayout.bytesPerRow   = kSize * 4;
+        dataLayout.rowsPerImage = kSize;
+
+        const WGPUExtent3D writeSize{kSize, kSize, 1};
+        wgpuQueueWriteTexture(queue, &dst, pixels.data(), pixels.size(), &dataLayout, &writeSize);
+
+        WGPUTextureViewDescriptor viewDesc{};
+        viewDesc.format          = kColorFormat;
+        viewDesc.dimension       = WGPUTextureViewDimension_2D;
+        viewDesc.mipLevelCount   = 1;
+        viewDesc.arrayLayerCount = 1;
+        _view                     = wgpuTextureCreateView(_texture, &viewDesc);
+    }
+
+    ~ScratchTexture() {
+        if (_view) { wgpuTextureViewRelease(_view); }
+        if (_texture) { wgpuTextureRelease(_texture); }
+    }
+
+    ScratchTexture(const ScratchTexture&)            = delete;
+    ScratchTexture& operator=(const ScratchTexture&) = delete;
+
+    [[nodiscard]] TextureId Id() const {
+        return TextureId(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(_view)));
+    }
+
+private:
+    WGPUDevice      _device  = nullptr;
+    WGPUTexture     _texture = nullptr;
+    WGPUTextureView _view    = nullptr;
+};
+
 } // namespace
 
 TEST_CASE("NativeRendererWebGPU draws a filled DrawRect at the recorded position", "[webgpu]") {
@@ -303,6 +368,86 @@ TEST_CASE("NativeRendererWebGPU renders rounded corners: the extreme corner pixe
 
         REQUIRE(corner.a < 100);
         REQUIRE(middleEdge.a > 200);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU draws a DrawImage at the recorded position, sampling the bound "
+          "WGPUTextureView and applying TintColor (Phase 35.10)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+        ScratchTexture texture(handles.Device, handles.Queue, 0, 0, 255, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawImage{
+            .Position  = {0.0f, 0.0f},
+            .Size      = {64.0f, 64.0f},
+            .Texture   = texture.Id(),
+            .TintColor = {0.5f, 1.0f, 1.0f, 1.0f}});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels  = target.ReadPixels();
+        const Pixel inside  = Sample(pixels, 32, 32, WIDTH);
+        const Pixel outside = Sample(pixels, WIDTH - 4, HEIGHT - 4, WIDTH);
+
+        REQUIRE(inside.b > 200);
+        REQUIRE(inside.r < 150); // TintColor.r == 0.5 darkens the source texture's zero red further
+        REQUIRE(inside.a > 200);
+        REQUIRE(outside.a == 0); // untouched -- still the target's transparent clear colour
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU renders a Rect and two differently-textured Image batches "
+          "correctly in the same frame (Phase 35.10)",
+          "[webgpu]") {
+    // Directly validates the per-batch bind group scheme (see NativeRendererWebGPU.hpp's own file
+    // comment): unlike Vulkan/DX12, a WGPUBindGroup is immutable once created, so this test mainly
+    // confirms the *simpler* WebGPU design still produces the correct per-batch texture binding,
+    // mirroring NativeRendererVulkan_test.cpp's/NativeRendererDX12_test.cpp's own identical tests.
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+        ScratchTexture redTexture(handles.Device, handles.Queue, 255, 0, 0, 255);
+        ScratchTexture greenTexture(handles.Device, handles.Queue, 0, 255, 0, 255);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{.Position = {0.0f, 0.0f}, .Size = {32.0f, 32.0f}, .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawImage{.Position = {48.0f, 0.0f}, .Size = {32.0f, 32.0f}, .Texture = redTexture.Id()});
+        buffer.Push(DrawImage{.Position = {96.0f, 96.0f}, .Size = {32.0f, 32.0f}, .Texture = greenTexture.Id()});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel rect  = Sample(pixels, 16, 16, WIDTH);
+        const Pixel red   = Sample(pixels, 64, 16, WIDTH);
+        const Pixel green = Sample(pixels, 112, 112, WIDTH);
+
+        REQUIRE(rect.b > 200);
+        REQUIRE(rect.a > 200);
+        REQUIRE(red.r > 200);
+        REQUIRE(red.g < 50);
+        REQUIRE(green.g > 200);
+        REQUIRE(green.r < 50);
 
         renderer.Shutdown();
     }

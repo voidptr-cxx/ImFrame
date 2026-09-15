@@ -10,6 +10,18 @@
  * `NativeRenderer*` already does — only the WebGPU-specific plumbing (bind group, pipeline,
  * command encoder) is new here.
  *
+ * Phase 35.10 adds `BatchKind::Image`, mirroring `NativeRendererVulkan`'s own
+ * Phase 35.2: `Rendering::TextureId::Value()` is reinterpreted as a raw `WGPUTextureView`, the
+ * WebGPU analogue of Vulkan's own raw-`VkImageView` convention. Unlike Vulkan's descriptor *sets*
+ * or DX12's descriptor *heap slots* (both mutable GPU-visible state that must be written before
+ * command recording, since their content resolves at execution time, not recording time), a
+ * WebGPU `WGPUBindGroup` is **immutable once created** — there is no equivalent race to guard
+ * against, so `RenderImageBatch()` simply creates a fresh bind group per `Image` batch inline,
+ * uses it, and releases it, with no descriptor-pool/heap capacity bookkeeping needed at all (the
+ * one genuine simplification WebGPU's own object model offers over Vulkan/DX12 for this feature).
+ * Texture upload itself is also simpler on this backend — `wgpuQueueWriteTexture()` uploads
+ * directly with no manual staging-buffer/copy-command/layout-transition dance.
+ *
  * Unlike Vulkan (SPIR-V) and DX12 (DXIL, offline-compiled via `cmake/CompileShaderDXC.cmake`),
  * WGSL is compiled at *runtime* by Dawn — no offline compile/embed pipeline is needed. The vertex
  * and fragment shader source is inlined directly as a C++ raw string literal in
@@ -110,6 +122,20 @@ private:
     void RenderRectBatch(WGPURenderPassEncoder pass, const Batch& batch, std::size_t& vertexByteOffset,
                           std::size_t& indexByteOffset);
 
+    /**
+     * @brief    Records one `BatchKind::Image` batch's draw call.
+     *
+     * Creates a fresh `WGPUBindGroup` referencing `batch.Texture` (reinterpreted as a
+     * `WGPUTextureView`), `_linearSampler`, and `_perFrameBuffer` — used immediately for this
+     * batch's own `SetBindGroup`/draw, then released before returning. Safe to do per-batch,
+     * unlike Vulkan's per-batch descriptor-*set* write or DX12's per-batch descriptor-heap-*slot*
+     * write: a `WGPUBindGroup` is immutable from the moment it's created, so there is no "written
+     * before recording, else a later batch's write clobbers an earlier one" race to avoid here —
+     * see this class's own file comment.
+     */
+    void RenderImageBatch(WGPURenderPassEncoder pass, const Batch& batch, std::size_t& vertexByteOffset,
+                          std::size_t& indexByteOffset);
+
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     WGPUDevice        _device      = nullptr;
     WGPUQueue         _queue       = nullptr;
@@ -127,6 +153,18 @@ private:
     WGPUBindGroupLayout _bindGroupLayout = nullptr;
     WGPUPipelineLayout  _pipelineLayout  = nullptr;
     WGPURenderPipeline  _rectPipeline    = nullptr;
+
+    /// `Shaders::kImageWgsl`'s own shader module, bind group layout, pipeline layout, and pipeline
+    /// — kept separate from the Rect pipeline's own equivalents, mirroring
+    /// `NativeRendererVulkan`'s/`NativeRendererDX12`'s own separate Image pipelines (Phase
+    /// 35.2/35.9). `_linearSampler` is the one shared sampler every `Image` batch's bind group
+    /// references — the WebGPU analogue of Vulkan's single shared `VkSampler`/DX12's one static
+    /// sampler.
+    WGPUShaderModule    _imageShaderModule    = nullptr;
+    WGPUBindGroupLayout _imageBindGroupLayout = nullptr;
+    WGPUPipelineLayout  _imagePipelineLayout  = nullptr;
+    WGPURenderPipeline  _imagePipeline        = nullptr;
+    WGPUSampler         _linearSampler        = nullptr;
 
     /// The inline WGSL's `uPerFrame` uniform (viewport size), updated once per `Render()` call via
     /// `wgpuQueueWriteBuffer()` — WebGPU has no root-CBV/push-constant equivalent in this sub-phase's
