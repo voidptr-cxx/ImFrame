@@ -21,7 +21,7 @@ target_include_directories(ImFrame_SDL3DX12
 # Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererVulkan --
 # see .claude/DECISIONS.md, Phase 32.4 and Phase 35.1) ──
 if(IMF_BUILD_NATIVE_RENDERER)
-    target_sources(ImFrame_SDL3DX12 PRIVATE NativeRendererDX12.cpp)
+    target_sources(ImFrame_SDL3DX12 PRIVATE NativeRendererDX12.cpp BlurPassDX12.cpp)
     # NativeRendererDX12.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
     # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
     # include interface. It also consumes Shaders/SDFRect.{Vertex,Pixel}.hpp's embedded DXIL
