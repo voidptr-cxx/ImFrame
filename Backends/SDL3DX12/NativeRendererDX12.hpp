@@ -45,6 +45,24 @@
  * `NativeRendererVulkan_test.cpp`'s own first tests needed no `Application`/`Viewport` machinery
  * either.
  *
+ * Phase 35.12 adds `BatchKind::Shadow`, wiring `BlurPassDX12` (Phase 35.11) into a silhouette-
+ * render-then-blur-then-composite flow mirroring `NativeRendererVulkan::RenderShadowBatch()`'s own
+ * Phase 35.4 structure. `BeginMainCommandList()`/`EndAndSubmitMainCommandList()` split `Render()`'s
+ * previously-monolithic "reset, record everything, submit, wait" into reusable halves, mirroring
+ * Vulkan's own identical `BeginMainCommandBuffer()`/`EndAndSubmitMainCommandBuffer()` split — needed
+ * because `_blurPass.Apply()` is its own fully separate, synchronously-awaited submission that
+ * cannot be recorded into a not-yet-submitted command list. **Unlike Vulkan** (whose
+ * `VK_IMAGE_LAYOUT_GENERAL` silhouette target needs zero layout transitions across its render/blur/
+ * sample roles), the silhouette resource here needs a real `RENDER_TARGET -> UNORDERED_ACCESS`
+ * transition before the blur reads it, and the blur's own returned result needs a further
+ * `UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE` transition before the composite draw samples it —
+ * D3D12 has no single resource state valid for all three roles simultaneously the way Vulkan's
+ * `GENERAL` layout is (see `BlurPassDX12.hpp`'s own file comment, Phase 35.11, which flagged this
+ * exact requirement in advance). The composite draw's SRV is written into `_srvHeap` (the same heap
+ * `BatchKind::Image` batches already use, Phase 35.9) at one *extra*, reserved slot — not a second
+ * heap — since D3D12 only allows one `CBV_SRV_UAV` heap bound via `SetDescriptorHeaps()` at a time
+ * per command list, unlike Vulkan's unlimited simultaneously-bound descriptor sets.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-13
  * @version  3.0.1
@@ -55,6 +73,7 @@
 
 #pragma once
 
+#include "BlurPassDX12.hpp"
 #include "Rendering/Renderers/BatchBuilder.hpp"
 #include "Rendering/Renderers/IRenderer.hpp"
 
@@ -128,6 +147,17 @@ private:
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
     void EnsureImageDescriptorCapacity(std::size_t neededSlots);
+    void EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height);
+
+    /// Resets `_commandAllocator`/`_commandList` (with a `nullptr` initial PSO — each `RenderXBatch()`
+    /// binds its own) and sets the main target's RTV/viewport/scissor/primitive-topology state, plus
+    /// `_srvHeap` if it exists (harmless to bind even when this particular call doesn't need it) --
+    /// mirrors `NativeRendererVulkan::BeginMainCommandBuffer()`.
+    void BeginMainCommandList();
+    /// Closes, executes, and synchronously fence-waits on the main command list -- mirrors
+    /// `NativeRendererVulkan::EndAndSubmitMainCommandBuffer()`.
+    void EndAndSubmitMainCommandList();
+
     void RenderRectBatch(const Batch& batch, std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
 
     /**
@@ -144,6 +174,27 @@ private:
      */
     void RenderImageBatch(D3D12_GPU_DESCRIPTOR_HANDLE srvGpuHandle, const Batch& batch,
                           std::size_t& vertexByteOffset, std::size_t& indexByteOffset);
+
+    /**
+     * @brief    Renders one `BatchKind::Shadow` batch: silhouette, blur, composite (Phase 35.12).
+     * @param[in] compositeSrvCpuHandle  Where to write this batch's own composite SRV in `_srvHeap`
+     *                                   — one *extra* slot reserved by `Render()` beyond its own
+     *                                   per-`Image`-batch slots (see this class's own file comment
+     *                                   on why one shared heap, not a second one, is used).
+     * @param[in] compositeSrvGpuHandle  The same slot's GPU-visible handle, bound for the composite
+     *                                   draw itself.
+     *
+     * Mirrors `NativeRendererVulkan::RenderShadowBatch()`'s own structure: (1) ends and submits the
+     * main command list as accumulated so far (`_blurPass.Apply()` is its own separate submission,
+     * so everything up to this point must actually be complete on the GPU, not merely recorded),
+     * (2) renders the shape's silhouette into `_shadowSilhouetteResource` via its own one-shot use
+     * of `_commandList` (reusing `_rectPipelineState`), (3) calls `_blurPass.Apply()`, (4) writes the
+     * blurred result's SRV and records the composite draw on a *new*, freshly-begun main command
+     * list. Unlike Vulkan, steps (2)-(4) each need real `D3D12_RESOURCE_BARRIER` transitions the
+     * `VK_IMAGE_LAYOUT_GENERAL` silhouette never needed — see this class's own file comment.
+     */
+    void RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle,
+                          D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     ID3D12Device4*      _device      = nullptr;
@@ -201,6 +252,32 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> _indexBuffer;
     void*                                  _indexBufferMapped        = nullptr;
     std::size_t                            _indexBufferCapacityBytes = 0;
+
+    // ─── Phase 35.12: BatchKind::Shadow support ─────────────────────────────────
+    BlurPassDX12 _blurPass;
+
+    /// The offscreen silhouette target — created with **both**
+    /// `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET` (for the silhouette draw) and
+    /// `D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS` (for `_blurPass`'s own read). At rest (between
+    /// `RenderShadowBatch()` calls) it sits in `D3D12_RESOURCE_STATE_UNORDERED_ACCESS`; each call
+    /// transitions it to `RENDER_TARGET` for the silhouette draw and back, unlike Vulkan's
+    /// zero-transition `GENERAL`-layout equivalent (see this class's own file comment).
+    Microsoft::WRL::ComPtr<ID3D12Resource>       _shadowSilhouetteResource;
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> _shadowRtvHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE                  _shadowRtv           = {};
+    std::uint32_t                                _shadowSilhouetteWidth  = 0;
+    std::uint32_t                                _shadowSilhouetteHeight = 0;
+
+    /// Small, fixed-size, dedicated buffers for `RenderShadowBatch()`'s own two one-quad draws
+    /// (silhouette rect, composite image) — kept separate from `_vertexBuffer`/`_indexBuffer` so
+    /// this internal, always-6-index draw never competes with the main streaming buffers' own
+    /// growth, mirroring `NativeRendererVulkan`'s own `_shadowQuadVertexBuffer`/
+    /// `_shadowQuadIndexBuffer` (Phase 35.4). Sized for the *larger* of `RectVertex`/`ImageVertex`
+    /// (4 vertices) since both draws reuse the same buffer, sequentially, never concurrently.
+    Microsoft::WRL::ComPtr<ID3D12Resource> _shadowQuadVertexBuffer;
+    void*                                  _shadowQuadVertexMapped = nullptr;
+    Microsoft::WRL::ComPtr<ID3D12Resource> _shadowQuadIndexBuffer;
+    void*                                  _shadowQuadIndexMapped  = nullptr;
 
     BatchBuilder _batchBuilder;
 };
