@@ -365,6 +365,13 @@ if(WIN32 AND IMF_BUILD_NATIVE_RENDERER AND IMF_BUILD_DX12_BACKEND)
         list(APPEND IMF_SHADER_DXIL_HEADERS "${IMF_SHADER_VS_HEADER}" "${IMF_SHADER_PS_HEADER}")
     endforeach()
 
+    # GaussianBlur.hlsl (Phase 35.11) has one entry point (CSMain), not a VSMain/PSMain pair --
+    # compiled separately from the foreach() above rather than forcing it through a two-entry-
+    # point shape it doesn't have.
+    compile_shader_hlsl("${CMAKE_SOURCE_DIR}/Shaders/GaussianBlur.hlsl" cs_6_0 CSMain
+        GaussianBlur OUT_HEADER IMF_SHADER_CS_HEADER)
+    list(APPEND IMF_SHADER_DXIL_HEADERS "${IMF_SHADER_CS_HEADER}")
+
     add_library(ImFrame_ShadersDXIL INTERFACE ${IMF_SHADER_DXIL_HEADERS})
     target_include_directories(ImFrame_ShadersDXIL INTERFACE ${IMF_SHADER_DXIL_GENERATED_DIR}/..)
 endif()
