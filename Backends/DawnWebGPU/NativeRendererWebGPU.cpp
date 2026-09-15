@@ -105,6 +105,73 @@ fn PSMain(input: VSOutput) -> @location(0) vec4f {
 }
 )WGSL";
 
+/// `Image.hlsl`'s WGSL port, mirroring `kSDFRectWgsl`'s own inline-source convention (see this
+/// file's own header comment). Unlike GLSL's combined `sampler2D`/HLSL's `Texture2D`+`SamplerState`
+/// pair, WGSL also splits texture and sampler into two separate bindings — `texture_2d<f32>` (t1)
+/// and `sampler` (t2) — alongside the same `PerFrame` uniform (binding 0) `kSDFRectWgsl` already
+/// declares, all in one `@group(0)` bind group (`NativeRendererWebGPU::RenderImageBatch()` creates
+/// a fresh one per batch — see this class's own `.hpp` file comment for why that's safe here,
+/// unlike Vulkan's per-batch descriptor-*set* write or DX12's per-batch descriptor-heap-*slot*
+/// write).
+constexpr const char* kImageWgsl = R"WGSL(
+struct PerFrame {
+    viewportSize: vec2f,
+};
+@group(0) @binding(0) var<uniform> uPerFrame: PerFrame;
+@group(0) @binding(1) var uTexture: texture_2d<f32>;
+@group(0) @binding(2) var uSampler: sampler;
+
+struct VSInput {
+    @location(0) position: vec2f,
+    @location(1) local: vec2f,
+    @location(2) halfSize: vec2f,
+    @location(3) radii: vec4f,
+    @location(4) uv: vec2f,
+    @location(5) tintColor: vec4f,
+};
+
+struct VSOutput {
+    @builtin(position) clipPosition: vec4f,
+    @location(0) local: vec2f,
+    @location(1) halfSize: vec2f,
+    @location(2) radii: vec4f,
+    @location(3) uv: vec2f,
+    @location(4) tintColor: vec4f,
+};
+
+@vertex
+fn VSMain(input: VSInput) -> VSOutput {
+    var output: VSOutput;
+    let ndc = (input.position / uPerFrame.viewportSize) * 2.0 - vec2f(1.0, 1.0);
+    output.clipPosition = vec4f(ndc.x, -ndc.y, 0.0, 1.0);
+    output.local        = input.local;
+    output.halfSize     = input.halfSize;
+    output.radii        = input.radii;
+    output.uv           = input.uv;
+    output.tintColor    = input.tintColor;
+    return output;
+}
+
+// Identical to kSDFRectWgsl's own RoundedBoxSdf() -- duplicated rather than shared, matching
+// Image.glsl/Image.hlsl's own precedent of not sharing shader code across files in this codebase.
+fn RoundedBoxSdf(p: vec2f, b: vec2f, r: vec4f) -> f32 {
+    let rxy = select(r.zw, r.xy, p.x > 0.0);
+    let rx  = select(rxy.y, rxy.x, p.y > 0.0);
+    let q   = abs(p) - b + vec2f(rx);
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2f(0.0))) - rx;
+}
+
+@fragment
+fn PSMain(input: VSOutput) -> @location(0) vec4f {
+    let r    = vec4f(input.radii.y, input.radii.z, input.radii.x, input.radii.w);
+    let dist = RoundedBoxSdf(input.local, input.halfSize, r);
+
+    let aa   = max(fwidth(dist) * 0.5, 1e-4);
+    let mask = 1.0 - smoothstep(-aa, aa, dist);
+    return textureSample(uTexture, uSampler, input.uv) * input.tintColor * mask;
+}
+)WGSL";
+
 /// Host-side mirror of the WGSL `PerFrame` uniform, padded to 16 bytes -- WGSL itself only
 /// declares `viewportSize: vec2f` (8 bytes), but the backing buffer is created a little larger to
 /// stay clear of any backend-specific minimum-uniform-buffer-size edge case (Dawn translates the
@@ -243,6 +310,95 @@ void NativeRendererWebGPU::EnsureInitialized() {
     bgDesc.entries     = &bgEntry;
     _bindGroup          = wgpuDeviceCreateBindGroup(_device, &bgDesc);
 
+    // ─── Image shader module ────────────────────────────────────────────────────────────────────
+    WGPUShaderSourceWGSL imageWgslSource{};
+    imageWgslSource.chain.sType = WGPUSType_ShaderSourceWGSL;
+    imageWgslSource.code        = ToStringView(kImageWgsl);
+
+    WGPUShaderModuleDescriptor imageShaderDesc{};
+    imageShaderDesc.nextInChain = &imageWgslSource.chain;
+    imageShaderDesc.label       = ToStringView("Image");
+    _imageShaderModule           = wgpuDeviceCreateShaderModule(_device, &imageShaderDesc);
+
+    // ─── Image bind group layout: PerFrame uniform (0, vertex) + texture (1) + sampler (2, both
+    // fragment) ──────────────────────────────────────────────────────────────────────────────────
+    std::array<WGPUBindGroupLayoutEntry, 3> imageBglEntries{};
+    imageBglEntries[0].binding                    = 0;
+    imageBglEntries[0].visibility                 = WGPUShaderStage_Vertex;
+    imageBglEntries[0].buffer.type                = WGPUBufferBindingType_Uniform;
+    imageBglEntries[0].buffer.minBindingSize      = sizeof(PerFrameUniform);
+    imageBglEntries[1].binding                    = 1;
+    imageBglEntries[1].visibility                 = WGPUShaderStage_Fragment;
+    imageBglEntries[1].texture.sampleType         = WGPUTextureSampleType_Float;
+    imageBglEntries[1].texture.viewDimension      = WGPUTextureViewDimension_2D;
+    imageBglEntries[2].binding                    = 2;
+    imageBglEntries[2].visibility                 = WGPUShaderStage_Fragment;
+    imageBglEntries[2].sampler.type               = WGPUSamplerBindingType_Filtering;
+
+    WGPUBindGroupLayoutDescriptor imageBglDesc{};
+    imageBglDesc.entryCount = static_cast<size_t>(imageBglEntries.size());
+    imageBglDesc.entries     = imageBglEntries.data();
+    _imageBindGroupLayout     = wgpuDeviceCreateBindGroupLayout(_device, &imageBglDesc);
+
+    WGPUPipelineLayoutDescriptor imagePlDesc{};
+    imagePlDesc.bindGroupLayoutCount = 1;
+    imagePlDesc.bindGroupLayouts      = &_imageBindGroupLayout;
+    _imagePipelineLayout              = wgpuDeviceCreatePipelineLayout(_device, &imagePlDesc);
+
+    // ─── Image pipeline: VSMain/PSMain above, matching ImageVertex's field layout ───────────────
+    const std::array<WGPUVertexAttribute, 6> imageAttributes{{
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(ImageVertex, Position), .shaderLocation = 0},
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(ImageVertex, Local), .shaderLocation = 1},
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(ImageVertex, HalfSize), .shaderLocation = 2},
+        {.format = WGPUVertexFormat_Float32x4, .offset = offsetof(ImageVertex, Radii), .shaderLocation = 3},
+        {.format = WGPUVertexFormat_Float32x2, .offset = offsetof(ImageVertex, Uv), .shaderLocation = 4},
+        {.format = WGPUVertexFormat_Float32x4, .offset = offsetof(ImageVertex, TintColor), .shaderLocation = 5},
+    }};
+
+    WGPUVertexBufferLayout imageVbLayout{};
+    imageVbLayout.arrayStride    = sizeof(ImageVertex);
+    imageVbLayout.stepMode        = WGPUVertexStepMode_Vertex;
+    imageVbLayout.attributeCount = imageAttributes.size();
+    imageVbLayout.attributes      = imageAttributes.data();
+
+    WGPUColorTargetState imageColorTarget{};
+    imageColorTarget.format    = _colorFormat;
+    imageColorTarget.blend      = &blendState; // same standard "over" blend as the Rect pipeline
+    imageColorTarget.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState imageFragmentState{};
+    imageFragmentState.module      = _imageShaderModule;
+    imageFragmentState.entryPoint = ToStringView("PSMain");
+    imageFragmentState.targetCount = 1;
+    imageFragmentState.targets      = &imageColorTarget;
+
+    WGPURenderPipelineDescriptor imagePipelineDesc{};
+    imagePipelineDesc.layout                    = _imagePipelineLayout;
+    imagePipelineDesc.vertex.module              = _imageShaderModule;
+    imagePipelineDesc.vertex.entryPoint         = ToStringView("VSMain");
+    imagePipelineDesc.vertex.bufferCount        = 1;
+    imagePipelineDesc.vertex.buffers             = &imageVbLayout;
+    imagePipelineDesc.primitive.topology        = WGPUPrimitiveTopology_TriangleList;
+    imagePipelineDesc.primitive.cullMode        = WGPUCullMode_None;
+    imagePipelineDesc.multisample.count         = 1;
+    imagePipelineDesc.multisample.mask           = 0xFFFFFFFFu;
+    imagePipelineDesc.fragment                   = &imageFragmentState;
+
+    _imagePipeline = wgpuDeviceCreateRenderPipeline(_device, &imagePipelineDesc);
+
+    // ─── Shared sampler -- every Image batch's bind group references this same one ─────────────
+    WGPUSamplerDescriptor samplerDesc{};
+    samplerDesc.addressModeU = WGPUAddressMode_ClampToEdge;
+    samplerDesc.addressModeV = WGPUAddressMode_ClampToEdge;
+    samplerDesc.addressModeW = WGPUAddressMode_ClampToEdge;
+    samplerDesc.magFilter     = WGPUFilterMode_Linear;
+    samplerDesc.minFilter     = WGPUFilterMode_Linear;
+    // maxAnisotropy must be >= 1 -- a zero-initialized WGPUSamplerDescriptor leaves it at 0, which
+    // Dawn rejects outright (not just "no anisotropic filtering"); 1 means "off", matching this
+    // sampler's own fixed LINEAR/CLAMP intent (no anisotropic filtering requested).
+    samplerDesc.maxAnisotropy = 1;
+    _linearSampler             = wgpuDeviceCreateSampler(_device, &samplerDesc);
+
     _initialized = true;
 }
 
@@ -284,6 +440,54 @@ void NativeRendererWebGPU::RenderRectBatch(WGPURenderPassEncoder pass, const Bat
     indexByteOffset += indexBytes;
 }
 
+void NativeRendererWebGPU::RenderImageBatch(WGPURenderPassEncoder pass, const Batch& batch,
+                                            std::size_t& vertexByteOffset, std::size_t& indexByteOffset) {
+    const auto& vertices = std::get<std::vector<ImageVertex>>(batch.Vertices);
+    if (vertices.empty()) { return; }
+
+    // batch.Texture's value is a raw WGPUTextureView -- see this class's own file comment on why
+    // (the WebGPU analogue of NativeRendererVulkan's raw-VkImageView convention).
+    auto textureView = reinterpret_cast<WGPUTextureView>(static_cast<std::uintptr_t>(batch.Texture.Value()));
+
+    std::array<WGPUBindGroupEntry, 3> bgEntries{};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer   = _perFrameBuffer;
+    bgEntries[0].offset   = 0;
+    bgEntries[0].size     = sizeof(PerFrameUniform);
+    bgEntries[1].binding    = 1;
+    bgEntries[1].textureView = textureView;
+    bgEntries[2].binding = 2;
+    bgEntries[2].sampler  = _linearSampler;
+
+    WGPUBindGroupDescriptor bgDesc{};
+    bgDesc.layout      = _imageBindGroupLayout;
+    bgDesc.entryCount = static_cast<size_t>(bgEntries.size());
+    bgDesc.entries     = bgEntries.data();
+    WGPUBindGroup imageBindGroup = wgpuDeviceCreateBindGroup(_device, &bgDesc);
+
+    wgpuRenderPassEncoderSetPipeline(pass, _imagePipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, imageBindGroup, 0, nullptr);
+
+    const std::size_t vertexBytes = vertices.size() * sizeof(ImageVertex);
+    const std::size_t indexBytes  = batch.Indices.size() * sizeof(std::uint32_t);
+
+    wgpuQueueWriteBuffer(_queue, _vertexBuffer, vertexByteOffset, vertices.data(), vertexBytes);
+    wgpuQueueWriteBuffer(_queue, _indexBuffer, indexByteOffset, batch.Indices.data(), indexBytes);
+
+    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, _vertexBuffer, vertexByteOffset, vertexBytes);
+    wgpuRenderPassEncoderSetIndexBuffer(pass, _indexBuffer, WGPUIndexFormat_Uint32, indexByteOffset, indexBytes);
+    wgpuRenderPassEncoderDrawIndexed(pass, static_cast<uint32_t>(batch.Indices.size()), 1, 0, 0, 0);
+
+    // Safe to release immediately -- a WGPUBindGroup is immutable from creation, and the render
+    // pass encoder's own recording already captured what it needs from it via SetBindGroup(); see
+    // this class's own .hpp file comment for why no Vulkan/DX12-style "keep it alive until the
+    // whole command buffer has executed" concern applies here.
+    wgpuBindGroupRelease(imageBindGroup);
+
+    vertexByteOffset += vertexBytes;
+    indexByteOffset += indexBytes;
+}
+
 void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
     // A missing SetTarget() call is a caller bug, not a runtime condition to recover from --
@@ -299,9 +503,13 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
             totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
+        } else if (batch.Kind == BatchKind::Image) {
+            totalVertexBytes += std::get<std::vector<ImageVertex>>(batch.Vertices).size() * sizeof(ImageVertex);
+            totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
         }
-        // Every other BatchKind (Image/Text/Shadow/Layer/BackdropBlur) is out of this sub-phase's
-        // scope, matching NativeRendererVulkan/NativeRendererDX12's own identical starting point.
+        // Every other BatchKind (Text/Shadow/Layer/BackdropBlur) is out of this sub-phase's scope,
+        // matching NativeRendererVulkan/NativeRendererDX12's own identical Phase 35.2/35.9 starting
+        // point.
     }
     if (totalVertexBytes == 0) { return; }
 
@@ -335,7 +543,11 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t vertexByteOffset = 0;
     std::size_t indexByteOffset  = 0;
     for (const Batch& batch : batches) {
-        if (batch.Kind == BatchKind::Rect) { RenderRectBatch(pass, batch, vertexByteOffset, indexByteOffset); }
+        if (batch.Kind == BatchKind::Rect) {
+            RenderRectBatch(pass, batch, vertexByteOffset, indexByteOffset);
+        } else if (batch.Kind == BatchKind::Image) {
+            RenderImageBatch(pass, batch, vertexByteOffset, indexByteOffset);
+        }
     }
 
     wgpuRenderPassEncoderEnd(pass);
@@ -369,6 +581,15 @@ void NativeRendererWebGPU::Shutdown() {
     if (_pipelineLayout) { wgpuPipelineLayoutRelease(_pipelineLayout); _pipelineLayout = nullptr; }
     if (_bindGroupLayout) { wgpuBindGroupLayoutRelease(_bindGroupLayout); _bindGroupLayout = nullptr; }
     if (_shaderModule) { wgpuShaderModuleRelease(_shaderModule); _shaderModule = nullptr; }
+
+    if (_linearSampler) { wgpuSamplerRelease(_linearSampler); _linearSampler = nullptr; }
+    if (_imagePipeline) { wgpuRenderPipelineRelease(_imagePipeline); _imagePipeline = nullptr; }
+    if (_imagePipelineLayout) { wgpuPipelineLayoutRelease(_imagePipelineLayout); _imagePipelineLayout = nullptr; }
+    if (_imageBindGroupLayout) {
+        wgpuBindGroupLayoutRelease(_imageBindGroupLayout);
+        _imageBindGroupLayout = nullptr;
+    }
+    if (_imageShaderModule) { wgpuShaderModuleRelease(_imageShaderModule); _imageShaderModule = nullptr; }
 
     _initialized = false;
 }
