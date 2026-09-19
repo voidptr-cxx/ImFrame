@@ -60,7 +60,12 @@ target_include_directories(ImFrame_DawnWebGPU
 # Backends/-not-src/Rendering/Renderers/Backends/ placement reasoning as NativeRendererVulkan/
 # NativeRendererDX12 -- see .claude/DECISIONS.md, Phase 32.4/35.1/35.7) ──
 if(IMF_BUILD_NATIVE_RENDERER)
-    target_sources(ImFrame_DawnWebGPU PRIVATE NativeRendererWebGPU.cpp)
+    target_sources(ImFrame_DawnWebGPU PRIVATE NativeRendererWebGPU.cpp
+        # Phase 35.15: BlurPassWebGPU — the WebGPU counterpart to BlurPassVulkan/BlurPassDX12, its
+        # own inline WGSL compute shader compiled at runtime by Dawn (same reasoning as
+        # NativeRendererWebGPU.cpp's own kSDFRectWgsl — no offline shader-embed library needed).
+        BlurPassWebGPU.cpp
+    )
     # NativeRendererWebGPU.cpp reaches into src/Rendering/Renderers/ (BatchBuilder.hpp,
     # IRenderer.hpp) — an internal ImFrame header directory, not part of ImFrame's own PUBLIC
     # include interface. Unlike NativeRendererVulkan/NativeRendererDX12, no offline shader-embed
