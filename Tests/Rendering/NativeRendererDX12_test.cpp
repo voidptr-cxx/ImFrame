@@ -593,3 +593,83 @@ TEST_CASE("NativeRendererDX12 renders a DrawShadow behind and offset from the sh
 
     backend.Shutdown();
 }
+
+TEST_CASE("NativeRendererDX12 composites a PushOpacityLayer at the recorded opacity (Phase 35.13)",
+          "[dx12]") {
+    SDL3DX12Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.DirectQueue, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererDX12 renderer(handles.Device, handles.DirectQueue, kColorFormat);
+        renderer.SetTarget(target.Resource(), target.Rtv(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto [pixels, rowPitch] = target.ReadPixels();
+        const Pixel inside  = Sample(pixels, 40, 40, WIDTH, rowPitch);
+        const Pixel outside = Sample(pixels, 5, 5, WIDTH, rowPitch);
+
+        // Correct premultiplied-alpha compositing: an opaque red rect at Opacity=0.5 ends up with
+        // both its alpha AND its stored (premultiplied) red channel scaled to roughly half -- the
+        // same scenario NativeRendererVulkan_test.cpp's own Phase 35.5 test covers.
+        REQUIRE(inside.a > 100);
+        REQUIRE(inside.a < 150);
+        REQUIRE(inside.r > 100);
+        REQUIRE(inside.r < 150);
+        REQUIRE(inside.g < 20);
+        REQUIRE(outside.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererDX12 composites a PushBlendLayer using the Multiply formula (Phase 35.13)",
+          "[dx12]") {
+    SDL3DX12Backend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.DirectQueue, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop filling the whole viewport, then a Multiply layer with an
+        // opaque mid-gray rect over part of it -- the same scenario
+        // NativeRendererVulkan_test.cpp's own Phase 35.5 test covers.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererDX12 renderer(handles.Device, handles.DirectQueue, kColorFormat);
+        renderer.SetTarget(target.Resource(), target.Rtv(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto [pixels, rowPitch] = target.ReadPixels();
+        const Pixel overlap      = Sample(pixels, 40, 40, WIDTH, rowPitch); // inside the blended rect
+        const Pixel backdropOnly = Sample(pixels, 5, 5, WIDTH, rowPitch); // outside it -- backdrop untouched
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255. Backdrop-only area stays 0.8 -> ~204/255.
+        REQUIRE(overlap.r > 90);
+        REQUIRE(overlap.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}

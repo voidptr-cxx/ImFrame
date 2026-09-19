@@ -15,6 +15,8 @@
 
 #include "ImFrame/Core/Error.hpp"
 
+#include "Shaders/Blend.Pixel.hpp"
+#include "Shaders/Blend.Vertex.hpp"
 #include "Shaders/Image.Pixel.hpp"
 #include "Shaders/Image.Vertex.hpp"
 #include "Shaders/SDFRect.Pixel.hpp"
@@ -307,6 +309,90 @@ void NativeRendererDX12::EnsureInitialized() {
 
     _device->CreateGraphicsPipelineState(&imagePsoDesc, IID_PPV_ARGS(&_imagePipelineState));
 
+    // ─── Premultiplied Image PSO: same root signature/shaders as _imagePipelineState, only the
+    // blend factors differ -- needed for CompositeOpacityLayer()'s own already-premultiplied
+    // captured render scaled by Opacity, mirroring NativeRendererVulkan's own
+    // _premultipliedImagePipeline (Phase 35.5) ────────────────────────────────────────────────
+    D3D12_RENDER_TARGET_BLEND_DESC premultipliedBlendDesc{};
+    premultipliedBlendDesc.BlendEnable           = TRUE;
+    premultipliedBlendDesc.SrcBlend              = D3D12_BLEND_ONE;
+    premultipliedBlendDesc.DestBlend             = D3D12_BLEND_INV_SRC_ALPHA;
+    premultipliedBlendDesc.BlendOp               = D3D12_BLEND_OP_ADD;
+    premultipliedBlendDesc.SrcBlendAlpha         = D3D12_BLEND_ONE;
+    premultipliedBlendDesc.DestBlendAlpha        = D3D12_BLEND_INV_SRC_ALPHA;
+    premultipliedBlendDesc.BlendOpAlpha          = D3D12_BLEND_OP_ADD;
+    premultipliedBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC premultipliedPsoDesc = imagePsoDesc;
+    premultipliedPsoDesc.BlendState.RenderTarget[0] = premultipliedBlendDesc;
+    _device->CreateGraphicsPipelineState(&premultipliedPsoDesc, IID_PPV_ARGS(&_premultipliedImagePipelineState));
+
+    // ─── Blend root signature: two-SRV descriptor table (t0/t1) + static sampler (s0) + one root
+    // constant (Mode) -- no vertex input at all, Blend.hlsl generates its own fixed fullscreen
+    // quad from SV_VertexID ─────────────────────────────────────────────────────────────────────
+    D3D12_DESCRIPTOR_RANGE1 blendSrvRange{};
+    blendSrvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    blendSrvRange.NumDescriptors     = 2;
+    blendSrvRange.BaseShaderRegister = 0;
+
+    std::array<D3D12_ROOT_PARAMETER1, 2> blendRootParams{};
+    blendRootParams[0].ParameterType                        = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    blendRootParams[0].DescriptorTable.NumDescriptorRanges = 1;
+    blendRootParams[0].DescriptorTable.pDescriptorRanges    = &blendSrvRange;
+    blendRootParams[0].ShaderVisibility                     = D3D12_SHADER_VISIBILITY_PIXEL;
+    blendRootParams[1].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    blendRootParams[1].Constants.ShaderRegister = 0;
+    blendRootParams[1].Constants.Num32BitValues = 1; // Mode
+    blendRootParams[1].ShaderVisibility           = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_STATIC_SAMPLER_DESC blendStaticSampler{};
+    blendStaticSampler.Filter           = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    blendStaticSampler.AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    blendStaticSampler.AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    blendStaticSampler.AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    blendStaticSampler.ShaderRegister   = 0;
+    blendStaticSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC blendRootSigDesc{};
+    blendRootSigDesc.Version                     = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    blendRootSigDesc.Desc_1_1.NumParameters      = static_cast<UINT>(blendRootParams.size());
+    blendRootSigDesc.Desc_1_1.pParameters        = blendRootParams.data();
+    blendRootSigDesc.Desc_1_1.NumStaticSamplers = 1;
+    blendRootSigDesc.Desc_1_1.pStaticSamplers    = &blendStaticSampler;
+    // No D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT -- this pipeline has none.
+
+    ComPtr<ID3DBlob> blendSerialized;
+    ComPtr<ID3DBlob> blendError;
+    D3D12SerializeVersionedRootSignature(&blendRootSigDesc, &blendSerialized, &blendError);
+    _device->CreateRootSignature(0, blendSerialized->GetBufferPointer(), blendSerialized->GetBufferSize(),
+                                 IID_PPV_ARGS(&_blendRootSignature));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC blendPsoDesc{};
+    blendPsoDesc.pRootSignature = _blendRootSignature.Get();
+    blendPsoDesc.VS = {Shaders::kBlendVertexDxil, Shaders::kBlendVertexDxilByteCount};
+    blendPsoDesc.PS = {Shaders::kBlendPixelDxil, Shaders::kBlendPixelDxilByteCount};
+
+    blendPsoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    blendPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    // blendEnable=false -- the shader itself computes the full Porter-Duff-composited result;
+    // fixed-function blending on top of that output would double-composite it (matches
+    // NativeRendererVulkan's own _blendPipeline identical reasoning).
+    D3D12_RENDER_TARGET_BLEND_DESC blendReplaceDesc{};
+    blendReplaceDesc.BlendEnable           = FALSE;
+    blendReplaceDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    blendPsoDesc.BlendState.RenderTarget[0] = blendReplaceDesc;
+
+    blendPsoDesc.DepthStencilState.DepthEnable   = FALSE;
+    blendPsoDesc.DepthStencilState.StencilEnable = FALSE;
+    blendPsoDesc.SampleMask                      = UINT_MAX;
+    blendPsoDesc.PrimitiveTopologyType            = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    blendPsoDesc.NumRenderTargets                = 1;
+    blendPsoDesc.RTVFormats[0]                    = _colorFormat;
+    blendPsoDesc.SampleDesc.Count                 = 1;
+
+    _device->CreateGraphicsPipelineState(&blendPsoDesc, IID_PPV_ARGS(&_blendPipelineState));
+
     _srvDescriptorSize = _device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
     // ─── Command allocator/list, fence -- matches ViewportFramebufferDX12's own identical pattern ─
@@ -398,6 +484,299 @@ void NativeRendererDX12::EnsureShadowSilhouetteTarget(std::uint32_t width, std::
     _shadowSilhouetteHeight = height;
 }
 
+void NativeRendererDX12::EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height) {
+    if (_layerTargets.size() <= depth) { _layerTargets.resize(depth + 1); }
+
+    LayerTarget& target = _layerTargets[depth];
+    if (target.Resource && target.Width == width && target.Height == height) { return; }
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = width;
+    desc.Height           = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    // "At rest" state is PIXEL_SHADER_RESOURCE (see this class's own file comment) -- created
+    // directly there so PushLayer()'s own PIXEL_SHADER_RESOURCE -> RENDER_TARGET transition is
+    // always the correct one to record, whether this target is freshly created or reused.
+    _device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                                     IID_PPV_ARGS(&target.Resource));
+
+    if (!target.RtvHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
+        rtvHeapDesc.Type           = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        rtvHeapDesc.NumDescriptors = 1;
+        _device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&target.RtvHeap));
+        target.Rtv = target.RtvHeap->GetCPUDescriptorHandleForHeapStart();
+    }
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
+    rtvDesc.Format        = DXGI_FORMAT_R8G8B8A8_UNORM;
+    rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    _device->CreateRenderTargetView(target.Resource.Get(), &rtvDesc, target.Rtv);
+
+    target.Width  = width;
+    target.Height = height;
+}
+
+void NativeRendererDX12::EnsureBackdropTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropResource && _backdropWidth == width && _backdropHeight == height) { return; }
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = width;
+    desc.Height           = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    // No special resource flags -- a plain texture is always valid as a copy destination and SRV
+    // source (see this class's own file comment).
+
+    _device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                     D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                                     IID_PPV_ARGS(&_backdropResource));
+
+    _backdropWidth  = width;
+    _backdropHeight = height;
+}
+
+void NativeRendererDX12::HandleLayerMarker(const Batch& batch) {
+    const auto& markers = std::get<std::vector<LayerVertex>>(batch.Vertices);
+    if (markers.empty()) { return; }
+    const LayerVertex& marker = markers.front();
+
+    switch (marker.Op) {
+        case LayerOp::PushOpacity:
+        case LayerOp::PushBlend:
+            PushLayer(marker.Op, marker.Opacity, marker.Mode);
+            break;
+        case LayerOp::Pop:
+            PopLayer();
+            break;
+    }
+}
+
+void NativeRendererDX12::PushLayer(LayerOp op, float opacity, Rendering::BlendMode mode) {
+    const std::size_t depth = _layerStack.size();
+
+    LayerFrame frame;
+    frame.Op      = op;
+    frame.Opacity = opacity;
+    frame.Mode    = mode;
+    if (_layerStack.empty()) {
+        frame.ParentResource = _targetResource;
+        frame.ParentRtv      = _targetRtv;
+    } else {
+        const LayerTarget& enclosing = _layerTargets[_layerStack.back().TargetIndex];
+        frame.ParentResource = enclosing.Resource.Get();
+        frame.ParentRtv      = enclosing.Rtv;
+    }
+    frame.TargetIndex = depth;
+    _layerStack.push_back(frame);
+
+    EnsureLayerTarget(depth, _targetWidth, _targetHeight);
+    const LayerTarget& target = _layerTargets[depth];
+
+    D3D12_RESOURCE_BARRIER toRt{};
+    toRt.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toRt.Transition.pResource   = target.Resource.Get();
+    toRt.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toRt.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toRt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &toRt);
+
+    _commandList->OMSetRenderTargets(1, &target.Rtv, FALSE, nullptr);
+    const float clearColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    _commandList->ClearRenderTargetView(target.Rtv, clearColor, 0, nullptr);
+
+    // Every layer, and the real target, is always _targetWidth x _targetHeight -- no separate
+    // "current viewport" state to restore, matching NativeRendererVulkan's own identical note.
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f, static_cast<float>(_targetWidth), static_cast<float>(_targetHeight), 0.0f, 1.0f};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(_targetWidth), static_cast<LONG>(_targetHeight)};
+    _commandList->RSSetViewports(1, &viewport);
+    _commandList->RSSetScissorRects(1, &scissor);
+}
+
+void NativeRendererDX12::CompositeOpacityLayer(const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                  = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels     = 1;
+    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, _compositeSrvCpuBase);
+
+    // TintColor = (Opacity,Opacity,Opacity,Opacity) scales every channel of the already-
+    // premultiplied source texture uniformly by Opacity -- matches
+    // NativeRendererVulkan::CompositeOpacityLayer()'s identical reasoning.
+    const std::vector<ImageVertex> vertices = BuildImageQuadVertices(
+        {0.0f, 0.0f}, {static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)},
+        {frame.Opacity, frame.Opacity, frame.Opacity, frame.Opacity});
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    _commandList->SetPipelineState(_premultipliedImagePipelineState.Get());
+    _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
+    _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
+    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
+
+    D3D12_VERTEX_BUFFER_VIEW vbView{};
+    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
+    vbView.SizeInBytes    = static_cast<UINT>(vertices.size() * sizeof(ImageVertex));
+    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->IASetVertexBuffers(0, 1, &vbView);
+
+    D3D12_INDEX_BUFFER_VIEW ibView{};
+    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
+    ibView.SizeInBytes    = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
+    ibView.Format         = DXGI_FORMAT_R32_UINT;
+    _commandList->IASetIndexBuffer(&ibView);
+
+    _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
+}
+
+void NativeRendererDX12::CopyBackdropForBlend(const LayerFrame& frame) {
+    EnsureBackdropTarget(_targetWidth, _targetHeight);
+
+    // The parent (real target or an enclosing layer) is always in RENDER_TARGET while active --
+    // unlike Vulkan, which only needs a conditional transition for its own depth-0-vs-nested
+    // layout distinction (this class's own file comment), D3D12 always needs one here.
+    D3D12_RESOURCE_BARRIER parentToCopySrc{};
+    parentToCopySrc.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    parentToCopySrc.Transition.pResource   = frame.ParentResource;
+    parentToCopySrc.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    parentToCopySrc.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    parentToCopySrc.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &parentToCopySrc);
+
+    D3D12_RESOURCE_BARRIER backdropToCopyDst{};
+    backdropToCopyDst.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backdropToCopyDst.Transition.pResource   = _backdropResource.Get();
+    backdropToCopyDst.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    backdropToCopyDst.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+    backdropToCopyDst.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &backdropToCopyDst);
+
+    D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+    srcLoc.pResource        = frame.ParentResource;
+    srcLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+    dstLoc.pResource        = _backdropResource.Get();
+    dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dstLoc.SubresourceIndex = 0;
+    _commandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+
+    D3D12_RESOURCE_BARRIER parentBackToRt{};
+    parentBackToRt.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    parentBackToRt.Transition.pResource   = frame.ParentResource;
+    parentBackToRt.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    parentBackToRt.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    parentBackToRt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &parentBackToRt);
+
+    D3D12_RESOURCE_BARRIER backdropToSrv{};
+    backdropToSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backdropToSrv.Transition.pResource   = _backdropResource.Get();
+    backdropToSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    backdropToSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    backdropToSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &backdropToSrv);
+}
+
+void NativeRendererDX12::CompositeBlendLayer(const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                  = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels     = 1;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE sourceSlot = _compositeSrvCpuBase;
+    sourceSlot.ptr += static_cast<SIZE_T>(1) * _srvDescriptorSize;
+    D3D12_CPU_DESCRIPTOR_HANDLE backdropSlot = _compositeSrvCpuBase;
+    backdropSlot.ptr += static_cast<SIZE_T>(2) * _srvDescriptorSize;
+    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, sourceSlot);
+    _device->CreateShaderResourceView(_backdropResource.Get(), &srvDesc, backdropSlot);
+
+    D3D12_GPU_DESCRIPTOR_HANDLE tableBase = _compositeSrvGpuBase;
+    tableBase.ptr += static_cast<UINT64>(1) * _srvDescriptorSize; // covers slots +1 (source) and +2 (backdrop)
+
+    const auto mode = static_cast<std::int32_t>(frame.Mode);
+    _commandList->SetPipelineState(_blendPipelineState.Get());
+    _commandList->SetGraphicsRootSignature(_blendRootSignature.Get());
+    _commandList->SetGraphicsRootDescriptorTable(0, tableBase);
+    _commandList->SetGraphicsRoot32BitConstants(1, 1, &mode, 0);
+    _commandList->IASetVertexBuffers(0, 0, nullptr);
+    _commandList->IASetIndexBuffer(nullptr);
+    _commandList->DrawInstanced(6, 1, 0, 0); // no vertex buffer -- Blend.hlsl generates the quad from SV_VertexID
+}
+
+void NativeRendererDX12::PopLayer() {
+    // A PopLayer with no matching Push{Opacity,Blend}Layer is a malformed Rendering::CommandBuffer
+    // -- a caller bug, not a runtime condition this internal renderer recovers from.
+    IMF_ASSERT(!_layerStack.empty());
+
+    const LayerFrame frame = _layerStack.back();
+    _layerStack.pop_back();
+
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    if (frame.Op == LayerOp::PushBlend) {
+        // Unlike Vulkan (whose active-rendering-instance restriction forces this to run before
+        // resuming the parent), D3D12 has no such restriction -- CopyTextureRegion() needs no
+        // "no instance active" precondition, so this can run at any point relative to
+        // OMSetRenderTargets(); kept here, before resuming the parent, for structural parity with
+        // NativeRendererVulkan::PopLayer()'s own ordering.
+        CopyBackdropForBlend(frame);
+    }
+
+    // The popped layer's own content is read via SRV by the composite draw below -- transition it
+    // out of RENDER_TARGET first.
+    D3D12_RESOURCE_BARRIER toSrv{};
+    toSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    toSrv.Transition.pResource   = target.Resource.Get();
+    toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    toSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &toSrv);
+
+    _commandList->OMSetRenderTargets(1, &frame.ParentRtv, FALSE, nullptr);
+
+    const D3D12_VIEWPORT viewport{
+        0.0f, 0.0f, static_cast<float>(_targetWidth), static_cast<float>(_targetHeight), 0.0f, 1.0f};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(_targetWidth), static_cast<LONG>(_targetHeight)};
+    _commandList->RSSetViewports(1, &viewport);
+    _commandList->RSSetScissorRects(1, &scissor);
+    _commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    if (frame.Op == LayerOp::PushOpacity) {
+        CompositeOpacityLayer(frame);
+    } else {
+        CompositeBlendLayer(frame);
+    }
+
+    // target.Resource is already back in PIXEL_SHADER_RESOURCE (transitioned above, before the
+    // composite draw) -- its own "at rest" state for whatever PushLayer() reuses this depth next,
+    // no further transition needed.
+}
+
 void NativeRendererDX12::BeginMainCommandList() {
     _commandAllocator->Reset();
     _commandList->Reset(_commandAllocator.Get(), nullptr);
@@ -436,8 +815,7 @@ void NativeRendererDX12::EndAndSubmitMainCommandList() {
     }
 }
 
-void NativeRendererDX12::RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle,
-                                           D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle) {
+void NativeRendererDX12::RenderShadowBatch(const Batch& batch) {
     const auto& shadows = std::get<std::vector<ShadowVertex>>(batch.Vertices);
     if (shadows.empty()) { return; }
     const ShadowVertex& shadow = shadows.front();
@@ -569,7 +947,7 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIP
     srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels     = 1;
-    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, compositeSrvCpuHandle);
+    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, _compositeSrvCpuBase);
 
     // ─── Composite: resume the main command list, restore its own PerFrame CB, draw ───────────
     BeginMainCommandList();
@@ -595,7 +973,7 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIP
     _commandList->SetPipelineState(_imagePipelineState.Get());
     _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
     _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
-    _commandList->SetGraphicsRootDescriptorTable(1, compositeSrvGpuHandle);
+    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
 
     D3D12_VERTEX_BUFFER_VIEW vbView{};
     vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
@@ -710,6 +1088,7 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t totalIndexBytes  = 0;
     std::size_t imageBatchCount  = 0;
     std::size_t shadowBatchCount = 0;
+    std::size_t layerBatchCount  = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -720,11 +1099,13 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
             ++imageBatchCount;
         } else if (batch.Kind == BatchKind::Shadow) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
+        } else if (batch.Kind == BatchKind::Layer) {
+            ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
         }
-        // Every other BatchKind (Text/Layer/BackdropBlur) is out of this sub-phase's scope, matching
-        // NativeRendererVulkan's own identical Phase 35.4 starting point.
+        // Every other BatchKind (Text/BackdropBlur) is out of this sub-phase's scope, matching
+        // NativeRendererVulkan's own identical Phase 35.5 starting point.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -732,18 +1113,24 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     const PerFrameCb perFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
     std::memcpy(_perFrameCbMapped, &perFrame, sizeof(perFrame));
 
-    // One extra, reserved slot (beyond one per Image batch) for RenderShadowBatch()'s own composite
-    // draw, if any Shadow batch exists this call -- see this class's own file comment on why this
-    // shares _srvHeap rather than using a second heap (D3D12 only allows one CBV_SRV_UAV heap bound
-    // via SetDescriptorHeaps() at a time per command list).
-    const std::size_t compositeSrvSlot  = imageBatchCount; // valid only when shadowBatchCount > 0
-    const std::size_t neededSrvSlots    = imageBatchCount + (shadowBatchCount > 0 ? 1 : 0);
+    // 3 extra, reserved slots (beyond one per Image batch) for every renderer-internal composite
+    // draw this call might need: slot +0 shared by RenderShadowBatch()/CompositeOpacityLayer()
+    // (one texture each), slots +1/+2 by CompositeBlendLayer() (two textures) -- see this class's
+    // own file comment on why this shares _srvHeap rather than using a second heap (D3D12 only
+    // allows one CBV_SRV_UAV heap bound via SetDescriptorHeaps() at a time per command list).
+    // Reserved whenever either Shadow or Layer batches exist, regardless of which specific ops are
+    // used this frame -- a small, constant amount of heap-slot overhead, not worth scanning
+    // LayerVertex ops during this counting pass just to avoid.
+    const bool needsCompositeSlots   = shadowBatchCount > 0 || layerBatchCount > 0;
+    const std::size_t compositeSrvSlot = imageBatchCount; // valid only when needsCompositeSlots
+    const std::size_t neededSrvSlots   = imageBatchCount + (needsCompositeSlots ? 3 : 0);
 
     // Write every Image batch's SRV into _srvHeap entirely before command-list recording begins --
     // see RenderImageBatch()'s own comment, and NativeRendererVulkan::Render()'s identical Phase
     // 35.2 reasoning, for why this can't happen per-batch inside the recording loop below. The
-    // composite slot (if reserved) is written later, by RenderShadowBatch() itself, once the blur
-    // it depends on has actually completed -- see that method's own comment for why that's safe.
+    // composite slots (if reserved) are written later, by RenderShadowBatch()/CompositeOpacityLayer()/
+    // CompositeBlendLayer() themselves, once whatever they each depend on has actually completed --
+    // see those methods' own comments for why that's safe.
     if (neededSrvSlots > 0) {
         EnsureImageDescriptorCapacity(neededSrvSlots);
 
@@ -770,13 +1157,13 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
         }
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle{};
-    D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle{};
-    if (shadowBatchCount > 0) {
-        compositeSrvCpuHandle = _srvHeap->GetCPUDescriptorHandleForHeapStart();
-        compositeSrvCpuHandle.ptr += static_cast<SIZE_T>(compositeSrvSlot) * _srvDescriptorSize;
-        compositeSrvGpuHandle = _srvHeap->GetGPUDescriptorHandleForHeapStart();
-        compositeSrvGpuHandle.ptr += static_cast<UINT64>(compositeSrvSlot) * _srvDescriptorSize;
+    _compositeSrvCpuBase = {};
+    _compositeSrvGpuBase = {};
+    if (needsCompositeSlots) {
+        _compositeSrvCpuBase = _srvHeap->GetCPUDescriptorHandleForHeapStart();
+        _compositeSrvCpuBase.ptr += static_cast<SIZE_T>(compositeSrvSlot) * _srvDescriptorSize;
+        _compositeSrvGpuBase = _srvHeap->GetGPUDescriptorHandleForHeapStart();
+        _compositeSrvGpuBase.ptr += static_cast<UINT64>(compositeSrvSlot) * _srvDescriptorSize;
     }
 
     BeginMainCommandList();
@@ -797,7 +1184,9 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
         } else if (batch.Kind == BatchKind::Shadow) {
             // Ends and re-begins the main command list internally -- see this method's own comment
             // on why (BlurPassDX12::Apply() is its own separate submission).
-            RenderShadowBatch(batch, compositeSrvCpuHandle, compositeSrvGpuHandle);
+            RenderShadowBatch(batch);
+        } else if (batch.Kind == BatchKind::Layer) {
+            HandleLayerMarker(batch);
         }
     }
 
@@ -842,11 +1231,22 @@ void NativeRendererDX12::Shutdown() {
     _shadowSilhouetteHeight = 0;
     _blurPass.Shutdown();
 
+    _layerStack.clear();
+    _layerTargets.clear();
+    _backdropResource.Reset();
+    _backdropWidth  = 0;
+    _backdropHeight = 0;
+    _compositeSrvCpuBase = {};
+    _compositeSrvGpuBase = {};
+
     _srvHeap.Reset();
     _srvHeapCapacitySlots = 0;
 
     _commandList.Reset();
     _commandAllocator.Reset();
+    _blendPipelineState.Reset();
+    _blendRootSignature.Reset();
+    _premultipliedImagePipelineState.Reset();
     _imagePipelineState.Reset();
     _imageRootSignature.Reset();
     _rectPipelineState.Reset();
