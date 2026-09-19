@@ -15,9 +15,13 @@
 
 #include "ImFrame/Core/Error.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <vector>
 
 namespace ImFrame::Internal {
 
@@ -186,10 +190,78 @@ struct PerFrameUniform {
 
 WGPUStringView ToStringView(const char* str) { return WGPUStringView{str, WGPU_STRLEN}; }
 
+/// Builds one axis-aligned quad's `RectVertex`es — `RenderShadowBatch()`'s own silhouette pass
+/// reuses the existing Rect pipeline via a direct draw call rather than a third hand-written
+/// pipeline, mirroring `NativeRendererVulkan`'s/`NativeRendererDX12`'s own identical role/formula
+/// (Phase 35.4/35.12).
+std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Rendering::CornerRadii radii,
+                                              Widgets::Vec4 fillColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+
+    std::vector<RectVertex> vertices;
+    vertices.reserve(4);
+    for (const Widgets::Vec2& corner : corners) {
+        vertices.push_back(RectVertex{
+            .Position = corner,
+            .Local = {corner.x - center.x, corner.y - center.y},
+            .HalfSize = halfSize,
+            .Radii = radii,
+            .FillColor = fillColor,
+            .StrokeColor = {},
+            .StrokeWidth = 0.0f,
+        });
+    }
+    return vertices;
+}
+
+/// Builds one axis-aligned quad's `ImageVertex`es — `RenderShadowBatch()`'s own composite pass
+/// reuses the existing Image pipeline to draw a renderer-produced offscreen texture (a blurred
+/// shadow), tinted, as a plain rectangle. **Unflipped** UV table, matching `NativeRendererVulkan`'s/
+/// `NativeRendererDX12`'s own choice, not `NativeRendererGL3`'s V-flipped one -- even though this
+/// vertex shader negates Y like GL's/D3D's own convention (see `kSDFRectWgsl`'s own `VSMain`
+/// comment), WebGPU's own spec defines texture coordinate (0,0) as the texture's top-left texel
+/// unconditionally, regardless of which native backend (D3D12/Vulkan/Metal) Dawn actually targets
+/// underneath -- the same "vertex-shader Y-handedness and texture-row order are independent
+/// questions" reasoning `NativeRendererDX12`'s own Phase 35.12 finding already established, applied
+/// here to a third, WebGPU-specific combination (Y-negating vertex shader + WebGPU's own backend-
+/// agnostic top-down texture convention).
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+    const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
+    const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
+    const Widgets::Vec2 corners[4] = {
+        {position.x, position.y},
+        {position.x + size.x, position.y},
+        {position.x + size.x, position.y + size.y},
+        {position.x, position.y + size.y},
+    };
+    constexpr Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+
+    std::vector<ImageVertex> vertices;
+    vertices.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        vertices.push_back(ImageVertex{
+            .Position = corners[i],
+            .Local = {corners[i].x - center.x, corners[i].y - center.y},
+            .HalfSize = halfSize,
+            .Radii = {},
+            .Uv = uvs[i],
+            .TintColor = tintColor,
+        });
+    }
+    return vertices;
+}
+
 } // namespace
 
 NativeRendererWebGPU::NativeRendererWebGPU(WGPUDevice device, WGPUQueue queue, WGPUTextureFormat colorFormat)
-    : _device(device), _queue(queue), _colorFormat(colorFormat) {}
+    : _device(device), _queue(queue), _colorFormat(colorFormat), _blurPass(device, queue) {}
 
 NativeRendererWebGPU::~NativeRendererWebGPU() { Shutdown(); }
 
@@ -399,7 +471,89 @@ void NativeRendererWebGPU::EnsureInitialized() {
     samplerDesc.maxAnisotropy = 1;
     _linearSampler             = wgpuDeviceCreateSampler(_device, &samplerDesc);
 
+    // ─── Phase 35.16: small, fixed-size dedicated buffers for RenderShadowBatch()'s own two
+    // one-quad draws -- sized for the larger of RectVertex/ImageVertex (4 vertices), rewritten via
+    // wgpuQueueWriteBuffer() before each use, never grown ────────────────────────────────────────
+    constexpr std::size_t kShadowQuadVertexBytes =
+        4 * (sizeof(RectVertex) > sizeof(ImageVertex) ? sizeof(RectVertex) : sizeof(ImageVertex));
+    WGPUBufferDescriptor shadowVbDesc{};
+    shadowVbDesc.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+    shadowVbDesc.size  = kShadowQuadVertexBytes;
+    _shadowQuadVertexBuffer = wgpuDeviceCreateBuffer(_device, &shadowVbDesc);
+
+    WGPUBufferDescriptor shadowIbDesc{};
+    shadowIbDesc.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
+    shadowIbDesc.size  = 6 * sizeof(std::uint32_t);
+    _shadowQuadIndexBuffer = wgpuDeviceCreateBuffer(_device, &shadowIbDesc);
+
     _initialized = true;
+}
+
+void NativeRendererWebGPU::EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height) {
+    if (_shadowSilhouetteTexture && _shadowSilhouetteWidth == width && _shadowSilhouetteHeight == height) {
+        return;
+    }
+
+    if (_shadowSilhouetteView) { wgpuTextureViewRelease(_shadowSilhouetteView); _shadowSilhouetteView = nullptr; }
+    if (_shadowSilhouetteTexture) { wgpuTextureRelease(_shadowSilhouetteTexture); _shadowSilhouetteTexture = nullptr; }
+
+    WGPUTextureDescriptor texDesc{};
+    // Both RenderAttachment (silhouette draw) and StorageBinding (_blurPass's own read) -- used
+    // directly in either role with no transition of any kind, see this class's own file comment.
+    texDesc.usage         = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_StorageBinding;
+    texDesc.dimension     = WGPUTextureDimension_2D;
+    texDesc.size          = WGPUExtent3D{width, height, 1};
+    texDesc.format        = _colorFormat;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount   = 1;
+    _shadowSilhouetteTexture = wgpuDeviceCreateTexture(_device, &texDesc);
+
+    WGPUTextureViewDescriptor viewDesc{};
+    viewDesc.format          = _colorFormat;
+    viewDesc.dimension       = WGPUTextureViewDimension_2D;
+    viewDesc.mipLevelCount   = 1;
+    viewDesc.arrayLayerCount = 1;
+    _shadowSilhouetteView     = wgpuTextureCreateView(_shadowSilhouetteTexture, &viewDesc);
+
+    _shadowSilhouetteWidth  = width;
+    _shadowSilhouetteHeight = height;
+}
+
+void NativeRendererWebGPU::BeginMainPass() {
+    WGPUCommandEncoderDescriptor encoderDesc{};
+    _mainEncoder = wgpuDeviceCreateCommandEncoder(_device, &encoderDesc);
+
+    WGPURenderPassColorAttachment colorAttachment{};
+    colorAttachment.view       = _targetView;
+    colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    colorAttachment.loadOp      = WGPULoadOp_Load;
+    colorAttachment.storeOp     = WGPUStoreOp_Store;
+
+    WGPURenderPassDescriptor passDesc{};
+    passDesc.colorAttachmentCount = 1;
+    passDesc.colorAttachments      = &colorAttachment;
+
+    _mainPass = wgpuCommandEncoderBeginRenderPass(_mainEncoder, &passDesc);
+
+    wgpuRenderPassEncoderSetViewport(_mainPass, 0.0f, 0.0f, static_cast<float>(_targetWidth),
+                                     static_cast<float>(_targetHeight), 0.0f, 1.0f);
+    wgpuRenderPassEncoderSetScissorRect(_mainPass, 0, 0, _targetWidth, _targetHeight);
+}
+
+void NativeRendererWebGPU::EndAndSubmitMainPass() {
+    wgpuRenderPassEncoderEnd(_mainPass);
+    wgpuRenderPassEncoderRelease(_mainPass);
+    _mainPass = nullptr;
+
+    WGPUCommandBufferDescriptor cbDesc{};
+    WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(_mainEncoder, &cbDesc);
+    wgpuCommandEncoderRelease(_mainEncoder);
+    _mainEncoder = nullptr;
+
+    wgpuQueueSubmit(_queue, 1, &cmdBuf);
+    wgpuCommandBufferRelease(cmdBuf);
+    // No fence/wait needed -- WebGPU's sequential submit model guarantees this submit's work
+    // completes before the next one on this queue, matching this class's own file comment.
 }
 
 void NativeRendererWebGPU::EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes) {
@@ -425,6 +579,12 @@ void NativeRendererWebGPU::RenderRectBatch(WGPURenderPassEncoder pass, const Bat
                                            std::size_t& vertexByteOffset, std::size_t& indexByteOffset) {
     const auto& vertices = std::get<std::vector<RectVertex>>(batch.Vertices);
     if (vertices.empty()) { return; }
+
+    // Rebinds unconditionally, regardless of what the previous batch (if any) bound -- matches
+    // RenderImageBatch()'s own existing convention, needed now that a Shadow batch can end and
+    // begin a fresh main pass mid-Render() call (Phase 35.16's own file comment).
+    wgpuRenderPassEncoderSetPipeline(pass, _rectPipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, _bindGroup, 0, nullptr);
 
     const std::size_t vertexBytes = vertices.size() * sizeof(RectVertex);
     const std::size_t indexBytes  = batch.Indices.size() * sizeof(std::uint32_t);
@@ -488,6 +648,137 @@ void NativeRendererWebGPU::RenderImageBatch(WGPURenderPassEncoder pass, const Ba
     indexByteOffset += indexBytes;
 }
 
+void NativeRendererWebGPU::RenderShadowBatch(const Batch& batch) {
+    const auto& shadows = std::get<std::vector<ShadowVertex>>(batch.Vertices);
+    if (shadows.empty()) { return; }
+    const ShadowVertex& shadow = shadows.front();
+
+    // Spread grows the silhouette outward on all sides before blurring -- matches
+    // Rendering::DrawShadow::Spread's documented meaning, mirroring NativeRendererVulkan's/
+    // NativeRendererDX12's own identical formula.
+    const float spreadWidth  = shadow.Size.x + 2.0f * shadow.Spread;
+    const float spreadHeight = shadow.Size.y + 2.0f * shadow.Spread;
+    if (spreadWidth <= 0.0f || spreadHeight <= 0.0f) { return; }
+
+    // Pad the offscreen silhouette by the blur radius on every side so _blurPass's kernel has real
+    // surrounding content to read at the silhouette's own edges, instead of clamped-edge repeats.
+    const float pad = std::max(shadow.BlurRadius, 0.0f);
+    const auto texWidth  = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadWidth + 2.0f * pad))));
+    const auto texHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(spreadHeight + 2.0f * pad))));
+
+    // End and submit the main pass as accumulated so far -- _blurPass.Apply() below is its own
+    // separate submission; no fence wait is needed at this split (unlike Vulkan's/DX12's own
+    // identical splits), see this class's own file comment.
+    EndAndSubmitMainPass();
+
+    EnsureShadowSilhouetteTarget(texWidth, texHeight);
+
+    // ─── Silhouette: an opaque-white rounded rect, in the silhouette's own small coordinate space ───
+    {
+        const PerFrameUniform silhouettePerFrame{static_cast<float>(texWidth), static_cast<float>(texHeight), 0.0f,
+                                                 0.0f};
+        wgpuQueueWriteBuffer(_queue, _perFrameBuffer, 0, &silhouettePerFrame, sizeof(silhouettePerFrame));
+
+        const std::vector<RectVertex> silhouetteVertices =
+            BuildRectQuadVertices({static_cast<float>(pad), static_cast<float>(pad)}, {spreadWidth, spreadHeight},
+                                 shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
+        constexpr std::array<std::uint32_t, 6> silhouetteIndices{0, 1, 2, 0, 2, 3};
+        wgpuQueueWriteBuffer(_queue, _shadowQuadVertexBuffer, 0, silhouetteVertices.data(),
+                            silhouetteVertices.size() * sizeof(RectVertex));
+        wgpuQueueWriteBuffer(_queue, _shadowQuadIndexBuffer, 0, silhouetteIndices.data(),
+                            silhouetteIndices.size() * sizeof(std::uint32_t));
+
+        WGPUCommandEncoderDescriptor encDesc{};
+        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(_device, &encDesc);
+
+        WGPURenderPassColorAttachment colorAttachment{};
+        colorAttachment.view       = _shadowSilhouetteView;
+        colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+        colorAttachment.loadOp      = WGPULoadOp_Clear;
+        colorAttachment.storeOp     = WGPUStoreOp_Store;
+        colorAttachment.clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
+
+        WGPURenderPassDescriptor passDesc{};
+        passDesc.colorAttachmentCount = 1;
+        passDesc.colorAttachments      = &colorAttachment;
+
+        WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
+        wgpuRenderPassEncoderSetViewport(pass, 0.0f, 0.0f, static_cast<float>(texWidth), static_cast<float>(texHeight),
+                                         0.0f, 1.0f);
+        wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, texWidth, texHeight);
+
+        wgpuRenderPassEncoderSetPipeline(pass, _rectPipeline);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, _bindGroup, 0, nullptr);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, _shadowQuadVertexBuffer, 0,
+                                             silhouetteVertices.size() * sizeof(RectVertex));
+        wgpuRenderPassEncoderSetIndexBuffer(pass, _shadowQuadIndexBuffer, WGPUIndexFormat_Uint32, 0,
+                                            silhouetteIndices.size() * sizeof(std::uint32_t));
+        wgpuRenderPassEncoderDrawIndexed(pass, static_cast<uint32_t>(silhouetteIndices.size()), 1, 0, 0, 0);
+
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+
+        WGPUCommandBufferDescriptor cbDesc{};
+        WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(encoder, &cbDesc);
+        wgpuCommandEncoderRelease(encoder);
+        wgpuQueueSubmit(_queue, 1, &cmdBuf);
+        wgpuCommandBufferRelease(cmdBuf);
+    }
+
+    const BlurResult blurred =
+        _blurPass.Apply(BlurResult{_shadowSilhouetteTexture, _shadowSilhouetteView}, texWidth, texHeight,
+                        shadow.BlurRadius);
+
+    // ─── Composite: begin a new main pass, restore its own PerFrame content, draw ───────────────
+    BeginMainPass();
+
+    const PerFrameUniform mainPerFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight), 0.0f,
+                                       0.0f};
+    wgpuQueueWriteBuffer(_queue, _perFrameBuffer, 0, &mainPerFrame, sizeof(mainPerFrame));
+
+    // Top-left of the padded silhouette texture, in the shape's own coordinate space, plus the
+    // shadow's drop offset -- matches NativeRendererVulkan's/NativeRendererDX12's own identical
+    // placement formula.
+    const Widgets::Vec2 compositePosition{
+        shadow.Position.x - shadow.Spread - pad + shadow.Offset.x,
+        shadow.Position.y - shadow.Spread - pad + shadow.Offset.y,
+    };
+    const Widgets::Vec2 compositeSize{static_cast<float>(texWidth), static_cast<float>(texHeight)};
+    const std::vector<ImageVertex> compositeVertices =
+        BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
+    constexpr std::array<std::uint32_t, 6> compositeIndices{0, 1, 2, 0, 2, 3};
+    wgpuQueueWriteBuffer(_queue, _shadowQuadVertexBuffer, 0, compositeVertices.data(),
+                        compositeVertices.size() * sizeof(ImageVertex));
+    wgpuQueueWriteBuffer(_queue, _shadowQuadIndexBuffer, 0, compositeIndices.data(),
+                        compositeIndices.size() * sizeof(std::uint32_t));
+
+    std::array<WGPUBindGroupEntry, 3> bgEntries{};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer   = _perFrameBuffer;
+    bgEntries[0].offset   = 0;
+    bgEntries[0].size     = sizeof(PerFrameUniform);
+    bgEntries[1].binding    = 1;
+    bgEntries[1].textureView = blurred.View;
+    bgEntries[2].binding = 2;
+    bgEntries[2].sampler  = _linearSampler;
+
+    WGPUBindGroupDescriptor bgDesc{};
+    bgDesc.layout      = _imageBindGroupLayout;
+    bgDesc.entryCount = static_cast<size_t>(bgEntries.size());
+    bgDesc.entries     = bgEntries.data();
+    WGPUBindGroup compositeBindGroup = wgpuDeviceCreateBindGroup(_device, &bgDesc);
+
+    wgpuRenderPassEncoderSetPipeline(_mainPass, _imagePipeline);
+    wgpuRenderPassEncoderSetBindGroup(_mainPass, 0, compositeBindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(_mainPass, 0, _shadowQuadVertexBuffer, 0,
+                                         compositeVertices.size() * sizeof(ImageVertex));
+    wgpuRenderPassEncoderSetIndexBuffer(_mainPass, _shadowQuadIndexBuffer, WGPUIndexFormat_Uint32, 0,
+                                        compositeIndices.size() * sizeof(std::uint32_t));
+    wgpuRenderPassEncoderDrawIndexed(_mainPass, static_cast<uint32_t>(compositeIndices.size()), 1, 0, 0, 0);
+
+    wgpuBindGroupRelease(compositeBindGroup);
+}
+
 void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
     // A missing SetTarget() call is a caller bug, not a runtime condition to recover from --
@@ -499,6 +790,7 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
 
     std::size_t totalVertexBytes = 0;
     std::size_t totalIndexBytes  = 0;
+    std::size_t shadowBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -506,63 +798,36 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
         } else if (batch.Kind == BatchKind::Image) {
             totalVertexBytes += std::get<std::vector<ImageVertex>>(batch.Vertices).size() * sizeof(ImageVertex);
             totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
+        } else if (batch.Kind == BatchKind::Shadow) {
+            ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         }
-        // Every other BatchKind (Text/Shadow/Layer/BackdropBlur) is out of this sub-phase's scope,
-        // matching NativeRendererVulkan/NativeRendererDX12's own identical Phase 35.2/35.9 starting
-        // point.
+        // Every other BatchKind (Text/Layer/BackdropBlur) is out of this sub-phase's scope, matching
+        // NativeRendererVulkan's/NativeRendererDX12's own identical Phase 35.5/35.13 starting point.
     }
-    if (totalVertexBytes == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
     const PerFrameUniform perFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight), 0.0f, 0.0f};
     wgpuQueueWriteBuffer(_queue, _perFrameBuffer, 0, &perFrame, sizeof(perFrame));
 
-    WGPUCommandEncoderDescriptor encoderDesc{};
-    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(_device, &encoderDesc);
-
-    WGPURenderPassColorAttachment colorAttachment{};
-    colorAttachment.view       = _targetView;
-    colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-    colorAttachment.loadOp      = WGPULoadOp_Load;
-    colorAttachment.storeOp     = WGPUStoreOp_Store;
-
-    WGPURenderPassDescriptor passDesc{};
-    passDesc.colorAttachmentCount = 1;
-    passDesc.colorAttachments      = &colorAttachment;
-
-    WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &passDesc);
-
-    wgpuRenderPassEncoderSetViewport(pass, 0.0f, 0.0f, static_cast<float>(_targetWidth),
-                                     static_cast<float>(_targetHeight), 0.0f, 1.0f);
-    wgpuRenderPassEncoderSetScissorRect(pass, 0, 0, _targetWidth, _targetHeight);
-
-    wgpuRenderPassEncoderSetPipeline(pass, _rectPipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, _bindGroup, 0, nullptr);
+    BeginMainPass();
 
     std::size_t vertexByteOffset = 0;
     std::size_t indexByteOffset  = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
-            RenderRectBatch(pass, batch, vertexByteOffset, indexByteOffset);
+            RenderRectBatch(_mainPass, batch, vertexByteOffset, indexByteOffset);
         } else if (batch.Kind == BatchKind::Image) {
-            RenderImageBatch(pass, batch, vertexByteOffset, indexByteOffset);
+            RenderImageBatch(_mainPass, batch, vertexByteOffset, indexByteOffset);
+        } else if (batch.Kind == BatchKind::Shadow) {
+            // Ends and re-begins the main pass internally -- see this method's own comment on why
+            // (BlurPassWebGPU::Apply() is its own separate submission).
+            RenderShadowBatch(batch);
         }
     }
 
-    wgpuRenderPassEncoderEnd(pass);
-    wgpuRenderPassEncoderRelease(pass);
-
-    WGPUCommandBufferDescriptor cbDesc{};
-    WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(encoder, &cbDesc);
-    wgpuCommandEncoderRelease(encoder);
-
-    wgpuQueueSubmit(_queue, 1, &cmdBuf);
-    wgpuCommandBufferRelease(cmdBuf);
-    // WebGPU's sequential submit model guarantees this submit's work completes before the next
-    // one on this queue -- no explicit fence needed, matching ViewportWebGPU.cpp's own identical
-    // finding. The streaming vertex/index/uniform buffers are safe to overwrite again on the very
-    // next Render() call for the same reason.
+    EndAndSubmitMainPass();
 }
 
 void NativeRendererWebGPU::Shutdown() {
@@ -590,6 +855,17 @@ void NativeRendererWebGPU::Shutdown() {
         _imageBindGroupLayout = nullptr;
     }
     if (_imageShaderModule) { wgpuShaderModuleRelease(_imageShaderModule); _imageShaderModule = nullptr; }
+
+    if (_shadowQuadVertexBuffer) { wgpuBufferRelease(_shadowQuadVertexBuffer); _shadowQuadVertexBuffer = nullptr; }
+    if (_shadowQuadIndexBuffer) { wgpuBufferRelease(_shadowQuadIndexBuffer); _shadowQuadIndexBuffer = nullptr; }
+    if (_shadowSilhouetteView) { wgpuTextureViewRelease(_shadowSilhouetteView); _shadowSilhouetteView = nullptr; }
+    if (_shadowSilhouetteTexture) {
+        wgpuTextureRelease(_shadowSilhouetteTexture);
+        _shadowSilhouetteTexture = nullptr;
+    }
+    _shadowSilhouetteWidth  = 0;
+    _shadowSilhouetteHeight = 0;
+    _blurPass.Shutdown();
 
     _initialized = false;
 }

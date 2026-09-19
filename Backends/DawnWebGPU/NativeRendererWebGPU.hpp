@@ -44,6 +44,32 @@
  * submitted every `Render()` call, mirroring `ViewportFramebufferWebGPU::BeginRender()`/
  * `EndRender()`'s own identical per-frame pattern.
  *
+ * Phase 35.16 adds `BatchKind::Shadow`, wiring `BlurPassWebGPU` (Phase 35.15) into a silhouette-
+ * render-then-blur-then-composite flow mirroring `NativeRendererVulkan::RenderShadowBatch()`'s own
+ * Phase 35.4 structure — but **needing no resource-state transitions of any kind**, unlike Vulkan's
+ * zero-transition-but-still-present `VK_IMAGE_LAYOUT_GENERAL` trick or DX12's real
+ * `D3D12_RESOURCE_BARRIER` round-trips (Phase 35.12): WebGPU exposes no explicit resource-state
+ * model to the API surface at all (`BlurPassWebGPU.hpp`'s own finding, Phase 35.15), so the
+ * silhouette texture is simply created with both `WGPUTextureUsage_RenderAttachment` and
+ * `WGPUTextureUsage_StorageBinding` and used directly in either role with no transition of any kind
+ * — Dawn's own implementation inserts whatever synchronization is needed automatically. What *does*
+ * need real restructuring is `Render()`'s own command-encoder/render-pass threading: unlike Vulkan's
+ * `VkCommandBuffer cmd` reference-parameter idiom or DX12's persistent `_commandList` member,
+ * `NativeRendererWebGPU` creates a **fresh** `WGPUCommandEncoder`/`WGPURenderPassEncoder` pair per
+ * `Render()` call (Phase 35.8's own established convention) — `BeginMainPass()`/
+ * `EndAndSubmitMainPass()` promote that pair to `_mainEncoder`/`_mainPass` members so
+ * `RenderShadowBatch()` can end/submit the accumulated-so-far pass, do its own separate silhouette-
+ * render and `_blurPass.Apply()` work (each its own self-contained encoder/submit), then begin a
+ * fresh main pass to resume compositing whatever batches follow — needing **no fence wait** at any
+ * of these split points, since WebGPU's own sequential-submit-ordering guarantee (this class's own
+ * "no CPU stall" finding above) already ensures each submit's GPU work completes before the next one
+ * on this queue, unlike Vulkan's/DX12's own `Begin`/`EndAndSubmit` splits, which still need real
+ * fence waits at each step. `RenderRectBatch()` now (re)binds its own pipeline/bind-group
+ * unconditionally (matching `RenderImageBatch()`'s own existing convention, and
+ * `NativeRendererDX12::RenderRectBatch()`'s identical Phase 35.9 rationale) rather than relying on a
+ * single bind before `Render()`'s own loop, since a freshly-begun main pass (after a `Shadow` batch)
+ * needs its own state rebound from scratch.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-14
  * @version  3.1.0
@@ -54,6 +80,7 @@
 
 #pragma once
 
+#include "BlurPassWebGPU.hpp"
 #include "Rendering/Renderers/BatchBuilder.hpp"
 #include "Rendering/Renderers/IRenderer.hpp"
 
@@ -119,6 +146,18 @@ public:
 private:
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
+    void EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height);
+
+    /// Creates a fresh `_mainEncoder`/`_mainPass` pair targeting `_targetView` (`WGPULoadOp_Load`,
+    /// so previously-submitted content — e.g. a Shadow batch's own composite before this — is
+    /// preserved), and sets the viewport/scissor. Mirrors `NativeRendererDX12::BeginMainCommandList()`'s
+    /// own role, minus any descriptor-heap binding (WebGPU has no such concept) and minus any
+    /// pipeline/bind-group binding (each `RenderXBatch()` rebinds its own, unconditionally).
+    void BeginMainPass();
+    /// Ends `_mainPass`, finishes and submits `_mainEncoder` -- no fence wait needed (see this
+    /// class's own file comment on why WebGPU's sequential submit model makes this safe).
+    void EndAndSubmitMainPass();
+
     void RenderRectBatch(WGPURenderPassEncoder pass, const Batch& batch, std::size_t& vertexByteOffset,
                           std::size_t& indexByteOffset);
 
@@ -135,6 +174,21 @@ private:
      */
     void RenderImageBatch(WGPURenderPassEncoder pass, const Batch& batch, std::size_t& vertexByteOffset,
                           std::size_t& indexByteOffset);
+
+    /**
+     * @brief    Renders one `BatchKind::Shadow` batch: silhouette, blur, composite (Phase 35.16).
+     *
+     * Ends and submits `_mainPass`/`_mainEncoder` as accumulated so far (`_blurPass.Apply()` is its
+     * own separate submission), renders the shape's silhouette into `_shadowSilhouetteView` via its
+     * own one-shot encoder/render pass (reusing `_rectPipeline`, `_bindGroup`/`_perFrameBuffer`
+     * temporarily rewritten to the silhouette's own small coordinate space), calls
+     * `_blurPass.Apply()`, then begins a *new* main pass and records the composite draw (`_imagePipeline`,
+     * a fresh bind group referencing the blurred result's own view) before restoring
+     * `_perFrameBuffer`'s real-target content for whatever batches follow. No resource-state
+     * transition of any kind is needed anywhere in this sequence — see this class's own file
+     * comment.
+     */
+    void RenderShadowBatch(const Batch& batch);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     WGPUDevice        _device      = nullptr;
@@ -179,6 +233,32 @@ private:
     std::size_t _vertexBufferCapacityBytes    = 0;
     WGPUBuffer  _indexBuffer                  = nullptr;
     std::size_t _indexBufferCapacityBytes     = 0;
+
+    /// The "currently accumulating" main command encoder/render pass — promoted from `Render()`'s
+    /// own former local variables so `RenderShadowBatch()` can end/resume them mid-call. Non-null
+    /// only between a `BeginMainPass()`/`EndAndSubmitMainPass()` pair.
+    WGPUCommandEncoder    _mainEncoder = nullptr;
+    WGPURenderPassEncoder _mainPass    = nullptr;
+
+    // ─── Phase 35.16: BatchKind::Shadow support ─────────────────────────────────
+    BlurPassWebGPU _blurPass;
+
+    /// The offscreen silhouette target — created with both `WGPUTextureUsage_RenderAttachment` (for
+    /// the silhouette draw) and `WGPUTextureUsage_StorageBinding` (for `_blurPass`'s own read), used
+    /// directly in either role with no transition of any kind (see this class's own file comment on
+    /// why, unlike Vulkan's/DX12's own equivalents).
+    WGPUTexture     _shadowSilhouetteTexture = nullptr;
+    WGPUTextureView _shadowSilhouetteView    = nullptr;
+    std::uint32_t   _shadowSilhouetteWidth   = 0;
+    std::uint32_t   _shadowSilhouetteHeight  = 0;
+
+    /// Small, fixed-size, dedicated buffers for `RenderShadowBatch()`'s own two one-quad draws
+    /// (silhouette rect, composite image) — sized for the *larger* of `RectVertex`/`ImageVertex` (4
+    /// vertices), rewritten via `wgpuQueueWriteBuffer()` immediately before each use, mirroring
+    /// `NativeRendererVulkan`'s/`NativeRendererDX12`'s own dedicated `_shadowQuadVertexBuffer`/
+    /// `_shadowQuadIndexBuffer` (Phase 35.4/35.12).
+    WGPUBuffer _shadowQuadVertexBuffer = nullptr;
+    WGPUBuffer _shadowQuadIndexBuffer  = nullptr;
 
     BatchBuilder _batchBuilder;
 };
