@@ -587,6 +587,20 @@ if(IMF_BUILD_WEBGPU_BACKEND)
         # TIMEOUT guards against hangs if no WebGPU-capable GPU/driver is present in CI, matching
         # the existing WebGPUBackend/WebGPUConformance test targets above.
         catch_discover_tests(ImFrame_Tests_Rendering_NativeRendererWebGPU PROPERTIES LABELS webgpu TIMEOUT 60)
+
+        # ─── Phase 35.15: BlurPassWebGPU real-pixel tests ────────────────────────────────────────
+        add_executable(ImFrame_Tests_Rendering_BlurPassWebGPU
+            Rendering/BlurPassWebGPU_test.cpp
+        )
+        target_include_directories(ImFrame_Tests_Rendering_BlurPassWebGPU PRIVATE
+            ${CMAKE_SOURCE_DIR}
+            ${CMAKE_SOURCE_DIR}/src
+        )
+        target_link_libraries(ImFrame_Tests_Rendering_BlurPassWebGPU
+            PRIVATE ImFrame ImFrame_DawnWebGPU Catch2::Catch2WithMain
+        )
+        target_compile_features(ImFrame_Tests_Rendering_BlurPassWebGPU PRIVATE cxx_std_23)
+        catch_discover_tests(ImFrame_Tests_Rendering_BlurPassWebGPU PROPERTIES LABELS webgpu TIMEOUT 60)
     endif()
 
     if(WIN32 AND NOT EMSCRIPTEN)
@@ -600,7 +614,8 @@ if(IMF_BUILD_WEBGPU_BACKEND)
             ImFrame_Tests_Backends_WebGPUBackend
             ImFrame_Tests_Backends_WebGPUConformance)
         if(IMF_BUILD_NATIVE_RENDERER)
-            list(APPEND _dxc_dll_targets ImFrame_Tests_Rendering_NativeRendererWebGPU)
+            list(APPEND _dxc_dll_targets ImFrame_Tests_Rendering_NativeRendererWebGPU
+                ImFrame_Tests_Rendering_BlurPassWebGPU)
         endif()
         foreach(_tgt ${_dxc_dll_targets})
             add_custom_command(TARGET ${_tgt} POST_BUILD
