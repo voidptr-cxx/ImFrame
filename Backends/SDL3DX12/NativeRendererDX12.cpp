@@ -100,18 +100,23 @@ std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::V
     return vertices;
 }
 
-/// Builds one axis-aligned quad's `ImageVertex`es — `RenderShadowBatch()`'s own composite pass
-/// reuses the existing Image pipeline to draw a renderer-produced offscreen texture (a blurred
-/// shadow), tinted, as a plain rectangle. Mirrors `NativeRendererVulkan::BuildImageQuadVertices()`'s
-/// role, including its **unflipped** UV table -- not because this backend's own vertex shader
-/// matches Vulkan's (it doesn't; `Image.hlsl`'s `VSMain` negates Y like GL, Phase 35.9), but
-/// because a D3D12 texture's row 0 is its top row (the same top-down memory convention Vulkan's
-/// own images use), independent of whichever way a vertex shader happens to negate Y for
-/// clip-space purposes -- the two questions (screen-position handedness vs. texture-row order)
-/// are unrelated, and this backend's own DX12 texture-upload convention (already exercised
-/// correctly by every `BatchKind::Image` test, Phase 35.9) is top-down like Vulkan's, not
-/// bottom-up like GL's. A plain, unflipped mapping is therefore the correct choice here too.
-std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+/// Builds one axis-aligned quad's `ImageVertex`es — `RenderShadowBatch()`'s/`CompositeOpacityLayer()`'s/
+/// `RenderBackdropBlurBatch()`'s own composite passes all reuse the existing Image pipeline to draw a
+/// renderer-produced offscreen texture (a blurred shadow, a captured layer, a blurred backdrop
+/// region), tinted, as a plain rectangle. Mirrors `NativeRendererVulkan::BuildImageQuadVertices()`'s
+/// role and full signature (Phase 35.6 added the optional `uvMin`/`uvMax`/`radii` parameters there,
+/// needed by `RenderBackdropBlurBatch()`'s own crop-to-requested-rect step), including its
+/// **unflipped** default UV table -- not because this backend's own vertex shader matches Vulkan's
+/// (it doesn't; `Image.hlsl`'s `VSMain` negates Y like GL, Phase 35.9), but because a D3D12 texture's
+/// row 0 is its top row (the same top-down memory convention Vulkan's own images use), independent of
+/// whichever way a vertex shader happens to negate Y for clip-space purposes -- the two questions
+/// (screen-position handedness vs. texture-row order) are unrelated, and this backend's own DX12
+/// texture-upload convention (already exercised correctly by every `BatchKind::Image` test, Phase
+/// 35.9) is top-down like Vulkan's, not bottom-up like GL's. A plain, unflipped default mapping is
+/// therefore the correct choice here too.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor,
+                                                Widgets::Vec2 uvMin = {0.0f, 0.0f}, Widgets::Vec2 uvMax = {1.0f, 1.0f},
+                                                Rendering::CornerRadii radii = {}) {
     const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
     const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
     const Widgets::Vec2 corners[4] = {
@@ -120,7 +125,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
         {position.x + size.x, position.y + size.y},
         {position.x, position.y + size.y},
     };
-    constexpr Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    const Widgets::Vec2 uvs[4] = {{uvMin.x, uvMin.y}, {uvMax.x, uvMin.y}, {uvMax.x, uvMax.y}, {uvMin.x, uvMax.y}};
 
     std::vector<ImageVertex> vertices;
     vertices.reserve(4);
@@ -129,7 +134,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
             .Position = corners[i],
             .Local = {corners[i].x - center.x, corners[i].y - center.y},
             .HalfSize = halfSize,
-            .Radii = {},
+            .Radii = radii,
             .Uv = uvs[i],
             .TintColor = tintColor,
         });
@@ -550,6 +555,219 @@ void NativeRendererDX12::EnsureBackdropTarget(std::uint32_t width, std::uint32_t
 
     _backdropWidth  = width;
     _backdropHeight = height;
+}
+
+void NativeRendererDX12::EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropBlurCopyResource && _backdropBlurCopyWidth == width && _backdropBlurCopyHeight == height) {
+        return;
+    }
+
+    D3D12_HEAP_PROPERTIES heapProps{};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width            = width;
+    desc.Height           = height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+
+    // "At rest" state is UNORDERED_ACCESS (see this class's own file comment) -- created directly
+    // there, mirroring BlurPassDX12's own ping-pong targets (Phase 35.11), since this resource is
+    // never rendered into, only copied into and read/written via _blurPass's own UAV.
+    _device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
+                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                     IID_PPV_ARGS(&_backdropBlurCopyResource));
+
+    _backdropBlurCopyWidth  = width;
+    _backdropBlurCopyHeight = height;
+}
+
+void NativeRendererDX12::RenderBackdropBlurBatch(const Batch& batch) {
+    const auto& blurs = std::get<std::vector<BackdropBlurVertex>>(batch.Vertices);
+    if (blurs.empty()) { return; }
+    const BackdropBlurVertex& blur = blurs.front();
+    if (blur.Size.x <= 0.0f || blur.Size.y <= 0.0f) { return; }
+
+    if (_backdropBlurCountThisFrame >= _maxBackdropBlurPerFrame) {
+        return; // matches NativeRendererVulkan's/NativeRendererGL3's own identical rate-limit
+    }
+    ++_backdropBlurCountThisFrame;
+
+    // Pad the copied region by the blur radius on every side (clamped to the target's own bounds)
+    // so _blurPass's kernel has real surrounding content to read, the same reasoning as
+    // RenderShadowBatch()'s silhouette padding -- then crop the composite back down to exactly
+    // blur.Position/blur.Size, since (unlike a shadow, which is expected to bleed past its shape)
+    // backdrop blur is documented as replacing exactly the requested rect, nothing more.
+    const float pad    = std::max(blur.BlurRadius, 0.0f);
+    const float left   = std::max(blur.Position.x - pad, 0.0f);
+    const float top    = std::max(blur.Position.y - pad, 0.0f);
+    const float right  = std::min(blur.Position.x + blur.Size.x + pad, static_cast<float>(_targetWidth));
+    const float bottom = std::min(blur.Position.y + blur.Size.y + pad, static_cast<float>(_targetHeight));
+    const float copyWidthF  = right - left;
+    const float copyHeightF = bottom - top;
+    if (copyWidthF <= 0.0f || copyHeightF <= 0.0f) { return; }
+
+    const auto copyWidth  = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(copyWidthF))));
+    const auto copyHeight = static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(copyHeightF))));
+
+    // Flush everything recorded so far -- the copy below needs this Render() call's own prior
+    // batches' content actually on the GPU already (not merely recorded), and _blurPass.Apply() is
+    // its own separate submission, exactly like RenderShadowBatch()'s identical first step.
+    EndAndSubmitMainCommandList();
+
+    EnsureBackdropBlurCopyTarget(copyWidth, copyHeight);
+
+    // Copy [left,top]-[right,bottom] (already in this renderer's own top-down pixel space -- no
+    // GL-style window-coordinate flip needed, matching NativeRendererVulkan's own identical finding)
+    // from _targetResource into _backdropBlurCopyResource.
+    {
+        _commandAllocator->Reset();
+        _commandList->Reset(_commandAllocator.Get(), nullptr);
+
+        D3D12_RESOURCE_BARRIER toCopySrc{};
+        toCopySrc.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopySrc.Transition.pResource   = _targetResource;
+        toCopySrc.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        toCopySrc.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        toCopySrc.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toCopySrc);
+
+        D3D12_RESOURCE_BARRIER toCopyDst{};
+        toCopyDst.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopyDst.Transition.pResource   = _backdropBlurCopyResource.Get();
+        toCopyDst.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toCopyDst.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
+        toCopyDst.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toCopyDst);
+
+        D3D12_TEXTURE_COPY_LOCATION srcLoc{};
+        srcLoc.pResource        = _targetResource;
+        srcLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        srcLoc.SubresourceIndex = 0;
+        D3D12_TEXTURE_COPY_LOCATION dstLoc{};
+        dstLoc.pResource        = _backdropBlurCopyResource.Get();
+        dstLoc.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dstLoc.SubresourceIndex = 0;
+        const D3D12_BOX srcBox{static_cast<UINT>(left), static_cast<UINT>(top), 0, static_cast<UINT>(left) + copyWidth,
+                              static_cast<UINT>(top) + copyHeight, 1};
+        _commandList->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, &srcBox);
+
+        D3D12_RESOURCE_BARRIER backToRt{};
+        backToRt.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        backToRt.Transition.pResource   = _targetResource;
+        backToRt.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        backToRt.Transition.StateAfter  = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        backToRt.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &backToRt);
+
+        D3D12_RESOURCE_BARRIER backToUav{};
+        backToUav.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        backToUav.Transition.pResource   = _backdropBlurCopyResource.Get();
+        backToUav.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        backToUav.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        backToUav.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &backToUav);
+
+        _commandList->Close();
+        ID3D12CommandList* lists[] = {_commandList.Get()};
+        _directQueue->ExecuteCommandLists(1, lists);
+        ++_fenceValue;
+        _directQueue->Signal(_fence.Get(), _fenceValue);
+        if (_fence->GetCompletedValue() < _fenceValue) {
+            _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+            WaitForSingleObject(_fenceEvent, INFINITE);
+        }
+    }
+
+    const BlurResult blurred =
+        _blurPass.Apply(BlurResult{_backdropBlurCopyResource.Get()}, copyWidth, copyHeight, blur.BlurRadius);
+
+    // Transition the borrowed blurred resource UNORDERED_ACCESS -> PIXEL_SHADER_RESOURCE for our own
+    // composite SRV, mirroring RenderShadowBatch()'s own identical transition for the same reason
+    // (BlurPassDX12 expects its own owned targets back in UNORDERED_ACCESS by its next Apply() call).
+    {
+        _commandAllocator->Reset();
+        _commandList->Reset(_commandAllocator.Get(), nullptr);
+
+        D3D12_RESOURCE_BARRIER toSrv{};
+        toSrv.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toSrv.Transition.pResource   = blurred.Resource;
+        toSrv.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        toSrv.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        toSrv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        _commandList->ResourceBarrier(1, &toSrv);
+
+        _commandList->Close();
+        ID3D12CommandList* lists[] = {_commandList.Get()};
+        _directQueue->ExecuteCommandLists(1, lists);
+        ++_fenceValue;
+        _directQueue->Signal(_fence.Get(), _fenceValue);
+        if (_fence->GetCompletedValue() < _fenceValue) {
+            _fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+            WaitForSingleObject(_fenceEvent, INFINITE);
+        }
+    }
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+    srvDesc.Format                  = DXGI_FORMAT_UNKNOWN;
+    srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Texture2D.MipLevels     = 1;
+    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, _compositeSrvCpuBase);
+
+    // ─── Composite: resume the main command list, restore its own PerFrame CB, draw the cropped
+    // sub-rectangle of the padded, blurred copy that corresponds to blur.Position/blur.Size ────────
+    BeginMainCommandList();
+
+    struct PerFrameCb { float ViewportSizeX; float ViewportSizeY; };
+    const PerFrameCb mainPerFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
+    std::memcpy(_perFrameCbMapped, &mainPerFrame, sizeof(mainPerFrame));
+
+    const Widgets::Vec2 uvMin{(blur.Position.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y - top) / static_cast<float>(copyHeight)};
+    const Widgets::Vec2 uvMax{(blur.Position.x + blur.Size.x - left) / static_cast<float>(copyWidth),
+                              (blur.Position.y + blur.Size.y - top) / static_cast<float>(copyHeight)};
+    const std::vector<ImageVertex> vertices =
+        BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    // Standard (non-premultiplied) blend, not _premultipliedImagePipelineState -- matches
+    // RenderShadowBatch()'s own identical choice (this content isn't scaled by any additional
+    // factor the way an opacity layer's captured render is).
+    _commandList->SetPipelineState(_imagePipelineState.Get());
+    _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
+    _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
+    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
+
+    D3D12_VERTEX_BUFFER_VIEW vbView{};
+    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
+    vbView.SizeInBytes    = static_cast<UINT>(vertices.size() * sizeof(ImageVertex));
+    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->IASetVertexBuffers(0, 1, &vbView);
+
+    D3D12_INDEX_BUFFER_VIEW ibView{};
+    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
+    ibView.SizeInBytes    = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
+    ibView.Format         = DXGI_FORMAT_R32_UINT;
+    _commandList->IASetIndexBuffer(&ibView);
+
+    _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
+
+    // Restore BlurPassDX12's own "always UNORDERED_ACCESS at rest" invariant for its next Apply()
+    // call, matching RenderShadowBatch()'s own identical restoration.
+    D3D12_RESOURCE_BARRIER backToUav{};
+    backToUav.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    backToUav.Transition.pResource   = blurred.Resource;
+    backToUav.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    backToUav.Transition.StateAfter  = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    backToUav.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    _commandList->ResourceBarrier(1, &backToUav);
 }
 
 void NativeRendererDX12::HandleLayerMarker(const Batch& batch) {
@@ -1081,6 +1299,10 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     // matches NativeRendererVulkan's own equivalent contract.
     IMF_ASSERT(_targetResource != nullptr);
 
+    // "Per frame" == "per Render() call" -- matches NativeRendererVulkan's/NativeRendererGL3's own
+    // identical reset point for their own rate limit.
+    _backdropBlurCountThisFrame = 0;
+
     _batchBuilder.Build(buffer);
     const std::vector<Batch>& batches = _batchBuilder.Batches();
 
@@ -1089,6 +1311,7 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t imageBatchCount  = 0;
     std::size_t shadowBatchCount = 0;
     std::size_t layerBatchCount  = 0;
+    std::size_t backdropBlurBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -1101,11 +1324,15 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         } else if (batch.Kind == BatchKind::Layer) {
             ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            ++backdropBlurBatchCount; // uses its own dedicated buffers too
         }
-        // Every other BatchKind (Text/BackdropBlur) is out of this sub-phase's scope, matching
-        // NativeRendererVulkan's own identical Phase 35.5 starting point.
+        // BatchKind::Text is out of this sub-phase's scope, matching NativeRendererVulkan's own
+        // identical Phase 35.6 starting point.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0 && backdropBlurBatchCount == 0) {
+        return;
+    }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -1118,10 +1345,12 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     // (one texture each), slots +1/+2 by CompositeBlendLayer() (two textures) -- see this class's
     // own file comment on why this shares _srvHeap rather than using a second heap (D3D12 only
     // allows one CBV_SRV_UAV heap bound via SetDescriptorHeaps() at a time per command list).
-    // Reserved whenever either Shadow or Layer batches exist, regardless of which specific ops are
-    // used this frame -- a small, constant amount of heap-slot overhead, not worth scanning
-    // LayerVertex ops during this counting pass just to avoid.
-    const bool needsCompositeSlots   = shadowBatchCount > 0 || layerBatchCount > 0;
+    // Reserved whenever any of Shadow/Layer/BackdropBlur batches exist, regardless of which specific
+    // ops are used this frame -- a small, constant amount of heap-slot overhead, not worth scanning
+    // LayerVertex ops during this counting pass just to avoid. BackdropBlur reuses slot +0 too (a
+    // single-texture composite, same footprint as Shadow's/CompositeOpacityLayer's own).
+    const bool needsCompositeSlots =
+        shadowBatchCount > 0 || layerBatchCount > 0 || backdropBlurBatchCount > 0;
     const std::size_t compositeSrvSlot = imageBatchCount; // valid only when needsCompositeSlots
     const std::size_t neededSrvSlots   = imageBatchCount + (needsCompositeSlots ? 3 : 0);
 
@@ -1187,6 +1416,9 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
             RenderShadowBatch(batch);
         } else if (batch.Kind == BatchKind::Layer) {
             HandleLayerMarker(batch);
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            // Ends and re-begins the main command list internally, same reason as RenderShadowBatch().
+            RenderBackdropBlurBatch(batch);
         }
     }
 
@@ -1238,6 +1470,11 @@ void NativeRendererDX12::Shutdown() {
     _backdropHeight = 0;
     _compositeSrvCpuBase = {};
     _compositeSrvGpuBase = {};
+
+    _backdropBlurCopyResource.Reset();
+    _backdropBlurCopyWidth      = 0;
+    _backdropBlurCopyHeight     = 0;
+    _backdropBlurCountThisFrame = 0;
 
     _srvHeap.Reset();
     _srvHeapCapacitySlots = 0;

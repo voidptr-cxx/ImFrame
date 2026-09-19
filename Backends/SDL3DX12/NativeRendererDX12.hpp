@@ -78,6 +78,26 @@
  * `CBV_SRV_UAV` heap per command list (Phase 35.12's own finding, extended here to a two-texture
  * composite).
  *
+ * Phase 35.14 adds `BatchKind::BackdropBlur` (`Rendering::DrawBackdropBlur`), mirroring
+ * `NativeRendererVulkan::RenderBackdropBlurBatch()`'s own Phase 35.6 structure: copy the padded
+ * requested region out of the real target, blur it via `_blurPass`, composite back a UV-cropped
+ * sub-rectangle of the blurred result at exactly the requested rect. `_backdropBlurCopyResource`
+ * needs only `D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS` (never a render target — it is only ever a
+ * copy destination or `_blurPass`'s own UAV source/dest), sitting at rest in
+ * `D3D12_RESOURCE_STATE_UNORDERED_ACCESS` like `BlurPassDX12`'s own ping-pong targets, and
+ * round-tripping through `COPY_DEST` only for the region copy — unlike Vulkan's single
+ * `VK_IMAGE_LAYOUT_GENERAL`, valid for both roles at once. The copy source is `_targetResource`
+ * itself (round-tripped `RENDER_TARGET -> COPY_SOURCE -> RENDER_TARGET`), using `CopyTextureRegion()`'s
+ * own `pSrcBox` parameter to select the padded sub-rectangle directly, needing no separate
+ * D3D12-specific coordinate-flip reasoning the way `NativeRendererGL3::RenderBackdropBlurBatch()`'s
+ * own window-coordinate `glY` conversion does — this class's pixel space is already top-down,
+ * matching `vkCmdCopyImage`'s own identical offset convention (Phase 35.6's own finding). The
+ * composite draw's SRV reuses `_compositeSrvCpuBase`/`_compositeSrvGpuBase` slot +0 — the same single-
+ * texture slot `RenderShadowBatch()`/`CompositeOpacityLayer()` already share, reused sequentially,
+ * never concurrently — and uses the standard (non-premultiplied) `_imagePipelineState`, not
+ * `_premultipliedImagePipelineState`, matching `RenderShadowBatch()`'s own identical choice (a
+ * backdrop blur's own content isn't scaled by any additional factor the way an opacity layer's is).
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-13
  * @version  3.0.1
@@ -150,6 +170,11 @@ public:
                    std::uint32_t height) noexcept;
 
     void Render(const Rendering::CommandBuffer& buffer) override;
+
+    /// Caps how many `Rendering::DrawBackdropBlur` commands actually run their (real GPU cost)
+    /// copy+blur+composite per `Render()` call — matches `NativeRendererVulkan`'s/
+    /// `NativeRendererGL3`'s own identical rate-limiting role and default (Phase 35.14).
+    void SetMaxBackdropBlurPerFrame(int maxPerFrame) noexcept { _maxBackdropBlurPerFrame = maxPerFrame; }
 
     /// Always fails — no text pipeline exists yet (this sub-phase's scope is `BatchKind::Rect` only).
     [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) override;
@@ -255,6 +280,18 @@ private:
     void CompositeBlendLayer(const LayerFrame& frame);
     void EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height);
     void EnsureBackdropTarget(std::uint32_t width, std::uint32_t height);
+
+    void EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height);
+
+    /**
+     * @brief    Renders one `BatchKind::BackdropBlur` batch: copy, blur, cropped composite (Phase 35.14).
+     *
+     * Writes its own composite SRV at `_compositeSrvCpuBase`/`_compositeSrvGpuBase` (slot +0) —
+     * shared with `RenderShadowBatch()`/`CompositeOpacityLayer()`, reused sequentially, never
+     * concurrently. Subject to `_maxBackdropBlurPerFrame`'s own rate limit, checked and incremented
+     * first, matching `NativeRendererVulkan`'s/`NativeRendererGL3`'s own identical placement.
+     */
+    void RenderBackdropBlurBatch(const Batch& batch);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     ID3D12Device4*      _device      = nullptr;
@@ -376,6 +413,25 @@ private:
     /// own finding).
     D3D12_CPU_DESCRIPTOR_HANDLE _compositeSrvCpuBase = {};
     D3D12_GPU_DESCRIPTOR_HANDLE _compositeSrvGpuBase = {};
+
+    // ─── Phase 35.14: BatchKind::BackdropBlur support ───────────────────────────
+    /// A copy of the padded region `RenderBackdropBlurBatch()` is about to blur — kept separate from
+    /// `_backdropResource` (different role/lifecycle: sized to the padded *requested rect*, not the
+    /// whole target, and consumed only by `_blurPass`'s own UAV read/write, never sampled directly),
+    /// mirroring `NativeRendererVulkan`'s own identical choice to keep `_backdropBlurCopyImage`
+    /// distinct from `_backdropImage` despite the conceptual overlap. Needs only
+    /// `D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS` (never a render target), sitting at rest in
+    /// `D3D12_RESOURCE_STATE_UNORDERED_ACCESS` like `BlurPassDX12`'s own ping-pong targets, and
+    /// round-tripping through `COPY_DEST` only for the region copy itself.
+    Microsoft::WRL::ComPtr<ID3D12Resource> _backdropBlurCopyResource;
+    std::uint32_t                          _backdropBlurCopyWidth  = 0;
+    std::uint32_t                          _backdropBlurCopyHeight = 0;
+
+    /// See `SetMaxBackdropBlurPerFrame()`. `_backdropBlurCountThisFrame` resets to 0 at the start of
+    /// every `Render()` call — "per frame" means "per `Render()` call", matching
+    /// `NativeRendererVulkan`'s/`NativeRendererGL3`'s own identical rate-limit and reset point.
+    int _maxBackdropBlurPerFrame    = 4;
+    int _backdropBlurCountThisFrame = 0;
 
     BatchBuilder _batchBuilder;
 };
