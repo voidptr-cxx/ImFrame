@@ -63,6 +63,21 @@
  * heap — since D3D12 only allows one `CBV_SRV_UAV` heap bound via `SetDescriptorHeaps()` at a time
  * per command list, unlike Vulkan's unlimited simultaneously-bound descriptor sets.
  *
+ * Phase 35.13 adds `BatchKind::Layer` (`PushOpacityLayer`/`PushBlendLayer`/`PopLayer`), mirroring
+ * `NativeRendererVulkan::PushLayer()`/`PopLayer()`'s own Phase 35.5 structure. Unlike Vulkan's
+ * `vkCmdBeginRendering`/`vkCmdEndRendering` pairing (which makes a transfer command illegal while a
+ * rendering instance is active, forcing careful ordering around `CopyBackdropForBlend()`), D3D12 has
+ * no "active rendering instance" concept at all — `OMSetRenderTargets()` can redirect subsequent
+ * draws to a different RTV at any point with no begin/end pairing, and `CopyTextureRegion()` needs no
+ * such pairing respected either. Each layer target and the shared backdrop-copy target still need
+ * real `D3D12_RESOURCE_BARRIER` transitions between their render/sample roles (the same
+ * no-single-state-serves-both-roles constraint Phase 35.12's own Shadow sub-phase already
+ * established), unlike Vulkan's zero-transition `GENERAL` layout. `CompositeBlendLayer()`'s own SRVs
+ * share `_srvHeap` with `RenderImageBatch()`'s per-batch slots and `RenderShadowBatch()`'s own single
+ * composite slot — reserved as two *more* extra slots, since D3D12 only allows one bound
+ * `CBV_SRV_UAV` heap per command list (Phase 35.12's own finding, extended here to a two-texture
+ * composite).
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-13
  * @version  3.0.1
@@ -144,6 +159,34 @@ public:
     void Shutdown() override;
 
 private:
+    /// One entry on the layer stack (Phase 35.13) — mirrors `NativeRendererVulkan::LayerFrame`
+    /// field for field, `ParentImage`/`ParentView`/`ParentLayout` collapsed to `ParentResource`/
+    /// `ParentRtv` (no separate "layout" to track: this class's own parent target — real or a
+    /// nested layer — is always in `D3D12_RESOURCE_STATE_RENDER_TARGET` while active, unlike
+    /// Vulkan's own two-different-layout depth-0-vs-nested distinction).
+    struct LayerFrame {
+        LayerOp                     Op      = LayerOp::PushOpacity;
+        float                        Opacity = 1.0f;
+        Rendering::BlendMode         Mode    = Rendering::BlendMode::Normal;
+        ID3D12Resource*              ParentResource = nullptr; ///< Needed only by `CopyBackdropForBlend()`.
+        D3D12_CPU_DESCRIPTOR_HANDLE  ParentRtv      = {};       ///< What to resume rendering into on `PopLayer()`.
+        std::size_t                  TargetIndex    = 0;        ///< Index into `_layerTargets`.
+    };
+
+    /// One depth level's offscreen layer target — mirrors `NativeRendererVulkan::LayerTarget`.
+    /// Created with `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET` (to render into) and no UAV flag at
+    /// all (unlike the shadow silhouette's own dual-role resource, Phase 35.12 — a layer target is
+    /// only ever a render target or an SRV, never a compute UAV). At rest (between
+    /// `PushLayer()`/`PopLayer()` cycles) it sits in `D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE` —
+    /// see this class's own file comment for the full transition sequence.
+    struct LayerTarget {
+        Microsoft::WRL::ComPtr<ID3D12Resource>       Resource;
+        Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> RtvHeap;
+        D3D12_CPU_DESCRIPTOR_HANDLE                  Rtv    = {};
+        std::uint32_t                                Width  = 0;
+        std::uint32_t                                Height = 0;
+    };
+
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
     void EnsureImageDescriptorCapacity(std::size_t neededSlots);
@@ -177,12 +220,10 @@ private:
 
     /**
      * @brief    Renders one `BatchKind::Shadow` batch: silhouette, blur, composite (Phase 35.12).
-     * @param[in] compositeSrvCpuHandle  Where to write this batch's own composite SRV in `_srvHeap`
-     *                                   — one *extra* slot reserved by `Render()` beyond its own
-     *                                   per-`Image`-batch slots (see this class's own file comment
-     *                                   on why one shared heap, not a second one, is used).
-     * @param[in] compositeSrvGpuHandle  The same slot's GPU-visible handle, bound for the composite
-     *                                   draw itself.
+     *
+     * Writes its own composite SRV at `_compositeSrvCpuBase`/`_compositeSrvGpuBase` (slot +0) —
+     * shared with `CompositeOpacityLayer()`, reused sequentially, never concurrently (Phase 35.13's
+     * own file comment).
      *
      * Mirrors `NativeRendererVulkan::RenderShadowBatch()`'s own structure: (1) ends and submits the
      * main command list as accumulated so far (`_blurPass.Apply()` is its own separate submission,
@@ -193,8 +234,27 @@ private:
      * list. Unlike Vulkan, steps (2)-(4) each need real `D3D12_RESOURCE_BARRIER` transitions the
      * `VK_IMAGE_LAYOUT_GENERAL` silhouette never needed — see this class's own file comment.
      */
-    void RenderShadowBatch(const Batch& batch, D3D12_CPU_DESCRIPTOR_HANDLE compositeSrvCpuHandle,
-                          D3D12_GPU_DESCRIPTOR_HANDLE compositeSrvGpuHandle);
+    void RenderShadowBatch(const Batch& batch);
+
+    /**
+     * @brief    Dispatches one `BatchKind::Layer` marker (Phase 35.13) to `PushLayer()`/`PopLayer()`.
+     */
+    void HandleLayerMarker(const Batch& batch);
+    void PushLayer(LayerOp op, float opacity, Rendering::BlendMode mode);
+    void PopLayer();
+    void CompositeOpacityLayer(const LayerFrame& frame);
+    /// Copies `frame.ParentResource`'s current content into `_backdropResource` — the D3D12
+    /// analogue of `NativeRendererVulkan::CopyBackdropForBlend()`'s own `vkCmdCopyImage` role.
+    /// Unlike Vulkan (whose `vkCmdBeginRendering`/`vkCmdEndRendering` pairing makes a transfer
+    /// command illegal while a rendering instance is active, forcing `PopLayer()` to call this
+    /// *before* resuming the parent's own instance), D3D12 has no such "active instance" concept
+    /// at all — `CopyTextureRegion()` can be recorded at any point relative to `OMSetRenderTargets()`
+    /// calls, so this method's own placement relative to `PopLayer()`'s resume-parent step is a
+    /// choice, not a hard requirement, kept the same as Vulkan's for structural parity.
+    void CopyBackdropForBlend(const LayerFrame& frame);
+    void CompositeBlendLayer(const LayerFrame& frame);
+    void EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height);
+    void EnsureBackdropTarget(std::uint32_t width, std::uint32_t height);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     ID3D12Device4*      _device      = nullptr;
@@ -278,6 +338,44 @@ private:
     void*                                  _shadowQuadVertexMapped = nullptr;
     Microsoft::WRL::ComPtr<ID3D12Resource> _shadowQuadIndexBuffer;
     void*                                  _shadowQuadIndexMapped  = nullptr;
+
+    // ─── Phase 35.13: BatchKind::Layer support ──────────────────────────────────
+    /// Second PSO sharing `_imageRootSignature`/`Image.hlsl`'s own shaders, only its blend factors
+    /// differ (`ONE`/`INV_SRC_ALPHA`, not the standard `SRC_ALPHA`/`INV_SRC_ALPHA` `_imagePipelineState`
+    /// uses) — needed for `CompositeOpacityLayer()`'s own already-premultiplied captured render
+    /// scaled by `Opacity`, mirroring `NativeRendererVulkan`'s own `_premultipliedImagePipeline`
+    /// (Phase 35.5).
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> _premultipliedImagePipelineState;
+
+    /// `Shaders/Blend.hlsl`'s own root signature (two-SRV descriptor table t0/t1 + static sampler
+    /// s0 + one root constant `Mode`, no vertex input at all — the shader generates its own fixed
+    /// fullscreen quad from `SV_VertexID`) and PSO, mirroring `NativeRendererVulkan`'s own
+    /// `_blendPipelineLayout`/`_blendPipeline`.
+    Microsoft::WRL::ComPtr<ID3D12RootSignature> _blendRootSignature;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> _blendPipelineState;
+
+    std::vector<LayerFrame>  _layerStack;
+    std::vector<LayerTarget> _layerTargets;
+
+    /// The blend-mode backdrop copy target — mirrors `NativeRendererVulkan::_backdropImage`. No
+    /// special resource flags needed (a plain texture is always valid as a copy destination and
+    /// SRV source); at rest it sits in `D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE`, transitioned
+    /// to `COPY_DEST` only for `CopyBackdropForBlend()`'s own copy, then back.
+    Microsoft::WRL::ComPtr<ID3D12Resource> _backdropResource;
+    std::uint32_t                          _backdropWidth  = 0;
+    std::uint32_t                          _backdropHeight = 0;
+
+    /// Base CPU/GPU handles into `_srvHeap` reserved for every renderer-internal composite draw
+    /// this `Render()` call might need — set once per call, right after `EnsureImageDescriptorCapacity()`.
+    /// Slot +0: the single-texture composite shared by `RenderShadowBatch()` and
+    /// `CompositeOpacityLayer()` (reused sequentially, never concurrently, mirroring
+    /// `NativeRendererVulkan`'s own `_compositeDescriptorSet`). Slots +1/+2: `CompositeBlendLayer()`'s
+    /// own two textures (popped layer, backdrop), mirroring Vulkan's separate `_blendDescriptorSet`
+    /// — kept in the *same* heap as slot +0 rather than a second heap, since D3D12 allows only one
+    /// `CBV_SRV_UAV` heap bound via `SetDescriptorHeaps()` at a time per command list (Phase 35.12's
+    /// own finding).
+    D3D12_CPU_DESCRIPTOR_HANDLE _compositeSrvCpuBase = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE _compositeSrvGpuBase = {};
 
     BatchBuilder _batchBuilder;
 };
