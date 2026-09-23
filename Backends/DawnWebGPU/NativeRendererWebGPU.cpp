@@ -176,6 +176,110 @@ fn PSMain(input: VSOutput) -> @location(0) vec4f {
 }
 )WGSL";
 
+/// Blend.hlsl's/Blend.glsl's WGSL port (Phase 35.17) -- see Shaders/Blend.glsl's own header comment
+/// for the unpremultiply-blend-recomposite derivation, ported here unchanged. Like Blend.hlsl (and
+/// unlike Blend.glsl), the fixed fullscreen-quad UV table has every V component flipped relative to
+/// Blend.glsl's own: WebGPU's NDC is Y-up (like D3D's -- see kSDFRectWgsl's own VSMain comment), so
+/// position (-1,-1) is screen-BOTTOM-left here, not screen-top-left as it is under Vulkan's Y-down
+/// NDC. Blend.hlsl's own first DX12 port copied Blend.glsl's table unchanged and sampled a
+/// vertically mirrored row as a result (Phase 35.13); this port applies the fix from the start.
+/// select() with a vec3<bool> condition replaces HLSL's lerp(lo, hi, step(...)) idiom exactly
+/// (per-component pick), since WGSL has no ternary.
+constexpr const char* kBlendWgsl = R"WGSL(
+struct BlendParams {
+    mode: i32,
+};
+@group(0) @binding(0) var<uniform> uParams: BlendParams;
+@group(0) @binding(1) var uSourceTexture: texture_2d<f32>;
+@group(0) @binding(2) var uBackdropTexture: texture_2d<f32>;
+@group(0) @binding(3) var uSampler: sampler;
+
+struct VSOutput {
+    @builtin(position) clipPosition: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex
+fn VSMain(@builtin(vertex_index) vertexIndex: u32) -> VSOutput {
+    var positions = array<vec2f, 6>(
+        vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0),
+        vec2f(-1.0, -1.0), vec2f(1.0, 1.0), vec2f(-1.0, 1.0));
+    var uvs = array<vec2f, 6>(
+        vec2f(0.0, 1.0), vec2f(1.0, 1.0), vec2f(1.0, 0.0),
+        vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(0.0, 0.0));
+    var output: VSOutput;
+    output.clipPosition = vec4f(positions[vertexIndex], 0.0, 1.0);
+    output.uv           = uvs[vertexIndex];
+    return output;
+}
+
+fn Overlay(cb: vec3f, cs: vec3f) -> vec3f {
+    let lo = 2.0 * cb * cs;
+    let hi = 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
+    return select(lo, hi, cb >= vec3f(0.5)); // branches on the BACKDROP's own brightness
+}
+
+fn HardLight(cb: vec3f, cs: vec3f) -> vec3f {
+    let lo = 2.0 * cb * cs;
+    let hi = 1.0 - 2.0 * (1.0 - cb) * (1.0 - cs);
+    return select(lo, hi, cs >= vec3f(0.5)); // branches on the SOURCE's own brightness
+}
+
+fn SoftLightD(x: vec3f) -> vec3f {
+    let poly = ((16.0 * x - 12.0) * x + 4.0) * x;
+    return select(poly, sqrt(x), x >= vec3f(0.25));
+}
+
+fn SoftLight(cb: vec3f, cs: vec3f) -> vec3f {
+    let dark  = cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb);
+    let light = cb + (2.0 * cs - 1.0) * (SoftLightD(cb) - cb);
+    return select(dark, light, cs >= vec3f(0.5));
+}
+
+fn BlendColors(cb: vec3f, cs: vec3f, mode: i32) -> vec3f {
+    if (mode == 1) { return cb * cs; }                                         // Multiply
+    if (mode == 2) { return cb + cs - cb * cs; }                               // Screen
+    if (mode == 3) { return Overlay(cb, cs); }
+    if (mode == 4) { return min(cb, cs); }                                     // Darken
+    if (mode == 5) { return max(cb, cs); }                                     // Lighten
+    if (mode == 6) { return min(vec3f(1.0), cb / max(vec3f(1.0) - cs, vec3f(1e-4))); }       // ColorDodge
+    if (mode == 7) { return vec3f(1.0) - min(vec3f(1.0), (vec3f(1.0) - cb) / max(cs, vec3f(1e-4))); } // ColorBurn
+    if (mode == 8) { return HardLight(cb, cs); }
+    if (mode == 9) { return SoftLight(cb, cs); }
+    if (mode == 10) { return abs(cb - cs); }                                   // Difference
+    if (mode == 11) { return cb + cs - 2.0 * cb * cs; }                        // Exclusion
+    return cs;                                                                  // Normal (mode == 0)
+}
+
+@fragment
+fn PSMain(input: VSOutput) -> @location(0) vec4f {
+    let src      = textureSample(uSourceTexture, uSampler, input.uv);
+    let backdrop = textureSample(uBackdropTexture, uSampler, input.uv);
+
+    let srcAlpha      = src.a;
+    let backdropAlpha = backdrop.a;
+    let cs = select(vec3f(0.0), src.rgb / max(srcAlpha, 1e-6), srcAlpha > 0.0);
+    let cb = select(vec3f(0.0), backdrop.rgb / max(backdropAlpha, 1e-6), backdropAlpha > 0.0);
+
+    let blended = BlendColors(cb, cs, uParams.mode);
+
+    let resultRgb = (1.0 - backdropAlpha) * srcAlpha * cs
+                  + backdropAlpha * srcAlpha * blended
+                  + (1.0 - srcAlpha) * backdropAlpha * cb;
+    let resultAlpha = srcAlpha + backdropAlpha - srcAlpha * backdropAlpha;
+
+    return vec4f(resultRgb, resultAlpha);
+}
+)WGSL";
+
+/// Host-side mirror of kBlendWgsl's `BlendParams` uniform, padded to 16 bytes.
+struct BlendParamsUniform {
+    std::int32_t Mode;
+    std::int32_t Pad0;
+    std::int32_t Pad1;
+    std::int32_t Pad2;
+};
+
 /// Host-side mirror of the WGSL `PerFrame` uniform, padded to 16 bytes -- WGSL itself only
 /// declares `viewportSize: vec2f` (8 bytes), but the backing buffer is created a little larger to
 /// stay clear of any backend-specific minimum-uniform-buffer-size edge case (Dawn translates the
@@ -265,9 +369,10 @@ NativeRendererWebGPU::NativeRendererWebGPU(WGPUDevice device, WGPUQueue queue, W
 
 NativeRendererWebGPU::~NativeRendererWebGPU() { Shutdown(); }
 
-void NativeRendererWebGPU::SetTarget(WGPUTextureView targetView, std::uint32_t width,
+void NativeRendererWebGPU::SetTarget(WGPUTexture targetTexture, WGPUTextureView targetView, std::uint32_t width,
                                      std::uint32_t height) noexcept {
-    _targetView   = targetView;
+    _targetTexture = targetTexture;
+    _targetView    = targetView;
     _targetWidth  = width;
     _targetHeight = height;
 }
@@ -471,6 +576,95 @@ void NativeRendererWebGPU::EnsureInitialized() {
     samplerDesc.maxAnisotropy = 1;
     _linearSampler             = wgpuDeviceCreateSampler(_device, &samplerDesc);
 
+    // ─── Phase 35.17: premultiplied Image pipeline -- same layout/shaders/vertex layout as
+    // _imagePipeline, only the blend factors differ (One/OneMinusSrcAlpha), for
+    // CompositeOpacityLayer()'s own already-premultiplied captured render ──────────────────────────
+    WGPUBlendComponent premultipliedComponent{};
+    premultipliedComponent.operation = WGPUBlendOperation_Add;
+    premultipliedComponent.srcFactor = WGPUBlendFactor_One;
+    premultipliedComponent.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+
+    WGPUBlendState premultipliedBlendState{};
+    premultipliedBlendState.color = premultipliedComponent;
+    premultipliedBlendState.alpha = premultipliedComponent;
+
+    WGPUColorTargetState premultipliedColorTarget = imageColorTarget;
+    premultipliedColorTarget.blend                = &premultipliedBlendState;
+
+    WGPUFragmentState premultipliedFragmentState = imageFragmentState;
+    premultipliedFragmentState.targets            = &premultipliedColorTarget;
+
+    WGPURenderPipelineDescriptor premultipliedPipelineDesc = imagePipelineDesc;
+    premultipliedPipelineDesc.fragment                     = &premultipliedFragmentState;
+    _premultipliedImagePipeline = wgpuDeviceCreateRenderPipeline(_device, &premultipliedPipelineDesc);
+
+    // ─── Phase 35.17: Blend shader module/layout/pipeline -- no vertex input at all (kBlendWgsl
+    // generates its own fixed fullscreen quad from vertex_index), blending disabled (the shader
+    // itself computes the full Porter-Duff-composited result; fixed-function blending on top would
+    // double-composite it, matching NativeRendererVulkan's/NativeRendererDX12's own reasoning) ─────
+    WGPUShaderSourceWGSL blendWgslSource{};
+    blendWgslSource.chain.sType = WGPUSType_ShaderSourceWGSL;
+    blendWgslSource.code        = ToStringView(kBlendWgsl);
+
+    WGPUShaderModuleDescriptor blendShaderDesc{};
+    blendShaderDesc.nextInChain = &blendWgslSource.chain;
+    blendShaderDesc.label       = ToStringView("Blend");
+    _blendShaderModule           = wgpuDeviceCreateShaderModule(_device, &blendShaderDesc);
+
+    std::array<WGPUBindGroupLayoutEntry, 4> blendBglEntries{};
+    blendBglEntries[0].binding               = 0;
+    blendBglEntries[0].visibility            = WGPUShaderStage_Fragment;
+    blendBglEntries[0].buffer.type           = WGPUBufferBindingType_Uniform;
+    blendBglEntries[0].buffer.minBindingSize = sizeof(BlendParamsUniform);
+    blendBglEntries[1].binding               = 1;
+    blendBglEntries[1].visibility            = WGPUShaderStage_Fragment;
+    blendBglEntries[1].texture.sampleType    = WGPUTextureSampleType_Float;
+    blendBglEntries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+    blendBglEntries[2].binding               = 2;
+    blendBglEntries[2].visibility            = WGPUShaderStage_Fragment;
+    blendBglEntries[2].texture.sampleType    = WGPUTextureSampleType_Float;
+    blendBglEntries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+    blendBglEntries[3].binding               = 3;
+    blendBglEntries[3].visibility            = WGPUShaderStage_Fragment;
+    blendBglEntries[3].sampler.type          = WGPUSamplerBindingType_Filtering;
+
+    WGPUBindGroupLayoutDescriptor blendBglDesc{};
+    blendBglDesc.entryCount = static_cast<size_t>(blendBglEntries.size());
+    blendBglDesc.entries     = blendBglEntries.data();
+    _blendBindGroupLayout     = wgpuDeviceCreateBindGroupLayout(_device, &blendBglDesc);
+
+    WGPUPipelineLayoutDescriptor blendPlDesc{};
+    blendPlDesc.bindGroupLayoutCount = 1;
+    blendPlDesc.bindGroupLayouts      = &_blendBindGroupLayout;
+    _blendPipelineLayout              = wgpuDeviceCreatePipelineLayout(_device, &blendPlDesc);
+
+    WGPUColorTargetState blendColorTarget{};
+    blendColorTarget.format    = _colorFormat;
+    blendColorTarget.blend      = nullptr; // replace -- see the comment above
+    blendColorTarget.writeMask = WGPUColorWriteMask_All;
+
+    WGPUFragmentState blendFragmentState{};
+    blendFragmentState.module      = _blendShaderModule;
+    blendFragmentState.entryPoint = ToStringView("PSMain");
+    blendFragmentState.targetCount = 1;
+    blendFragmentState.targets      = &blendColorTarget;
+
+    WGPURenderPipelineDescriptor blendPipelineDesc{};
+    blendPipelineDesc.layout             = _blendPipelineLayout;
+    blendPipelineDesc.vertex.module       = _blendShaderModule;
+    blendPipelineDesc.vertex.entryPoint  = ToStringView("VSMain");
+    blendPipelineDesc.vertex.bufferCount = 0;
+    blendPipelineDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    blendPipelineDesc.primitive.cullMode = WGPUCullMode_None;
+    blendPipelineDesc.multisample.count  = 1;
+    blendPipelineDesc.multisample.mask    = 0xFFFFFFFFu;
+    blendPipelineDesc.fragment            = &blendFragmentState;
+    _blendPipeline = wgpuDeviceCreateRenderPipeline(_device, &blendPipelineDesc);
+
+    WGPUBufferDescriptor blendModeDesc{};
+    blendModeDesc.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+    blendModeDesc.size  = sizeof(BlendParamsUniform);
+    _blendModeBuffer     = wgpuDeviceCreateBuffer(_device, &blendModeDesc);
     // ─── Phase 35.16: small, fixed-size dedicated buffers for RenderShadowBatch()'s own two
     // one-quad draws -- sized for the larger of RectVertex/ImageVertex (4 vertices), rewritten via
     // wgpuQueueWriteBuffer() before each use, never grown ────────────────────────────────────────
@@ -519,15 +713,42 @@ void NativeRendererWebGPU::EnsureShadowSilhouetteTarget(std::uint32_t width, std
     _shadowSilhouetteHeight = height;
 }
 
-void NativeRendererWebGPU::BeginMainPass() {
+void NativeRendererWebGPU::BeginMainPass(WGPULoadOp loadOp) {
     WGPUCommandEncoderDescriptor encoderDesc{};
     _mainEncoder = wgpuDeviceCreateCommandEncoder(_device, &encoderDesc);
 
     WGPURenderPassColorAttachment colorAttachment{};
-    colorAttachment.view       = _targetView;
+    colorAttachment.view       = _currentTargetView;
     colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
-    colorAttachment.loadOp      = WGPULoadOp_Load;
+    colorAttachment.loadOp      = loadOp;
     colorAttachment.storeOp     = WGPUStoreOp_Store;
+    colorAttachment.clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
+
+    WGPURenderPassDescriptor passDesc{};
+    passDesc.colorAttachmentCount = 1;
+    passDesc.colorAttachments      = &colorAttachment;
+
+    _mainPass = wgpuCommandEncoderBeginRenderPass(_mainEncoder, &passDesc);
+
+    // Every layer target, and the real target, is always _targetWidth x _targetHeight -- no
+    // separate "current viewport" state to track, matching NativeRendererVulkan's own identical note.
+    wgpuRenderPassEncoderSetViewport(_mainPass, 0.0f, 0.0f, static_cast<float>(_targetWidth),
+                                     static_cast<float>(_targetHeight), 0.0f, 1.0f);
+    wgpuRenderPassEncoderSetScissorRect(_mainPass, 0, 0, _targetWidth, _targetHeight);
+}
+
+void NativeRendererWebGPU::SwitchMainPassTarget(WGPUTextureView view, WGPULoadOp loadOp) {
+    wgpuRenderPassEncoderEnd(_mainPass);
+    wgpuRenderPassEncoderRelease(_mainPass);
+    _mainPass          = nullptr;
+    _currentTargetView = view;
+
+    WGPURenderPassColorAttachment colorAttachment{};
+    colorAttachment.view       = view;
+    colorAttachment.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+    colorAttachment.loadOp      = loadOp;
+    colorAttachment.storeOp     = WGPUStoreOp_Store;
+    colorAttachment.clearValue = WGPUColor{0.0, 0.0, 0.0, 0.0};
 
     WGPURenderPassDescriptor passDesc{};
     passDesc.colorAttachmentCount = 1;
@@ -538,6 +759,65 @@ void NativeRendererWebGPU::BeginMainPass() {
     wgpuRenderPassEncoderSetViewport(_mainPass, 0.0f, 0.0f, static_cast<float>(_targetWidth),
                                      static_cast<float>(_targetHeight), 0.0f, 1.0f);
     wgpuRenderPassEncoderSetScissorRect(_mainPass, 0, 0, _targetWidth, _targetHeight);
+}
+
+void NativeRendererWebGPU::EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height) {
+    if (_layerTargets.size() <= depth) { _layerTargets.resize(depth + 1); }
+
+    LayerTarget& target = _layerTargets[depth];
+    if (target.Texture && target.Width == width && target.Height == height) { return; }
+
+    if (target.View) { wgpuTextureViewRelease(target.View); target.View = nullptr; }
+    if (target.Texture) { wgpuTextureRelease(target.Texture); target.Texture = nullptr; }
+
+    WGPUTextureDescriptor texDesc{};
+    // RenderAttachment (while pushed) + TextureBinding (the composite draw's own sampling once
+    // popped) -- used directly in either role, no transition of any kind (this class's own file
+    // comment). CopySrc -- a nested PushBlendLayer's own backdrop copy reads its enclosing layer's
+    // target as the copy source (LayerFrame::ParentTexture).
+    texDesc.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc;
+    texDesc.dimension     = WGPUTextureDimension_2D;
+    texDesc.size          = WGPUExtent3D{width, height, 1};
+    texDesc.format        = _colorFormat;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount   = 1;
+    target.Texture         = wgpuDeviceCreateTexture(_device, &texDesc);
+
+    WGPUTextureViewDescriptor viewDesc{};
+    viewDesc.format          = _colorFormat;
+    viewDesc.dimension       = WGPUTextureViewDimension_2D;
+    viewDesc.mipLevelCount   = 1;
+    viewDesc.arrayLayerCount = 1;
+    target.View               = wgpuTextureCreateView(target.Texture, &viewDesc);
+
+    target.Width  = width;
+    target.Height = height;
+}
+
+void NativeRendererWebGPU::EnsureBackdropTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropTexture && _backdropWidth == width && _backdropHeight == height) { return; }
+
+    if (_backdropView) { wgpuTextureViewRelease(_backdropView); _backdropView = nullptr; }
+    if (_backdropTexture) { wgpuTextureRelease(_backdropTexture); _backdropTexture = nullptr; }
+
+    WGPUTextureDescriptor texDesc{};
+    texDesc.usage         = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    texDesc.dimension     = WGPUTextureDimension_2D;
+    texDesc.size          = WGPUExtent3D{width, height, 1};
+    texDesc.format        = _colorFormat;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount   = 1;
+    _backdropTexture       = wgpuDeviceCreateTexture(_device, &texDesc);
+
+    WGPUTextureViewDescriptor viewDesc{};
+    viewDesc.format          = _colorFormat;
+    viewDesc.dimension       = WGPUTextureViewDimension_2D;
+    viewDesc.mipLevelCount   = 1;
+    viewDesc.arrayLayerCount = 1;
+    _backdropView             = wgpuTextureCreateView(_backdropTexture, &viewDesc);
+
+    _backdropWidth  = width;
+    _backdropHeight = height;
 }
 
 void NativeRendererWebGPU::EndAndSubmitMainPass() {
@@ -779,6 +1059,173 @@ void NativeRendererWebGPU::RenderShadowBatch(const Batch& batch) {
     wgpuBindGroupRelease(compositeBindGroup);
 }
 
+void NativeRendererWebGPU::HandleLayerMarker(const Batch& batch) {
+    const auto& markers = std::get<std::vector<LayerVertex>>(batch.Vertices);
+    if (markers.empty()) { return; }
+    const LayerVertex& marker = markers.front();
+
+    switch (marker.Op) {
+        case LayerOp::PushOpacity:
+        case LayerOp::PushBlend:
+            PushLayer(marker.Op, marker.Opacity, marker.Mode);
+            break;
+        case LayerOp::Pop:
+            PopLayer();
+            break;
+    }
+}
+
+void NativeRendererWebGPU::PushLayer(LayerOp op, float opacity, Rendering::BlendMode mode) {
+    const std::size_t depth = _layerStack.size();
+
+    LayerFrame frame;
+    frame.Op            = op;
+    frame.Opacity       = opacity;
+    frame.Mode          = mode;
+    frame.ParentTexture = _currentTargetTexture;
+    frame.ParentView    = _currentTargetView;
+    frame.TargetIndex   = depth;
+    _layerStack.push_back(frame);
+
+    EnsureLayerTarget(depth, _targetWidth, _targetHeight);
+    const LayerTarget& target = _layerTargets[depth];
+
+    // Switch rendering into this layer's own (cleared) target within the SAME, still-open
+    // _mainEncoder -- no submission needed here, since nothing writes a shared buffer at this
+    // point (see this class's own file comment on why only the composite draw needs isolation).
+    _currentTargetTexture = target.Texture;
+    SwitchMainPassTarget(target.View, WGPULoadOp_Clear);
+}
+
+void NativeRendererWebGPU::CompositeOpacityLayer(const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    // TintColor = (Opacity,Opacity,Opacity,Opacity) scales every channel of the already-
+    // premultiplied source texture uniformly by Opacity -- matches NativeRendererVulkan's/
+    // NativeRendererDX12's own identical reasoning.
+    const std::vector<ImageVertex> vertices = BuildImageQuadVertices(
+        {0.0f, 0.0f}, {static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)},
+        {frame.Opacity, frame.Opacity, frame.Opacity, frame.Opacity});
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    wgpuQueueWriteBuffer(_queue, _shadowQuadVertexBuffer, 0, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    wgpuQueueWriteBuffer(_queue, _shadowQuadIndexBuffer, 0, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    std::array<WGPUBindGroupEntry, 3> bgEntries{};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer   = _perFrameBuffer;
+    bgEntries[0].offset   = 0;
+    bgEntries[0].size     = sizeof(PerFrameUniform);
+    bgEntries[1].binding    = 1;
+    bgEntries[1].textureView = target.View;
+    bgEntries[2].binding = 2;
+    bgEntries[2].sampler  = _linearSampler;
+
+    WGPUBindGroupDescriptor bgDesc{};
+    bgDesc.layout      = _imageBindGroupLayout;
+    bgDesc.entryCount = static_cast<size_t>(bgEntries.size());
+    bgDesc.entries     = bgEntries.data();
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(_device, &bgDesc);
+
+    wgpuRenderPassEncoderSetPipeline(_mainPass, _premultipliedImagePipeline);
+    wgpuRenderPassEncoderSetBindGroup(_mainPass, 0, bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(_mainPass, 0, _shadowQuadVertexBuffer, 0, vertices.size() * sizeof(ImageVertex));
+    wgpuRenderPassEncoderSetIndexBuffer(_mainPass, _shadowQuadIndexBuffer, WGPUIndexFormat_Uint32, 0,
+                                        indices.size() * sizeof(std::uint32_t));
+    wgpuRenderPassEncoderDrawIndexed(_mainPass, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+
+    wgpuBindGroupRelease(bindGroup);
+}
+
+void NativeRendererWebGPU::CopyBackdropForBlend(const LayerFrame& frame) {
+    EnsureBackdropTarget(_targetWidth, _targetHeight);
+
+    WGPUTexelCopyTextureInfo src{};
+    src.texture = frame.ParentTexture;
+    src.aspect   = WGPUTextureAspect_All;
+
+    WGPUTexelCopyTextureInfo dst{};
+    dst.texture = _backdropTexture;
+    dst.aspect   = WGPUTextureAspect_All;
+
+    const WGPUExtent3D copySize{_targetWidth, _targetHeight, 1};
+
+    WGPUCommandEncoderDescriptor encDesc{};
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(_device, &encDesc);
+    wgpuCommandEncoderCopyTextureToTexture(encoder, &src, &dst, &copySize);
+
+    WGPUCommandBufferDescriptor cbDesc{};
+    WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(encoder, &cbDesc);
+    wgpuCommandEncoderRelease(encoder);
+    wgpuQueueSubmit(_queue, 1, &cmdBuf);
+    wgpuCommandBufferRelease(cmdBuf);
+    // No fence/wait -- WebGPU's sequential submit model orders this after the parent's own
+    // already-submitted content and before the composite draw's own later submit.
+}
+
+void NativeRendererWebGPU::CompositeBlendLayer(const LayerFrame& frame) {
+    const LayerTarget& target = _layerTargets[frame.TargetIndex];
+
+    const BlendParamsUniform params{static_cast<std::int32_t>(frame.Mode), 0, 0, 0};
+    wgpuQueueWriteBuffer(_queue, _blendModeBuffer, 0, &params, sizeof(params));
+
+    std::array<WGPUBindGroupEntry, 4> bgEntries{};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer   = _blendModeBuffer;
+    bgEntries[0].offset   = 0;
+    bgEntries[0].size     = sizeof(BlendParamsUniform);
+    bgEntries[1].binding    = 1;
+    bgEntries[1].textureView = target.View;
+    bgEntries[2].binding    = 2;
+    bgEntries[2].textureView = _backdropView;
+    bgEntries[3].binding = 3;
+    bgEntries[3].sampler  = _linearSampler;
+
+    WGPUBindGroupDescriptor bgDesc{};
+    bgDesc.layout      = _blendBindGroupLayout;
+    bgDesc.entryCount = static_cast<size_t>(bgEntries.size());
+    bgDesc.entries     = bgEntries.data();
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(_device, &bgDesc);
+
+    wgpuRenderPassEncoderSetPipeline(_mainPass, _blendPipeline);
+    wgpuRenderPassEncoderSetBindGroup(_mainPass, 0, bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderDraw(_mainPass, 6, 1, 0, 0); // no vertex buffer -- kBlendWgsl generates the quad
+
+    wgpuBindGroupRelease(bindGroup);
+}
+
+void NativeRendererWebGPU::PopLayer() {
+    // A PopLayer with no matching Push{Opacity,Blend}Layer is a malformed Rendering::CommandBuffer
+    // -- a caller bug, not a runtime condition this internal renderer recovers from.
+    IMF_ASSERT(!_layerStack.empty());
+
+    const LayerFrame frame = _layerStack.back();
+    _layerStack.pop_back();
+
+    // Submit everything accumulated so far (the layer's own content, and anything recorded before
+    // the push -- including, possibly, a Shadow batch's own not-yet-submitted composite draw, which
+    // reads the same shared _shadowQuadVertexBuffer/_shadowQuadIndexBuffer the composite below is
+    // about to overwrite) BEFORE writing any shared buffer, then isolate the composite draw itself
+    // via its own submission afterward too -- see this class's own file comment.
+    EndAndSubmitMainPass();
+
+    _currentTargetTexture = frame.ParentTexture;
+    _currentTargetView    = frame.ParentView;
+
+    // Its own tiny encoder/submit -- an encoder-level copy, needing no pass open.
+    if (frame.Op == LayerOp::PushBlend) { CopyBackdropForBlend(frame); }
+
+    BeginMainPass(WGPULoadOp_Load);
+
+    if (frame.Op == LayerOp::PushOpacity) {
+        CompositeOpacityLayer(frame);
+    } else {
+        CompositeBlendLayer(frame);
+    }
+
+    EndAndSubmitMainPass();
+    BeginMainPass(WGPULoadOp_Load); // ready for whatever batches follow, still targeting the parent
+}
+
 void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
     // A missing SetTarget() call is a caller bug, not a runtime condition to recover from --
@@ -791,6 +1238,7 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     std::size_t totalVertexBytes = 0;
     std::size_t totalIndexBytes  = 0;
     std::size_t shadowBatchCount = 0;
+    std::size_t layerBatchCount  = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -800,11 +1248,16 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
             totalIndexBytes += batch.Indices.size() * sizeof(std::uint32_t);
         } else if (batch.Kind == BatchKind::Shadow) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
+        } else if (batch.Kind == BatchKind::Layer) {
+            ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
         }
-        // Every other BatchKind (Text/Layer/BackdropBlur) is out of this sub-phase's scope, matching
-        // NativeRendererVulkan's/NativeRendererDX12's own identical Phase 35.5/35.13 starting point.
+        // Every other BatchKind (Text/BackdropBlur) is out of this sub-phase's scope, matching
+        // NativeRendererVulkan's/NativeRendererDX12's own identical Phase 35.6/35.14 starting point.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
+
+    _currentTargetTexture = _targetTexture;
+    _currentTargetView    = _targetView;
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
 
@@ -824,6 +1277,8 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
             // Ends and re-begins the main pass internally -- see this method's own comment on why
             // (BlurPassWebGPU::Apply() is its own separate submission).
             RenderShadowBatch(batch);
+        } else if (batch.Kind == BatchKind::Layer) {
+            HandleLayerMarker(batch);
         }
     }
 
@@ -866,6 +1321,30 @@ void NativeRendererWebGPU::Shutdown() {
     _shadowSilhouetteWidth  = 0;
     _shadowSilhouetteHeight = 0;
     _blurPass.Shutdown();
+
+    _layerStack.clear();
+    for (LayerTarget& target : _layerTargets) {
+        if (target.View) { wgpuTextureViewRelease(target.View); }
+        if (target.Texture) { wgpuTextureRelease(target.Texture); }
+    }
+    _layerTargets.clear();
+    if (_backdropView) { wgpuTextureViewRelease(_backdropView); _backdropView = nullptr; }
+    if (_backdropTexture) { wgpuTextureRelease(_backdropTexture); _backdropTexture = nullptr; }
+    _backdropWidth  = 0;
+    _backdropHeight = 0;
+
+    if (_blendModeBuffer) { wgpuBufferRelease(_blendModeBuffer); _blendModeBuffer = nullptr; }
+    if (_blendPipeline) { wgpuRenderPipelineRelease(_blendPipeline); _blendPipeline = nullptr; }
+    if (_blendPipelineLayout) { wgpuPipelineLayoutRelease(_blendPipelineLayout); _blendPipelineLayout = nullptr; }
+    if (_blendBindGroupLayout) {
+        wgpuBindGroupLayoutRelease(_blendBindGroupLayout);
+        _blendBindGroupLayout = nullptr;
+    }
+    if (_blendShaderModule) { wgpuShaderModuleRelease(_blendShaderModule); _blendShaderModule = nullptr; }
+    if (_premultipliedImagePipeline) {
+        wgpuRenderPipelineRelease(_premultipliedImagePipeline);
+        _premultipliedImagePipeline = nullptr;
+    }
 
     _initialized = false;
 }
