@@ -336,7 +336,12 @@ std::vector<RectVertex> BuildRectQuadVertices(Widgets::Vec2 position, Widgets::V
 /// questions" reasoning `NativeRendererDX12`'s own Phase 35.12 finding already established, applied
 /// here to a third, WebGPU-specific combination (Y-negating vertex shader + WebGPU's own backend-
 /// agnostic top-down texture convention).
-std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor) {
+/// The optional `uvMin`/`uvMax`/`radii` parameters (Phase 35.18) match `NativeRendererVulkan`'s/
+/// `NativeRendererDX12`'s own full signature -- `RenderBackdropBlurBatch()` crops its composite to
+/// exactly the requested rect out of the larger padded, blurred copy.
+std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets::Vec2 size, Widgets::Vec4 tintColor,
+                                                Widgets::Vec2 uvMin = {0.0f, 0.0f}, Widgets::Vec2 uvMax = {1.0f, 1.0f},
+                                                Rendering::CornerRadii radii = {}) {
     const Widgets::Vec2 center{position.x + size.x * 0.5f, position.y + size.y * 0.5f};
     const Widgets::Vec2 halfSize{size.x * 0.5f, size.y * 0.5f};
     const Widgets::Vec2 corners[4] = {
@@ -345,7 +350,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
         {position.x + size.x, position.y + size.y},
         {position.x, position.y + size.y},
     };
-    constexpr Widgets::Vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
+    const Widgets::Vec2 uvs[4] = {{uvMin.x, uvMin.y}, {uvMax.x, uvMin.y}, {uvMax.x, uvMax.y}, {uvMin.x, uvMax.y}};
 
     std::vector<ImageVertex> vertices;
     vertices.reserve(4);
@@ -354,7 +359,7 @@ std::vector<ImageVertex> BuildImageQuadVertices(Widgets::Vec2 position, Widgets:
             .Position = corners[i],
             .Local = {corners[i].x - center.x, corners[i].y - center.y},
             .HalfSize = halfSize,
-            .Radii = {},
+            .Radii = radii,
             .Uv = uvs[i],
             .TintColor = tintColor,
         });
@@ -1226,19 +1231,163 @@ void NativeRendererWebGPU::PopLayer() {
     BeginMainPass(WGPULoadOp_Load); // ready for whatever batches follow, still targeting the parent
 }
 
+void NativeRendererWebGPU::EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height) {
+    if (_backdropBlurCopyTexture && _backdropBlurCopyWidth == width && _backdropBlurCopyHeight == height) {
+        return;
+    }
+
+    if (_backdropBlurCopyView) { wgpuTextureViewRelease(_backdropBlurCopyView); _backdropBlurCopyView = nullptr; }
+    if (_backdropBlurCopyTexture) {
+        wgpuTextureRelease(_backdropBlurCopyTexture);
+        _backdropBlurCopyTexture = nullptr;
+    }
+
+    WGPUTextureDescriptor texDesc{};
+    // StorageBinding (_blurPass's own source) + CopyDst (the region copy) -- no transitions. Format
+    // must be _colorFormat (a texture-to-texture copy requires matching formats), which in turn
+    // must be RGBA8Unorm for BlurPassWebGPU's own storage binding.
+    texDesc.usage         = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_CopyDst;
+    texDesc.dimension     = WGPUTextureDimension_2D;
+    texDesc.size          = WGPUExtent3D{width, height, 1};
+    texDesc.format        = _colorFormat;
+    texDesc.mipLevelCount = 1;
+    texDesc.sampleCount   = 1;
+    _backdropBlurCopyTexture = wgpuDeviceCreateTexture(_device, &texDesc);
+
+    WGPUTextureViewDescriptor viewDesc{};
+    viewDesc.format          = _colorFormat;
+    viewDesc.dimension       = WGPUTextureViewDimension_2D;
+    viewDesc.mipLevelCount   = 1;
+    viewDesc.arrayLayerCount = 1;
+    _backdropBlurCopyView     = wgpuTextureCreateView(_backdropBlurCopyTexture, &viewDesc);
+
+    _backdropBlurCopyWidth  = width;
+    _backdropBlurCopyHeight = height;
+}
+
+void NativeRendererWebGPU::RenderBackdropBlurBatch(const Batch& batch) {
+    const auto& blurs = std::get<std::vector<BackdropBlurVertex>>(batch.Vertices);
+    if (blurs.empty()) { return; }
+    const BackdropBlurVertex& blur = blurs.front();
+    if (blur.Size.x <= 0.0f || blur.Size.y <= 0.0f) { return; }
+
+    if (_backdropBlurCountThisFrame >= _maxBackdropBlurPerFrame) {
+        return; // matches NativeRendererVulkan's/NativeRendererDX12's own identical rate limit
+    }
+    ++_backdropBlurCountThisFrame;
+
+    // Pad the copied region by the blur radius on every side (clamped to the target's own bounds)
+    // so _blurPass's kernel has real surrounding content to read, then crop the composite back
+    // down to exactly blur.Position/blur.Size -- the same formula as Vulkan/DX12.
+    const float pad    = std::max(blur.BlurRadius, 0.0f);
+    const float left   = std::max(blur.Position.x - pad, 0.0f);
+    const float top    = std::max(blur.Position.y - pad, 0.0f);
+    const float right  = std::min(blur.Position.x + blur.Size.x + pad, static_cast<float>(_targetWidth));
+    const float bottom = std::min(blur.Position.y + blur.Size.y + pad, static_cast<float>(_targetHeight));
+    if (right - left <= 0.0f || bottom - top <= 0.0f) { return; }
+
+    const auto originX = static_cast<std::uint32_t>(left);
+    const auto originY = static_cast<std::uint32_t>(top);
+    // Clamp the rounded-up extent so origin + extent never exceeds the target -- a copy region
+    // past the texture's own bounds is a WebGPU validation error, not a silent clamp.
+    const auto copyWidth = std::min(static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(right - left)))),
+                                    _targetWidth - originX);
+    const auto copyHeight = std::min(static_cast<std::uint32_t>(std::max(1, static_cast<int>(std::ceil(bottom - top)))),
+                                     _targetHeight - originY);
+
+    // Submit everything recorded so far -- the region copy below needs this Render() call's own
+    // prior batches actually rendered, and the composite below rewrites the shared quad buffers
+    // (see this class's own file comment on that invariant).
+    EndAndSubmitMainPass();
+
+    EnsureBackdropBlurCopyTarget(copyWidth, copyHeight);
+
+    {
+        WGPUTexelCopyTextureInfo src{};
+        src.texture = _currentTargetTexture;
+        src.origin   = WGPUOrigin3D{originX, originY, 0};
+        src.aspect   = WGPUTextureAspect_All;
+
+        WGPUTexelCopyTextureInfo dst{};
+        dst.texture = _backdropBlurCopyTexture;
+        dst.aspect   = WGPUTextureAspect_All;
+
+        const WGPUExtent3D copySize{copyWidth, copyHeight, 1};
+
+        WGPUCommandEncoderDescriptor encDesc{};
+        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(_device, &encDesc);
+        wgpuCommandEncoderCopyTextureToTexture(encoder, &src, &dst, &copySize);
+
+        WGPUCommandBufferDescriptor cbDesc{};
+        WGPUCommandBuffer cmdBuf = wgpuCommandEncoderFinish(encoder, &cbDesc);
+        wgpuCommandEncoderRelease(encoder);
+        wgpuQueueSubmit(_queue, 1, &cmdBuf);
+        wgpuCommandBufferRelease(cmdBuf);
+    }
+
+    const BlurResult blurred = _blurPass.Apply(BlurResult{_backdropBlurCopyTexture, _backdropBlurCopyView}, copyWidth,
+                                               copyHeight, blur.BlurRadius);
+
+    BeginMainPass(WGPULoadOp_Load);
+
+    // _perFrameBuffer already holds the real target's own size here -- only RenderShadowBatch()
+    // ever rewrites it, and it restores the target size before returning.
+    const Widgets::Vec2 uvMin{(blur.Position.x - static_cast<float>(originX)) / static_cast<float>(copyWidth),
+                              (blur.Position.y - static_cast<float>(originY)) / static_cast<float>(copyHeight)};
+    const Widgets::Vec2 uvMax{(blur.Position.x + blur.Size.x - static_cast<float>(originX)) / static_cast<float>(copyWidth),
+                              (blur.Position.y + blur.Size.y - static_cast<float>(originY)) / static_cast<float>(copyHeight)};
+    const std::vector<ImageVertex> vertices =
+        BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
+    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    wgpuQueueWriteBuffer(_queue, _shadowQuadVertexBuffer, 0, vertices.data(), vertices.size() * sizeof(ImageVertex));
+    wgpuQueueWriteBuffer(_queue, _shadowQuadIndexBuffer, 0, indices.data(), indices.size() * sizeof(std::uint32_t));
+
+    std::array<WGPUBindGroupEntry, 3> bgEntries{};
+    bgEntries[0].binding = 0;
+    bgEntries[0].buffer   = _perFrameBuffer;
+    bgEntries[0].offset   = 0;
+    bgEntries[0].size     = sizeof(PerFrameUniform);
+    bgEntries[1].binding    = 1;
+    bgEntries[1].textureView = blurred.View;
+    bgEntries[2].binding = 2;
+    bgEntries[2].sampler  = _linearSampler;
+
+    WGPUBindGroupDescriptor bgDesc{};
+    bgDesc.layout      = _imageBindGroupLayout;
+    bgDesc.entryCount = static_cast<size_t>(bgEntries.size());
+    bgDesc.entries     = bgEntries.data();
+    WGPUBindGroup bindGroup = wgpuDeviceCreateBindGroup(_device, &bgDesc);
+
+    // Standard (non-premultiplied) blend -- matches RenderShadowBatch()'s and Vulkan's/DX12's own
+    // identical choice (this content isn't scaled by any additional factor).
+    wgpuRenderPassEncoderSetPipeline(_mainPass, _imagePipeline);
+    wgpuRenderPassEncoderSetBindGroup(_mainPass, 0, bindGroup, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(_mainPass, 0, _shadowQuadVertexBuffer, 0, vertices.size() * sizeof(ImageVertex));
+    wgpuRenderPassEncoderSetIndexBuffer(_mainPass, _shadowQuadIndexBuffer, WGPUIndexFormat_Uint32, 0,
+                                        indices.size() * sizeof(std::uint32_t));
+    wgpuRenderPassEncoderDrawIndexed(_mainPass, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+
+    wgpuBindGroupRelease(bindGroup);
+}
+
 void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
     EnsureInitialized();
     // A missing SetTarget() call is a caller bug, not a runtime condition to recover from --
     // matches NativeRendererVulkan/NativeRendererDX12's own equivalent contract.
     IMF_ASSERT(_targetView != nullptr);
 
+    // "Per frame" == "per Render() call" -- matches NativeRendererVulkan's/NativeRendererDX12's own
+    // identical reset point.
+    _backdropBlurCountThisFrame = 0;
+
     _batchBuilder.Build(buffer);
     const std::vector<Batch>& batches = _batchBuilder.Batches();
 
     std::size_t totalVertexBytes = 0;
     std::size_t totalIndexBytes  = 0;
-    std::size_t shadowBatchCount = 0;
-    std::size_t layerBatchCount  = 0;
+    std::size_t shadowBatchCount       = 0;
+    std::size_t layerBatchCount        = 0;
+    std::size_t backdropBlurBatchCount = 0;
     for (const Batch& batch : batches) {
         if (batch.Kind == BatchKind::Rect) {
             totalVertexBytes += std::get<std::vector<RectVertex>>(batch.Vertices).size() * sizeof(RectVertex);
@@ -1250,11 +1399,15 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
             ++shadowBatchCount; // uses its own dedicated buffers, not totalVertexBytes/totalIndexBytes
         } else if (batch.Kind == BatchKind::Layer) {
             ++layerBatchCount; // push/pop markers only -- no vertex/index data of their own either
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            ++backdropBlurBatchCount; // uses the dedicated quad buffers too
         }
-        // Every other BatchKind (Text/BackdropBlur) is out of this sub-phase's scope, matching
-        // NativeRendererVulkan's/NativeRendererDX12's own identical Phase 35.6/35.14 starting point.
+        // BatchKind::Text is out of scope, matching NativeRendererVulkan's/NativeRendererDX12's own
+        // identical Phase 35.6/35.14 end state.
     }
-    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0) { return; }
+    if (totalVertexBytes == 0 && shadowBatchCount == 0 && layerBatchCount == 0 && backdropBlurBatchCount == 0) {
+        return;
+    }
 
     _currentTargetTexture = _targetTexture;
     _currentTargetView    = _targetView;
@@ -1279,6 +1432,9 @@ void NativeRendererWebGPU::Render(const Rendering::CommandBuffer& buffer) {
             RenderShadowBatch(batch);
         } else if (batch.Kind == BatchKind::Layer) {
             HandleLayerMarker(batch);
+        } else if (batch.Kind == BatchKind::BackdropBlur) {
+            // Ends and re-begins the main pass internally, same reason as RenderShadowBatch().
+            RenderBackdropBlurBatch(batch);
         }
     }
 
@@ -1332,6 +1488,15 @@ void NativeRendererWebGPU::Shutdown() {
     if (_backdropTexture) { wgpuTextureRelease(_backdropTexture); _backdropTexture = nullptr; }
     _backdropWidth  = 0;
     _backdropHeight = 0;
+
+    if (_backdropBlurCopyView) { wgpuTextureViewRelease(_backdropBlurCopyView); _backdropBlurCopyView = nullptr; }
+    if (_backdropBlurCopyTexture) {
+        wgpuTextureRelease(_backdropBlurCopyTexture);
+        _backdropBlurCopyTexture = nullptr;
+    }
+    _backdropBlurCopyWidth      = 0;
+    _backdropBlurCopyHeight     = 0;
+    _backdropBlurCountThisFrame = 0;
 
     if (_blendModeBuffer) { wgpuBufferRelease(_blendModeBuffer); _blendModeBuffer = nullptr; }
     if (_blendPipeline) { wgpuRenderPipelineRelease(_blendPipeline); _blendPipeline = nullptr; }

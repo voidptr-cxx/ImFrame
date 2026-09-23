@@ -95,6 +95,18 @@
  * `BlurPassWebGPU`'s own two-uniform-buffer finding (Phase 35.15) already established, generalized
  * here to an *unbounded* number of composite draws per `Render()` call rather than a fixed two.
  *
+ * Phase 35.18 adds `BatchKind::BackdropBlur`, mirroring `NativeRendererVulkan::RenderBackdropBlurBatch()`'s
+ * (Phase 35.6) and `NativeRendererDX12::RenderBackdropBlurBatch()`'s (Phase 35.14) structure: copy the
+ * padded requested region out of the current target (`wgpuCommandEncoderCopyTextureToTexture()` with
+ * a source origin — no coordinate flip, WebGPU addresses texture memory top-down like Vulkan/DX12),
+ * blur it via `_blurPass`, composite back a UV-cropped sub-rectangle at exactly the requested rect
+ * with the standard (non-premultiplied) `_imagePipeline`. `_backdropBlurCopyTexture` combines
+ * `StorageBinding` (`_blurPass`'s source) and `CopyDst` with no transitions. It copies from
+ * `_currentTargetTexture` and composites into `_currentTargetView`, so a backdrop blur inside a
+ * pushed layer blurs that layer's own content (Vulkan/DX12 always copy from the real target). Like
+ * every other writer of the shared quad buffers, it submits everything accumulated before writing
+ * them — the invariant that makes all of these internal composites safe in one `Render()` call.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-14
  * @version  3.1.0
@@ -169,6 +181,11 @@ public:
                    std::uint32_t height) noexcept;
 
     void Render(const Rendering::CommandBuffer& buffer) override;
+
+    /// Caps how many `Rendering::DrawBackdropBlur` commands actually run their (real GPU cost)
+    /// copy+blur+composite per `Render()` call — matches `NativeRendererVulkan`'s/
+    /// `NativeRendererDX12`'s/`NativeRendererGL3`'s own identical rate-limiting role and default.
+    void SetMaxBackdropBlurPerFrame(int maxPerFrame) noexcept { _maxBackdropBlurPerFrame = maxPerFrame; }
 
     /// Always fails — no text pipeline exists yet (this sub-phase's scope is `BatchKind::Rect` only).
     [[nodiscard]] Result<Rendering::FontId> LoadFont(const Utility::Path& path, float sizePixels) override;
@@ -267,6 +284,17 @@ private:
     /// by `PopLayer()` only after the parent's content has already been submitted.
     void CopyBackdropForBlend(const LayerFrame& frame);
     void CompositeBlendLayer(const LayerFrame& frame);
+
+    void EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height);
+
+    /**
+     * @brief    Renders one `BatchKind::BackdropBlur` batch: copy, blur, cropped composite (Phase 35.18).
+     *
+     * Subject to `_maxBackdropBlurPerFrame`'s rate limit, checked and incremented first, matching
+     * `NativeRendererVulkan`'s/`NativeRendererDX12`'s own placement. See this class's own file
+     * comment for the full sequence.
+     */
+    void RenderBackdropBlurBatch(const Batch& batch);
 
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     WGPUDevice        _device      = nullptr;
@@ -372,6 +400,20 @@ private:
     WGPUTextureView _backdropView    = nullptr;
     std::uint32_t   _backdropWidth   = 0;
     std::uint32_t   _backdropHeight  = 0;
+
+    // ─── Phase 35.18: BatchKind::BackdropBlur support ───────────────────────────
+    /// The padded region `RenderBackdropBlurBatch()` is about to blur — kept separate from
+    /// `_backdropTexture` (sized to the padded *requested rect*, consumed by `_blurPass` as a
+    /// storage texture rather than sampled), mirroring Vulkan's/DX12's own identical separation.
+    WGPUTexture     _backdropBlurCopyTexture = nullptr;
+    WGPUTextureView _backdropBlurCopyView    = nullptr;
+    std::uint32_t   _backdropBlurCopyWidth   = 0;
+    std::uint32_t   _backdropBlurCopyHeight  = 0;
+
+    /// See `SetMaxBackdropBlurPerFrame()`. `_backdropBlurCountThisFrame` resets to 0 at the start of
+    /// every `Render()` call — "per frame" means "per `Render()` call".
+    int _maxBackdropBlurPerFrame    = 4;
+    int _backdropBlurCountThisFrame = 0;
 
     BatchBuilder _batchBuilder;
 };

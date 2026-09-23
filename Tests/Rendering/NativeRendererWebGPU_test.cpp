@@ -645,3 +645,153 @@ TEST_CASE("NativeRendererWebGPU keeps a Shadow composite and two sibling opacity
 
     backend.Shutdown();
 }
+
+TEST_CASE("NativeRendererWebGPU renders a DrawBackdropBlur: blends across a colour seam within its own "
+          "rect, leaves everything outside untouched (Phase 35.18)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // A hard horizontal colour seam at y=64: red above, blue below. Deliberately asymmetric in
+        // Y so a Y-orientation bug would show up as a wrong-side blend instead of passing by
+        // coincidence -- the same scenario NativeRendererVulkan_test.cpp's/
+        // NativeRendererDX12_test.cpp's own Phase 35.6/35.14 tests cover.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, static_cast<float>(HEIGHT) / 2.0f},
+            .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawBackdropBlur{.Position = {40.0f, 44.0f}, .Size = {48.0f, 40.0f}, .BlurRadius = 10.0f});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        // Exactly at the seam, well inside the blur rect (x in [40,88], y in [44,84]).
+        const Pixel atSeam = Sample(pixels, 64, 64, WIDTH);
+        // Just above the blur rect's own top edge (y=40 < 44) but inside its padded copy region --
+        // proves the composite was cropped to the requested Size.
+        const Pixel justAboveRect = Sample(pixels, 64, 40, WIDTH);
+        const Pixel untouchedRed  = Sample(pixels, 10, 10, WIDTH);
+        const Pixel untouchedBlue = Sample(pixels, 10, 118, WIDTH);
+
+        REQUIRE(atSeam.r > 80);
+        REQUIRE(atSeam.r < 180);
+        REQUIRE(atSeam.b > 80);
+        REQUIRE(atSeam.b < 180);
+
+        REQUIRE(justAboveRect.r > 200);
+        REQUIRE(justAboveRect.b < 20);
+
+        REQUIRE(untouchedRed.r > 200);
+        REQUIRE(untouchedRed.b < 20);
+        REQUIRE(untouchedBlue.b > 200);
+        REQUIRE(untouchedBlue.r < 20);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU rate-limits DrawBackdropBlur at MaxBackdropBlurPerFrame, degrading "
+          "gracefully past the limit (Phase 35.18)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, static_cast<float>(HEIGHT) / 2.0f},
+            .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        // Five non-overlapping backdrop-blur regions straddling the same seam -- default
+        // MaxBackdropBlurPerFrame is 4, so the 5th should be skipped entirely.
+        for (int i = 0; i < 5; ++i) {
+            buffer.Push(DrawBackdropBlur{
+                .Position = {10.0f + static_cast<float>(i) * 20.0f, 54.0f}, .Size = {16.0f, 20.0f}, .BlurRadius = 8.0f});
+        }
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        // y=59 is 5px above the seam, inside every region's own Y range [54,74]: a processed region
+        // bleeds some blue this far into the red band; a skipped one leaves it pure red.
+        for (int i = 0; i < 4; ++i) {
+            const int x = 10 + i * 20 + 8; // center-x of region i
+            const Pixel processed = Sample(pixels, x, 59, WIDTH);
+            REQUIRE(processed.b > 15);
+        }
+        const Pixel skipped = Sample(pixels, 10 + 4 * 20 + 8, 59, WIDTH);
+        REQUIRE(skipped.b == 0);
+        REQUIRE(skipped.r == 255);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU blurs a pushed layer's own content for a DrawBackdropBlur recorded "
+          "inside that layer (Phase 35.18)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // The real target stays fully transparent; the red/blue seam exists only inside the layer.
+        // Copying from the real target instead (Vulkan's/DX12's behaviour) would blur nothing and
+        // leave a hard seam here.
+        buffer.Push(PushOpacityLayer{.Opacity = 1.0f});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, static_cast<float>(HEIGHT) / 2.0f},
+            .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT) / 2.0f},
+            .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(DrawBackdropBlur{.Position = {40.0f, 44.0f}, .Size = {48.0f, 40.0f}, .BlurRadius = 10.0f});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel atSeam = Sample(pixels, 64, 64, WIDTH);
+        const Pixel outside = Sample(pixels, 10, 10, WIDTH);
+
+        REQUIRE(atSeam.r > 80);
+        REQUIRE(atSeam.r < 180);
+        REQUIRE(atSeam.b > 80);
+        REQUIRE(atSeam.b < 180);
+        REQUIRE(atSeam.a > 200);
+        REQUIRE(outside.r > 200);
+        REQUIRE(outside.b < 20);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
