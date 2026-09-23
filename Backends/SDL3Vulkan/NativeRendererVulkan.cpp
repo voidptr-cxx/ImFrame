@@ -33,6 +33,30 @@ namespace ImFrame::Internal {
 
 namespace {
 
+/// One internal-quad slot: 4 vertices of the larger of the two vertex kinds an internal quad draw
+/// uses (RectVertex for a shadow silhouette, ImageVertex for every composite).
+constexpr std::size_t kInternalQuadSlotBytes = 4 * std::max(sizeof(RectVertex), sizeof(ImageVertex));
+
+/// Records an execution + memory dependency on a `VK_IMAGE_LAYOUT_GENERAL` image that stays in
+/// `GENERAL` (no layout change) -- layer targets and `_backdropImage` never leave it, but that says
+/// nothing about ordering: successive rendering instances and copies touching the same image are
+/// NOT implicitly ordered in Vulkan, so every write -> read / read -> write handoff between them
+/// needs one of these (Phase 35.19). Must be recorded outside any active rendering instance.
+void RecordGeneralImageBarrier(VkCommandBuffer cmd, VkImage image, VkPipelineStageFlags srcStage,
+                               VkAccessFlags srcAccess, VkPipelineStageFlags dstStage, VkAccessFlags dstAccess) {
+    VkImageMemoryBarrier barrier{};
+    barrier.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image               = image;
+    barrier.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    barrier.srcAccessMask       = srcAccess;
+    barrier.dstAccessMask       = dstAccess;
+    vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
 /// Builds one axis-aligned quad's `RectVertex`es — `RenderShadowBatch()`'s own silhouette pass
 /// reuses the existing Rect pipeline via a direct draw call rather than a third hand-written
 /// pipeline, mirroring `NativeRendererGL3::BuildRectQuadVertices()`'s identical role/formula.
@@ -423,80 +447,27 @@ void NativeRendererVulkan::EnsureInitialized() {
     fenceCi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     vkCreateFence(_device, &fenceCi, nullptr, &_submitFence);
 
-    // ─── Phase 35.4: BatchKind::Shadow support ──────────────────────────────────
-    // Small, fixed-size, dedicated buffers for RenderShadowBatch()'s own two one-quad draws
-    // (silhouette rect, composite image) -- see this class's own .hpp comment on why these are
-    // kept separate from _vertexBuffer/_indexBuffer.
+    // ─── Internal-quad index buffer: one constant quad, shared by every internal quad slot. The
+    // vertex buffer and the composite/blend descriptor pools are sized per Render() call instead
+    // (EnsureInternalQuadCapacity()/PrepareCompositeDescriptorSets(), Phase 35.19) ────────────────
     {
-        VkBufferCreateInfo quadVertexCi{};
-        quadVertexCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        quadVertexCi.size        = 4 * sizeof(RectVertex); // RectVertex is the larger of the two kinds
-        quadVertexCi.usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        quadVertexCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo quadAllocCi{};
-        quadAllocCi.usage = VMA_MEMORY_USAGE_AUTO;
-        quadAllocCi.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-
-        VmaAllocationInfo quadVertexAllocInfo{};
-        vmaCreateBuffer(_allocator, &quadVertexCi, &quadAllocCi, &_shadowQuadVertexBuffer, &_shadowQuadVertexAllocation,
-                        &quadVertexAllocInfo);
-        _shadowQuadVertexMapped = quadVertexAllocInfo.pMappedData;
-
         VkBufferCreateInfo quadIndexCi{};
         quadIndexCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         quadIndexCi.size        = 6 * sizeof(std::uint32_t);
         quadIndexCi.usage       = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
         quadIndexCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
+        VmaAllocationCreateInfo quadAllocCi{};
+        quadAllocCi.usage = VMA_MEMORY_USAGE_AUTO;
+        quadAllocCi.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
         VmaAllocationInfo quadIndexAllocInfo{};
-        vmaCreateBuffer(_allocator, &quadIndexCi, &quadAllocCi, &_shadowQuadIndexBuffer, &_shadowQuadIndexAllocation,
-                        &quadIndexAllocInfo);
-        _shadowQuadIndexMapped = quadIndexAllocInfo.pMappedData;
+        vmaCreateBuffer(_allocator, &quadIndexCi, &quadAllocCi, &_internalQuadIndexBuffer,
+                        &_internalQuadIndexAllocation, &quadIndexAllocInfo);
+        _internalQuadIndexMapped = quadIndexAllocInfo.pMappedData;
 
         constexpr std::array<std::uint32_t, 6> kQuadIndices{0, 1, 2, 0, 2, 3};
-        std::memcpy(_shadowQuadIndexMapped, kQuadIndices.data(), kQuadIndices.size() * sizeof(std::uint32_t));
-    }
-
-    // A second _imagePipeline-compatible descriptor set for compositing _blurPass's own
-    // VK_IMAGE_LAYOUT_GENERAL output -- see this class's own .hpp comment on why this can't reuse
-    // the per-DrawImage-batch _imageDescriptorPool (sized/reset for real user textures, which are
-    // always VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).
-    {
-        std::array<VkDescriptorPoolSize, 2> poolSizes{
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
-
-        VkDescriptorPoolCreateInfo compositePoolCi{};
-        compositePoolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        compositePoolCi.maxSets       = 1;
-        compositePoolCi.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
-        compositePoolCi.pPoolSizes    = poolSizes.data();
-        vkCreateDescriptorPool(_device, &compositePoolCi, nullptr, &_compositeDescriptorPool);
-
-        VkDescriptorSetAllocateInfo compositeSetAllocInfo{};
-        compositeSetAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        compositeSetAllocInfo.descriptorPool     = _compositeDescriptorPool;
-        compositeSetAllocInfo.descriptorSetCount = 1;
-        compositeSetAllocInfo.pSetLayouts        = &_imageDescriptorSetLayout;
-        vkAllocateDescriptorSets(_device, &compositeSetAllocInfo, &_compositeDescriptorSet);
-
-        // Binding 0 (the PerFrame UBO) never changes -- write it once here, matching
-        // _rectDescriptorSet's own one-time binding-0 write. Binding 1 (the texture) is rewritten
-        // after every _blurPass.Apply() call instead, once that call's own output view is known.
-        VkDescriptorBufferInfo compositeBufferInfo{};
-        compositeBufferInfo.buffer = _perFrameUbo;
-        compositeBufferInfo.offset = 0;
-        compositeBufferInfo.range  = VK_WHOLE_SIZE;
-
-        VkWriteDescriptorSet compositeWrite{};
-        compositeWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        compositeWrite.dstSet          = _compositeDescriptorSet;
-        compositeWrite.dstBinding      = 0;
-        compositeWrite.descriptorCount = 1;
-        compositeWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        compositeWrite.pBufferInfo     = &compositeBufferInfo;
-        vkUpdateDescriptorSets(_device, 1, &compositeWrite, 0, nullptr);
+        std::memcpy(_internalQuadIndexMapped, kQuadIndices.data(), kQuadIndices.size() * sizeof(std::uint32_t));
     }
 
     // ─── Phase 35.5: premultiplied-alpha Image pipeline, for compositing renderer-owned content ──
@@ -618,24 +589,6 @@ void NativeRendererVulkan::EnsureInitialized() {
         blendPipelineCi.layout              = _blendPipelineLayout;
         blendPipelineCi.renderPass          = VK_NULL_HANDLE;
         vkCreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &blendPipelineCi, nullptr, &_blendPipeline);
-
-        VkDescriptorPoolSize blendPoolSize{};
-        blendPoolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        blendPoolSize.descriptorCount = 2;
-
-        VkDescriptorPoolCreateInfo blendPoolCi{};
-        blendPoolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        blendPoolCi.maxSets       = 1;
-        blendPoolCi.poolSizeCount = 1;
-        blendPoolCi.pPoolSizes    = &blendPoolSize;
-        vkCreateDescriptorPool(_device, &blendPoolCi, nullptr, &_blendDescriptorPool);
-
-        VkDescriptorSetAllocateInfo blendSetAllocInfo{};
-        blendSetAllocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        blendSetAllocInfo.descriptorPool     = _blendDescriptorPool;
-        blendSetAllocInfo.descriptorSetCount = 1;
-        blendSetAllocInfo.pSetLayouts        = &_blendDescriptorSetLayout;
-        vkAllocateDescriptorSets(_device, &blendSetAllocInfo, &_blendDescriptorSet);
     }
 
     _initialized = true;
@@ -704,6 +657,156 @@ void NativeRendererVulkan::EnsureImageDescriptorCapacity(std::size_t neededSets)
 
     _imageDescriptorSets.assign(neededSets, VK_NULL_HANDLE);
     _imageDescriptorPoolCapacitySets = neededSets;
+}
+
+void NativeRendererVulkan::EnsureInternalQuadCapacity(std::size_t slots) {
+    _nextInternalQuadSlot = 0;
+    if (slots <= _internalQuadCapacitySlots) { return; }
+
+    // Safe to destroy: Render() waits for its own last submission before returning, so nothing
+    // from a previous call can still be reading the old buffer.
+    if (_internalQuadVertexBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_allocator, _internalQuadVertexBuffer, _internalQuadVertexAllocation);
+    }
+
+    VkBufferCreateInfo bufCi{};
+    bufCi.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufCi.size        = static_cast<VkDeviceSize>(slots * kInternalQuadSlotBytes);
+    bufCi.usage       = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufCi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocCi{};
+    allocCi.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCi.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    VmaAllocationInfo allocInfo{};
+    vmaCreateBuffer(_allocator, &bufCi, &allocCi, &_internalQuadVertexBuffer, &_internalQuadVertexAllocation,
+                    &allocInfo);
+    _internalQuadVertexMapped  = allocInfo.pMappedData;
+    _internalQuadCapacitySlots = slots;
+}
+
+VkDeviceSize NativeRendererVulkan::WriteInternalQuad(const void* vertices, std::size_t bytes) {
+    // Render() reserves one slot per possible internal quad draw before recording starts --
+    // running out means that count is wrong, a renderer bug rather than a runtime condition.
+    IMF_ASSERT(_nextInternalQuadSlot < _internalQuadCapacitySlots);
+    IMF_ASSERT(bytes <= kInternalQuadSlotBytes);
+
+    const std::size_t offset = _nextInternalQuadSlot++ * kInternalQuadSlotBytes;
+    std::memcpy(static_cast<std::byte*>(_internalQuadVertexMapped) + offset, vertices, bytes);
+    return static_cast<VkDeviceSize>(offset);
+}
+
+void NativeRendererVulkan::PrepareCompositeDescriptorSets(std::size_t compositeSets, std::size_t blendSets) {
+    _nextCompositeDescriptorSet = 0;
+    _nextBlendDescriptorSet     = 0;
+
+    // Both pools are reset (or recreated) here, before any recording -- safe because Render() waits
+    // for its own last submission before returning.
+    if (compositeSets > _compositeDescriptorCapacitySets) {
+        if (_compositeDescriptorPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(_device, _compositeDescriptorPool, nullptr);
+        }
+        std::array<VkDescriptorPoolSize, 2> poolSizes{
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, static_cast<std::uint32_t>(compositeSets)},
+            VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, static_cast<std::uint32_t>(compositeSets)}};
+
+        VkDescriptorPoolCreateInfo poolCi{};
+        poolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolCi.maxSets       = static_cast<std::uint32_t>(compositeSets);
+        poolCi.poolSizeCount = static_cast<std::uint32_t>(poolSizes.size());
+        poolCi.pPoolSizes    = poolSizes.data();
+        vkCreateDescriptorPool(_device, &poolCi, nullptr, &_compositeDescriptorPool);
+        _compositeDescriptorCapacitySets = compositeSets;
+    } else if (_compositeDescriptorPool != VK_NULL_HANDLE) {
+        vkResetDescriptorPool(_device, _compositeDescriptorPool, 0);
+    }
+
+    if (blendSets > _blendDescriptorCapacitySets) {
+        if (_blendDescriptorPool != VK_NULL_HANDLE) { vkDestroyDescriptorPool(_device, _blendDescriptorPool, nullptr); }
+
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        poolSize.descriptorCount = static_cast<std::uint32_t>(2 * blendSets);
+
+        VkDescriptorPoolCreateInfo poolCi{};
+        poolCi.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolCi.maxSets       = static_cast<std::uint32_t>(blendSets);
+        poolCi.poolSizeCount = 1;
+        poolCi.pPoolSizes    = &poolSize;
+        vkCreateDescriptorPool(_device, &poolCi, nullptr, &_blendDescriptorPool);
+        _blendDescriptorCapacitySets = blendSets;
+    } else if (_blendDescriptorPool != VK_NULL_HANDLE) {
+        vkResetDescriptorPool(_device, _blendDescriptorPool, 0);
+    }
+
+    _compositeDescriptorSets.assign(compositeSets, VK_NULL_HANDLE);
+    if (compositeSets > 0) {
+        const std::vector<VkDescriptorSetLayout> layouts(compositeSets, _imageDescriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool     = _compositeDescriptorPool;
+        allocInfo.descriptorSetCount = static_cast<std::uint32_t>(compositeSets);
+        allocInfo.pSetLayouts        = layouts.data();
+        vkAllocateDescriptorSets(_device, &allocInfo, _compositeDescriptorSets.data());
+
+        // Binding 0 (the PerFrame UBO) is the same for every composite -- written here, up front.
+        // Binding 1 (the texture) is written exactly once, by whichever composite takes the set.
+        VkDescriptorBufferInfo bufferInfo{};
+        bufferInfo.buffer = _perFrameUbo;
+        bufferInfo.offset = 0;
+        bufferInfo.range  = VK_WHOLE_SIZE;
+
+        std::vector<VkWriteDescriptorSet> writes(compositeSets);
+        for (std::size_t i = 0; i < compositeSets; ++i) {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = _compositeDescriptorSets[i];
+            writes[i].dstBinding      = 0;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[i].pBufferInfo     = &bufferInfo;
+        }
+        vkUpdateDescriptorSets(_device, static_cast<std::uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    }
+
+    _blendDescriptorSets.assign(blendSets, VK_NULL_HANDLE);
+    if (blendSets > 0) {
+        const std::vector<VkDescriptorSetLayout> layouts(blendSets, _blendDescriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool     = _blendDescriptorPool;
+        allocInfo.descriptorSetCount = static_cast<std::uint32_t>(blendSets);
+        allocInfo.pSetLayouts        = layouts.data();
+        vkAllocateDescriptorSets(_device, &allocInfo, _blendDescriptorSets.data());
+    }
+}
+
+VkDescriptorSet NativeRendererVulkan::NextCompositeDescriptorSet() {
+    // Render() allocates one set per possible composite draw before recording -- running out
+    // means that count is wrong, a renderer bug.
+    IMF_ASSERT(_nextCompositeDescriptorSet < _compositeDescriptorSets.size());
+    return _compositeDescriptorSets[_nextCompositeDescriptorSet++];
+}
+
+VkDescriptorSet NativeRendererVulkan::NextBlendDescriptorSet() {
+    IMF_ASSERT(_nextBlendDescriptorSet < _blendDescriptorSets.size());
+    return _blendDescriptorSets[_nextBlendDescriptorSet++];
+}
+
+void NativeRendererVulkan::WriteCompositeTexture(VkDescriptorSet set, VkImageView view) {
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler     = _linearSampler;
+    imageInfo.imageView   = view;
+    imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = set;
+    write.dstBinding      = 1;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo      = &imageInfo;
+    vkUpdateDescriptorSets(_device, 1, &write, 0, nullptr);
 }
 
 void NativeRendererVulkan::EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height) {
@@ -806,7 +909,10 @@ void NativeRendererVulkan::EnsureLayerTarget(std::size_t depth, std::uint32_t wi
     imageCi.arrayLayers   = 1;
     imageCi.samples       = VK_SAMPLE_COUNT_1_BIT;
     imageCi.tiling        = VK_IMAGE_TILING_OPTIMAL;
-    imageCi.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    // TRANSFER_SRC -- a nested PushBlendLayer's CopyBackdropForBlend() copies FROM its enclosing
+    // layer's target (LayerFrame::ParentImage); without it that vkCmdCopyImage is invalid usage
+    // (VUID-vkCmdCopyImage-srcImage-00126), found by Phase 35.19's own nested-blend test.
+    imageCi.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imageCi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
     VmaAllocationCreateInfo allocCi{};
@@ -1113,18 +1219,8 @@ void NativeRendererVulkan::RenderBackdropBlurBatch(VkCommandBuffer& cmd, const B
     const BlurResult blurred = _blurPass.Apply(BlurResult{_backdropBlurCopyImage, _backdropBlurCopyView}, copyWidth,
                                                copyHeight, blur.BlurRadius);
 
-    VkDescriptorImageInfo blurredInfo{};
-    blurredInfo.sampler     = _linearSampler;
-    blurredInfo.imageView   = blurred.View;
-    blurredInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet blurredWrite{};
-    blurredWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    blurredWrite.dstSet          = _compositeDescriptorSet;
-    blurredWrite.dstBinding      = 1;
-    blurredWrite.descriptorCount = 1;
-    blurredWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    blurredWrite.pImageInfo      = &blurredInfo;
-    vkUpdateDescriptorSets(_device, 1, &blurredWrite, 0, nullptr);
+    const VkDescriptorSet compositeSet = NextCompositeDescriptorSet();
+    WriteCompositeTexture(compositeSet, blurred.View);
 
     cmd = BeginMainCommandBuffer();
 
@@ -1140,16 +1236,13 @@ void NativeRendererVulkan::RenderBackdropBlurBatch(VkCommandBuffer& cmd, const B
                               (blur.Position.y + blur.Size.y - top) / static_cast<float>(copyHeight)};
     const std::vector<ImageVertex> vertices =
         BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
-    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+    const VkDeviceSize vbOffset = WriteInternalQuad(vertices.data(), vertices.size() * sizeof(ImageVertex));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
-                            0, nullptr);
-    const VkDeviceSize vbOffset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
-    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &compositeSet, 0,
+                            nullptr);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_internalQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _internalQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 }
 
@@ -1199,6 +1292,15 @@ void NativeRendererVulkan::PushLayer(VkCommandBuffer cmd, LayerOp op, float opac
     // vkCmdBeginRendering can't be called again until the current instance ends.
     vkCmdEndRendering(cmd);
 
+    // This depth's target may have been rendered into and then sampled by an earlier sibling
+    // layer's composite in this same command buffer -- this push's own clear must wait for both
+    // (write-after-read and write-after-write), since nothing orders separate rendering instances.
+    RecordGeneralImageBarrier(cmd, target.Image,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+
     VkRenderingAttachmentInfo colorAttachment{};
     colorAttachment.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
     colorAttachment.imageView   = target.View;
@@ -1229,18 +1331,8 @@ void NativeRendererVulkan::PushLayer(VkCommandBuffer cmd, LayerOp op, float opac
 void NativeRendererVulkan::CompositeOpacityLayer(VkCommandBuffer cmd, const LayerFrame& frame) {
     const LayerTarget& target = _layerTargets[frame.TargetIndex];
 
-    VkDescriptorImageInfo texInfo{};
-    texInfo.sampler     = _linearSampler;
-    texInfo.imageView   = target.View;
-    texInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = _compositeDescriptorSet;
-    write.dstBinding      = 1;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &texInfo;
-    vkUpdateDescriptorSets(_device, 1, &write, 0, nullptr);
+    const VkDescriptorSet compositeSet = NextCompositeDescriptorSet();
+    WriteCompositeTexture(compositeSet, target.View);
 
     // TintColor = (Opacity,Opacity,Opacity,Opacity) scales every channel of the already-
     // premultiplied source texture uniformly by Opacity -- matches
@@ -1248,16 +1340,13 @@ void NativeRendererVulkan::CompositeOpacityLayer(VkCommandBuffer cmd, const Laye
     const std::vector<ImageVertex> vertices = BuildImageQuadVertices(
         {0.0f, 0.0f}, {static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)},
         {frame.Opacity, frame.Opacity, frame.Opacity, frame.Opacity});
-    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+    const VkDeviceSize vbOffset = WriteInternalQuad(vertices.data(), vertices.size() * sizeof(ImageVertex));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _premultipliedImagePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
-                            0, nullptr);
-    const VkDeviceSize vbOffset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
-    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &compositeSet, 0,
+                            nullptr);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_internalQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _internalQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 }
 
@@ -1286,6 +1375,18 @@ void NativeRendererVulkan::CopyBackdropForBlend(VkCommandBuffer cmd, const Layer
                             nullptr, 0, nullptr, 1, &toTransferSrc);
     }
 
+    // A GENERAL parent (an enclosing layer) needs no layout change, but still needs its own
+    // color-attachment writes ordered before this copy reads it (Phase 35.19).
+    if (!parentNeedsTransition) {
+        RecordGeneralImageBarrier(cmd, frame.ParentImage, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                  VK_ACCESS_TRANSFER_READ_BIT);
+    }
+    // An earlier blend composite in this same command buffer may still be sampling _backdropImage
+    // -- the copy below must not overwrite it first (write-after-read, Phase 35.19).
+    RecordGeneralImageBarrier(cmd, _backdropImage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+
     VkImageCopy copyRegion{};
     copyRegion.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     copyRegion.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1293,6 +1394,13 @@ void NativeRendererVulkan::CopyBackdropForBlend(VkCommandBuffer cmd, const Layer
     vkCmdCopyImage(cmd, frame.ParentImage,
                    parentNeedsTransition ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
                    _backdropImage, VK_IMAGE_LAYOUT_GENERAL, 1, &copyRegion);
+
+    if (!parentNeedsTransition) {
+        // The parent resumes as a color attachment right after -- its writes must wait for this read.
+        RecordGeneralImageBarrier(cmd, frame.ParentImage, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    }
 
     if (parentNeedsTransition) {
         VkImageMemoryBarrier backToColor{};
@@ -1335,15 +1443,17 @@ void NativeRendererVulkan::CompositeBlendLayer(VkCommandBuffer cmd, const LayerF
     texInfos[1].imageView   = _backdropView;
     texInfos[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
+    const VkDescriptorSet blendSet = NextBlendDescriptorSet();
+
     std::array<VkWriteDescriptorSet, 2> writes{};
     writes[0].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet          = _blendDescriptorSet;
+    writes[0].dstSet          = blendSet;
     writes[0].dstBinding      = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].pImageInfo      = &texInfos[0];
     writes[1].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet          = _blendDescriptorSet;
+    writes[1].dstSet          = blendSet;
     writes[1].dstBinding      = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1352,7 +1462,7 @@ void NativeRendererVulkan::CompositeBlendLayer(VkCommandBuffer cmd, const LayerF
 
     const auto mode = static_cast<std::int32_t>(frame.Mode);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _blendPipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _blendPipelineLayout, 0, 1, &_blendDescriptorSet, 0,
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _blendPipelineLayout, 0, 1, &blendSet, 0,
                             nullptr);
     vkCmdPushConstants(cmd, _blendPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(mode), &mode);
     vkCmdDraw(cmd, 6, 1, 0, 0); // no vertex buffer -- Blend.glsl generates the quad from gl_VertexIndex
@@ -1369,6 +1479,12 @@ void NativeRendererVulkan::PopLayer(VkCommandBuffer cmd) {
     // Ends the layer's own rendering instance -- CopyBackdropForBlend() (below, for a PushBlend
     // frame) is a transfer command and illegal while one is still active.
     vkCmdEndRendering(cmd);
+
+    // The composite draw below samples what this layer just rendered -- a read-after-write that
+    // separate rendering instances do not order on their own.
+    RecordGeneralImageBarrier(cmd, _layerTargets[frame.TargetIndex].Image,
+                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
     if (frame.Op == LayerOp::PushBlend) {
         // Resolves _backdropImage entirely before the parent's own rendering instance (re)starts
@@ -1502,9 +1618,8 @@ void NativeRendererVulkan::RenderShadowBatch(VkCommandBuffer& cmd, const Batch& 
         const std::vector<RectVertex> silhouetteVertices =
             BuildRectQuadVertices({static_cast<float>(pad), static_cast<float>(pad)}, {spreadWidth, spreadHeight},
                                  shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
-        constexpr std::array<std::uint32_t, 6> silhouetteIndices{0, 1, 2, 0, 2, 3};
-        std::memcpy(_shadowQuadVertexMapped, silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex));
-        std::memcpy(_shadowQuadIndexMapped, silhouetteIndices.data(), silhouetteIndices.size() * sizeof(std::uint32_t));
+        const VkDeviceSize vbOffset =
+            WriteInternalQuad(silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex));
 
         VkCommandBufferAllocateInfo cmdAllocInfo{};
         cmdAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1543,9 +1658,8 @@ void NativeRendererVulkan::RenderShadowBatch(VkCommandBuffer& cmd, const Batch& 
         vkCmdBindPipeline(silhouetteCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _rectPipeline);
         vkCmdBindDescriptorSets(silhouetteCmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _rectPipelineLayout, 0, 1,
                                 &_rectDescriptorSet, 0, nullptr);
-        const VkDeviceSize vbOffset = 0;
-        vkCmdBindVertexBuffers(silhouetteCmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
-        vkCmdBindIndexBuffer(silhouetteCmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindVertexBuffers(silhouetteCmd, 0, 1, &_internalQuadVertexBuffer, &vbOffset);
+        vkCmdBindIndexBuffer(silhouetteCmd, _internalQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(silhouetteCmd, 6, 1, 0, 0, 0);
 
         vkCmdEndRendering(silhouetteCmd);
@@ -1564,21 +1678,9 @@ void NativeRendererVulkan::RenderShadowBatch(VkCommandBuffer& cmd, const Batch& 
     const BlurResult blurred = _blurPass.Apply(BlurResult{_shadowSilhouetteImage, _shadowSilhouetteView}, texWidth,
                                                texHeight, shadow.BlurRadius);
 
-    // _blurPass's output view is stable across calls only until its own targets are reallocated
-    // for a new size -- rewrite binding 1 unconditionally, cheap and always correct (see this
-    // class's own .hpp comment).
-    VkDescriptorImageInfo blurredInfo{};
-    blurredInfo.sampler     = _linearSampler;
-    blurredInfo.imageView   = blurred.View;
-    blurredInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkWriteDescriptorSet blurredWrite{};
-    blurredWrite.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    blurredWrite.dstSet          = _compositeDescriptorSet;
-    blurredWrite.dstBinding      = 1;
-    blurredWrite.descriptorCount = 1;
-    blurredWrite.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    blurredWrite.pImageInfo      = &blurredInfo;
-    vkUpdateDescriptorSets(_device, 1, &blurredWrite, 0, nullptr);
+    // A fresh composite set, written once and never again this Render() call (Phase 35.19).
+    const VkDescriptorSet compositeSet = NextCompositeDescriptorSet();
+    WriteCompositeTexture(compositeSet, blurred.View);
 
     // ─── Composite: resume the main command buffer, restore its own PerFrame UBO, draw ───
     cmd = BeginMainCommandBuffer();
@@ -1603,16 +1705,14 @@ void NativeRendererVulkan::RenderShadowBatch(VkCommandBuffer& cmd, const Batch& 
     // unflipped UV mapping samples the correct row.
     const std::vector<ImageVertex> compositeVertices =
         BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
-    constexpr std::array<std::uint32_t, 6> compositeIndices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, compositeIndices.data(), compositeIndices.size() * sizeof(std::uint32_t));
+    const VkDeviceSize vbOffset =
+        WriteInternalQuad(compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex));
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &_compositeDescriptorSet,
-                            0, nullptr);
-    const VkDeviceSize vbOffset = 0;
-    vkCmdBindVertexBuffers(cmd, 0, 1, &_shadowQuadVertexBuffer, &vbOffset);
-    vkCmdBindIndexBuffer(cmd, _shadowQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, _imagePipelineLayout, 0, 1, &compositeSet, 0,
+                            nullptr);
+    vkCmdBindVertexBuffers(cmd, 0, 1, &_internalQuadVertexBuffer, &vbOffset);
+    vkCmdBindIndexBuffer(cmd, _internalQuadIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
 }
 
@@ -1713,6 +1813,15 @@ void NativeRendererVulkan::Render(const Rendering::CommandBuffer& buffer) {
     }
 
     EnsureVertexIndexCapacity(totalVertexBytes, totalIndexBytes);
+
+    // Every renderer-internal composite draw this call gets its own quad slot and its own
+    // descriptor set, never reused within the call (see this class's own file comment, Phase
+    // 35.19). Upper bounds, counted without scanning LayerVertex ops: each Layer marker is counted
+    // as if it were a pop needing both an opacity composite (1 quad, 1 composite set) and a blend
+    // composite (1 blend set); each Shadow needs 2 quads (silhouette + composite) and 1 composite
+    // set; each BackdropBlur 1 quad and 1 composite set.
+    EnsureInternalQuadCapacity(2 * shadowBatchCount + backdropBlurBatchCount + layerBatchCount);
+    PrepareCompositeDescriptorSets(shadowBatchCount + backdropBlurBatchCount + layerBatchCount, layerBatchCount);
 
     struct PerFrameUbo { float ViewportSizeX; float ViewportSizeY; };
     const PerFrameUbo perFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
@@ -1886,21 +1995,25 @@ void NativeRendererVulkan::Shutdown() {
     _shadowSilhouetteWidth  = 0;
     _shadowSilhouetteHeight = 0;
 
-    if (_shadowQuadVertexBuffer != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(_allocator, _shadowQuadVertexBuffer, _shadowQuadVertexAllocation);
-        _shadowQuadVertexBuffer = VK_NULL_HANDLE;
-        _shadowQuadVertexMapped = nullptr;
+    if (_internalQuadVertexBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_allocator, _internalQuadVertexBuffer, _internalQuadVertexAllocation);
+        _internalQuadVertexBuffer = VK_NULL_HANDLE;
+        _internalQuadVertexMapped = nullptr;
     }
-    if (_shadowQuadIndexBuffer != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(_allocator, _shadowQuadIndexBuffer, _shadowQuadIndexAllocation);
-        _shadowQuadIndexBuffer = VK_NULL_HANDLE;
-        _shadowQuadIndexMapped = nullptr;
+    _internalQuadCapacitySlots = 0;
+    _nextInternalQuadSlot      = 0;
+    if (_internalQuadIndexBuffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(_allocator, _internalQuadIndexBuffer, _internalQuadIndexAllocation);
+        _internalQuadIndexBuffer = VK_NULL_HANDLE;
+        _internalQuadIndexMapped = nullptr;
     }
     if (_compositeDescriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(_device, _compositeDescriptorPool, nullptr);
         _compositeDescriptorPool = VK_NULL_HANDLE;
-        _compositeDescriptorSet  = VK_NULL_HANDLE;
     }
+    _compositeDescriptorSets.clear();
+    _compositeDescriptorCapacitySets = 0;
+    _nextCompositeDescriptorSet      = 0;
 
     if (_premultipliedImagePipeline != VK_NULL_HANDLE) {
         vkDestroyPipeline(_device, _premultipliedImagePipeline, nullptr);
@@ -1917,8 +2030,10 @@ void NativeRendererVulkan::Shutdown() {
     if (_blendDescriptorPool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(_device, _blendDescriptorPool, nullptr);
         _blendDescriptorPool = VK_NULL_HANDLE;
-        _blendDescriptorSet  = VK_NULL_HANDLE;
     }
+    _blendDescriptorSets.clear();
+    _blendDescriptorCapacitySets = 0;
+    _nextBlendDescriptorSet      = 0;
     if (_blendPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(_device, _blendPipeline, nullptr); _blendPipeline = VK_NULL_HANDLE; }
     if (_blendPipelineLayout != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(_device, _blendPipelineLayout, nullptr);
