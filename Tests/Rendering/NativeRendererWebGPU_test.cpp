@@ -88,6 +88,7 @@ public:
     ScratchTarget(const ScratchTarget&)            = delete;
     ScratchTarget& operator=(const ScratchTarget&) = delete;
 
+    [[nodiscard]] WGPUTexture Texture() const noexcept { return _texture; }
     [[nodiscard]] WGPUTextureView View() const noexcept { return _view; }
 
     /// Returns tightly-packed-row RGBA8 pixels — internally de-strides WebGPU's own
@@ -286,7 +287,7 @@ TEST_CASE("NativeRendererWebGPU draws a filled DrawRect at the recorded position
             .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels = target.ReadPixels();
@@ -325,7 +326,7 @@ TEST_CASE("NativeRendererWebGPU renders an off-center rect: asymmetric placement
             .Position = {10.0f, 10.0f}, .Size = {30.0f, 20.0f}, .FillColor = {1.0f, 1.0f, 1.0f, 1.0f}});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels      = target.ReadPixels();
@@ -359,7 +360,7 @@ TEST_CASE("NativeRendererWebGPU renders rounded corners: the extreme corner pixe
             .FillColor = {1.0f, 1.0f, 1.0f, 1.0f}});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels      = target.ReadPixels();
@@ -394,7 +395,7 @@ TEST_CASE("NativeRendererWebGPU draws a DrawImage at the recorded position, samp
             .TintColor = {0.5f, 1.0f, 1.0f, 1.0f}});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels  = target.ReadPixels();
@@ -434,7 +435,7 @@ TEST_CASE("NativeRendererWebGPU renders a Rect and two differently-textured Imag
         buffer.Push(DrawImage{.Position = {96.0f, 96.0f}, .Size = {32.0f, 32.0f}, .Texture = greenTexture.Id()});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels = target.ReadPixels();
@@ -480,7 +481,7 @@ TEST_CASE("NativeRendererWebGPU renders a DrawShadow behind and offset from the 
             .Position = {40.0f, 40.0f}, .Size = {48.0f, 48.0f}, .FillColor = {1.0f, 1.0f, 1.0f, 1.0f}});
 
         NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
-        renderer.SetTarget(target.View(), WIDTH, HEIGHT);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
         renderer.Render(buffer);
 
         const auto pixels = target.ReadPixels();
@@ -497,6 +498,146 @@ TEST_CASE("NativeRendererWebGPU renders a DrawShadow behind and offset from the 
         REQUIRE(shadowOnly.r < 50); // ShadowColor is opaque black
         REQUIRE(rectOnTop.r > 200);
         REQUIRE(rectOnTop.a > 200);
+        REQUIRE(untouched.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU composites a PushOpacityLayer at the recorded opacity (Phase 35.17)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel inside  = Sample(pixels, 40, 40, WIDTH);
+        const Pixel outside = Sample(pixels, 5, 5, WIDTH);
+
+        // Correct premultiplied-alpha compositing: an opaque red rect at Opacity=0.5 ends up with
+        // both its alpha AND its stored (premultiplied) red channel scaled to roughly half -- the
+        // same scenario NativeRendererVulkan_test.cpp's/NativeRendererDX12_test.cpp's own tests cover.
+        REQUIRE(inside.a > 100);
+        REQUIRE(inside.a < 150);
+        REQUIRE(inside.r > 100);
+        REQUIRE(inside.r < 150);
+        REQUIRE(inside.g < 20);
+        REQUIRE(outside.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU composites a PushBlendLayer using the Multiply formula (Phase 35.17)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop filling the whole viewport, then a Multiply layer with an
+        // opaque mid-gray rect over part of it. The rect sits in the TOP-left quadrant only, so a
+        // vertically-mirrored fullscreen-quad UV table (Blend.hlsl's own Phase 35.13 bug) would
+        // sample empty layer rows here and leave the backdrop unblended.
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {20.0f, 20.0f}, .Size = {40.0f, 40.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel overlap      = Sample(pixels, 40, 40, WIDTH); // inside the blended rect
+        const Pixel backdropOnly = Sample(pixels, 5, 5, WIDTH);   // outside it -- backdrop untouched
+        const Pixel mirrored     = Sample(pixels, 40, 87, WIDTH); // the rect's own vertical mirror
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255. Backdrop-only area stays 0.8 -> ~204/255.
+        REQUIRE(overlap.r > 90);
+        REQUIRE(overlap.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
+        REQUIRE(mirrored.r > 190);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU keeps a Shadow composite and two sibling opacity layers independent "
+          "within one Render() call (Phase 35.17)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // All three internal composite draws (shadow, layer 1, layer 2) share the same small quad
+        // vertex/index buffers, rewritten before each draw -- if any two ended up in the same
+        // not-yet-submitted command buffer, every one of them would read whichever data was
+        // written last (see NativeRendererWebGPU.hpp's own Phase 35.17 file comment).
+        buffer.Push(DrawShadow{
+            .Position = {70.0f, 70.0f},
+            .Size = {30.0f, 30.0f},
+            .BlurRadius = 4.0f,
+            .Offset = {6.0f, 6.0f},
+            .ShadowColor = {0.0f, 0.0f, 0.0f, 1.0f},
+        });
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PushOpacityLayer{.Opacity = 1.0f});
+        buffer.Push(DrawRect{
+            .Position = {50.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel halfRed   = Sample(pixels, 25, 25, WIDTH);
+        const Pixel fullBlue  = Sample(pixels, 65, 25, WIDTH);
+        const Pixel shadow    = Sample(pixels, 91, 91, WIDTH);
+        const Pixel untouched = Sample(pixels, 5, 120, WIDTH);
+
+        REQUIRE(halfRed.a > 100); // layer 1 kept its OWN opacity, not layer 2's 1.0
+        REQUIRE(halfRed.a < 150);
+        REQUIRE(halfRed.r > 100);
+        REQUIRE(halfRed.r < 150);
+        REQUIRE(fullBlue.b > 200);
+        REQUIRE(fullBlue.a > 200);
+        REQUIRE(shadow.a > 100); // the shadow's own composite quad survived, in its own place
+        REQUIRE(shadow.r < 50);
         REQUIRE(untouched.a == 0);
 
         renderer.Shutdown();

@@ -70,6 +70,31 @@
  * single bind before `Render()`'s own loop, since a freshly-begun main pass (after a `Shadow` batch)
  * needs its own state rebound from scratch.
  *
+ * Phase 35.17 adds `BatchKind::Layer` (`PushOpacityLayer`/`PushBlendLayer`/`PopLayer`), mirroring
+ * `NativeRendererVulkan`'s/`NativeRendererDX12`'s own Phase 35.5/35.13 structure — again needing
+ * **no resource-state transitions**: a `LayerTarget`'s texture combines `RenderAttachment` and
+ * `TextureBinding` usage and is used directly in either role. `SetTarget()`'s own signature grew a
+ * new leading `WGPUTexture targetTexture` parameter (alongside the existing `targetView`), matching
+ * `NativeRendererVulkan`'s/`NativeRendererDX12`'s own two-handle `SetTarget()` — `PushBlendLayer`'s
+ * own backdrop copy (`wgpuCommandEncoderCopyTextureToTexture()`) needs the real target's own
+ * `WGPUTexture`, which no WebGPU API call can recover from a `WGPUTextureView` alone, unlike every
+ * other operation this class needed through Phase 35.16 (all of which bind by view only). Unlike
+ * Vulkan's/DX12's own "no separate submission needed for Layer" finding, this backend's own
+ * composite draws (`CompositeOpacityLayer()`/`CompositeBlendLayer()`) *do* each need their own
+ * dedicated `EndAndSubmitMainPass()`/`BeginMainPass()` bracket — not because of any resource-state
+ * concern, but because WebGPU has no push-constant equivalent (`Rendering::BlendMode`'s own `Mode`
+ * value, and each composite's own quad vertex/index data, all go through ordinary buffers whose
+ * *content* resolves at execution time, not recording time). Two *sibling* (non-nested) layer pops
+ * within one `Render()` call would otherwise both write the *same* shared `_shadowQuadVertexBuffer`/
+ * `_shadowQuadIndexBuffer` before either draw actually executes, corrupting the earlier one once the
+ * (shared, not-yet-submitted) command buffer finally runs — and a `Shadow` batch's own composite
+ * draw (left unsubmitted in the resumed main pass until the next split) is exposed to the identical
+ * overwrite if a layer pop follows it. Submitting everything accumulated *before* each composite's
+ * own buffer writes, and the composite draw itself *after*, sidesteps this entirely — the same
+ * "content resolves at execution time" hazard
+ * `BlurPassWebGPU`'s own two-uniform-buffer finding (Phase 35.15) already established, generalized
+ * here to an *unbounded* number of composite draws per `Render()` call rather than a fixed two.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-14
  * @version  3.1.0
@@ -87,6 +112,7 @@
 #include <webgpu/webgpu.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace ImFrame::Internal {
 
@@ -124,15 +150,23 @@ public:
 
     /**
      * @brief    Sets the offscreen target `Render()` draws into.
-     * @param[in] targetView  A `WGPUTextureView` of format `colorFormat` (the constructor's own
-     *                        parameter) — the render-pass color attachment. Not owned; the caller
-     *                        keeps it alive at least until the next `SetTarget()`/`Shutdown()` call.
-     * @param[in] width       Target width, in pixels.
-     * @param[in] height      Target height, in pixels.
+     * @param[in] targetTexture  The real `WGPUTexture` backing `targetView` (Phase 35.17) — needed
+     *                           only by `PushBlendLayer`'s own backdrop copy
+     *                           (`wgpuCommandEncoderCopyTextureToTexture()`, which takes no view),
+     *                           not by any operation through Phase 35.16. Must include
+     *                           `WGPUTextureUsage_CopySrc` if any top-level `PushBlendLayer` is
+     *                           ever rendered.
+     * @param[in] targetView     A `WGPUTextureView` of format `colorFormat` (the constructor's own
+     *                           parameter) — the render-pass color attachment. Neither handle is
+     *                           owned; the caller keeps both alive at least until the next
+     *                           `SetTarget()`/`Shutdown()` call.
+     * @param[in] width          Target width, in pixels.
+     * @param[in] height         Target height, in pixels.
      *
      * Must be called at least once before the first `Render()` call.
      */
-    void SetTarget(WGPUTextureView targetView, std::uint32_t width, std::uint32_t height) noexcept;
+    void SetTarget(WGPUTexture targetTexture, WGPUTextureView targetView, std::uint32_t width,
+                   std::uint32_t height) noexcept;
 
     void Render(const Rendering::CommandBuffer& buffer) override;
 
@@ -144,19 +178,50 @@ public:
     void Shutdown() override;
 
 private:
+    /// One entry on the layer stack (Phase 35.17) — mirrors `NativeRendererVulkan::LayerFrame`/
+    /// `NativeRendererDX12::LayerFrame` field for field, `ParentLayout`/nothing collapsed away
+    /// entirely (no resource-state concept exists to track here at all).
+    struct LayerFrame {
+        LayerOp              Op      = LayerOp::PushOpacity;
+        float                 Opacity = 1.0f;
+        Rendering::BlendMode  Mode    = Rendering::BlendMode::Normal;
+        WGPUTexture           ParentTexture = nullptr; ///< Needed only by `CopyBackdropForBlend()`.
+        WGPUTextureView       ParentView    = nullptr; ///< What to resume rendering into on `PopLayer()`.
+        std::size_t           TargetIndex   = 0;        ///< Index into `_layerTargets`.
+    };
+
+    /// One depth level's offscreen layer target — mirrors `NativeRendererVulkan::LayerTarget`/
+    /// `NativeRendererDX12::LayerTarget`. Combines `WGPUTextureUsage_RenderAttachment` (to render
+    /// into) and `WGPUTextureUsage_TextureBinding` (for the eventual composite draw's own sampling)
+    /// on the *same* texture, used directly in either role with no transition of any kind.
+    struct LayerTarget {
+        WGPUTexture   Texture = nullptr;
+        WGPUTextureView View  = nullptr;
+        std::uint32_t Width  = 0;
+        std::uint32_t Height = 0;
+    };
+
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
     void EnsureShadowSilhouetteTarget(std::uint32_t width, std::uint32_t height);
+    void EnsureLayerTarget(std::size_t depth, std::uint32_t width, std::uint32_t height);
+    void EnsureBackdropTarget(std::uint32_t width, std::uint32_t height);
 
-    /// Creates a fresh `_mainEncoder`/`_mainPass` pair targeting `_targetView` (`WGPULoadOp_Load`,
-    /// so previously-submitted content — e.g. a Shadow batch's own composite before this — is
-    /// preserved), and sets the viewport/scissor. Mirrors `NativeRendererDX12::BeginMainCommandList()`'s
-    /// own role, minus any descriptor-heap binding (WebGPU has no such concept) and minus any
-    /// pipeline/bind-group binding (each `RenderXBatch()` rebinds its own, unconditionally).
-    void BeginMainPass();
+    /// Creates a fresh `_mainEncoder`/`_mainPass` pair targeting `_currentTargetView` (defaulting to
+    /// `WGPULoadOp_Load`, so previously-submitted content is preserved), and sets the viewport/
+    /// scissor. Mirrors `NativeRendererDX12::BeginMainCommandList()`'s own role, minus any
+    /// descriptor-heap binding (WebGPU has no such concept) and minus any pipeline/bind-group
+    /// binding (each `RenderXBatch()` rebinds its own, unconditionally).
+    void BeginMainPass(WGPULoadOp loadOp = WGPULoadOp_Load);
     /// Ends `_mainPass`, finishes and submits `_mainEncoder` -- no fence wait needed (see this
     /// class's own file comment on why WebGPU's sequential submit model makes this safe).
     void EndAndSubmitMainPass();
+    /// Ends `_mainPass` and begins a *new* one targeting `view`, within the *same*, still-open
+    /// `_mainEncoder` — no submission of any kind (unlike `EndAndSubmitMainPass()`/`BeginMainPass()`
+    /// used together). Used by `PushLayer()`/`PopLayer()` for the layer-target/parent-target switch
+    /// itself, which (unlike either method's own composite draw) writes no shared buffer and so
+    /// needs no submission-based isolation (Phase 35.17's own file comment).
+    void SwitchMainPassTarget(WGPUTextureView view, WGPULoadOp loadOp);
 
     void RenderRectBatch(WGPURenderPassEncoder pass, const Batch& batch, std::size_t& vertexByteOffset,
                           std::size_t& indexByteOffset);
@@ -190,12 +255,26 @@ private:
      */
     void RenderShadowBatch(const Batch& batch);
 
+    /// Dispatches one `BatchKind::Layer` marker (Phase 35.17) to `PushLayer()`/`PopLayer()`.
+    void HandleLayerMarker(const Batch& batch);
+    void PushLayer(LayerOp op, float opacity, Rendering::BlendMode mode);
+    void PopLayer();
+    void CompositeOpacityLayer(const LayerFrame& frame);
+    /// Copies `frame.ParentTexture` into `_backdropTexture` via
+    /// `wgpuCommandEncoderCopyTextureToTexture()` on its own one-shot encoder/submit — an
+    /// encoder-level command, illegal while a render pass is open (the same restriction Vulkan's
+    /// own `vkCmdCopyImage` has inside a rendering instance, unlike DX12, which has none). Called
+    /// by `PopLayer()` only after the parent's content has already been submitted.
+    void CopyBackdropForBlend(const LayerFrame& frame);
+    void CompositeBlendLayer(const LayerFrame& frame);
+
     // ─── Borrowed (not owned) ──────────────────────────────────────────────────
     WGPUDevice        _device      = nullptr;
     WGPUQueue         _queue       = nullptr;
     WGPUTextureFormat _colorFormat = WGPUTextureFormat_Undefined;
 
     // ─── Render target (set via SetTarget()) ───────────────────────────────────
+    WGPUTexture     _targetTexture = nullptr;
     WGPUTextureView _targetView   = nullptr;
     std::uint32_t   _targetWidth  = 0;
     std::uint32_t   _targetHeight = 0;
@@ -240,6 +319,12 @@ private:
     WGPUCommandEncoder    _mainEncoder = nullptr;
     WGPURenderPassEncoder _mainPass    = nullptr;
 
+    /// Which texture/view `_mainPass` currently renders into — the real target, or the innermost
+    /// pushed layer's own target (Phase 35.17). Reset to `_targetTexture`/`_targetView` at the start
+    /// of every `Render()` call; `BeginMainPass()` always targets `_currentTargetView`.
+    WGPUTexture     _currentTargetTexture = nullptr;
+    WGPUTextureView _currentTargetView    = nullptr;
+
     // ─── Phase 35.16: BatchKind::Shadow support ─────────────────────────────────
     BlurPassWebGPU _blurPass;
 
@@ -259,6 +344,34 @@ private:
     /// `_shadowQuadIndexBuffer` (Phase 35.4/35.12).
     WGPUBuffer _shadowQuadVertexBuffer = nullptr;
     WGPUBuffer _shadowQuadIndexBuffer  = nullptr;
+
+    // ─── Phase 35.17: BatchKind::Layer support ──────────────────────────────────
+    /// Second Image pipeline sharing `_imagePipelineLayout`/`_imageShaderModule`, only its blend
+    /// factors differ (`One`/`OneMinusSrcAlpha`) — for `CompositeOpacityLayer()`'s own
+    /// already-premultiplied captured render scaled by `Opacity`, mirroring
+    /// `NativeRendererVulkan`'s/`NativeRendererDX12`'s own premultiplied Image pipeline.
+    WGPURenderPipeline _premultipliedImagePipeline = nullptr;
+
+    /// The inline `kBlendWgsl` shader's own module, bind group layout (`Mode` uniform b0, source
+    /// texture b1, backdrop texture b2, sampler b3 — all fragment-stage, no vertex input), pipeline
+    /// layout, and pipeline (blending disabled — the shader computes the full composited result).
+    WGPUShaderModule    _blendShaderModule    = nullptr;
+    WGPUBindGroupLayout _blendBindGroupLayout = nullptr;
+    WGPUPipelineLayout  _blendPipelineLayout  = nullptr;
+    WGPURenderPipeline  _blendPipeline        = nullptr;
+    /// `Mode` (as an `i32`, padded to 16 bytes) — reused by every blend composite, safe only because
+    /// each composite draw is isolated by its own submission (see this class's own file comment).
+    WGPUBuffer          _blendModeBuffer      = nullptr;
+
+    std::vector<LayerFrame>  _layerStack;
+    std::vector<LayerTarget> _layerTargets;
+
+    /// Blend-mode backdrop copy target — mirrors `NativeRendererVulkan::_backdropImage`/
+    /// `NativeRendererDX12::_backdropResource`. `TextureBinding | CopyDst` only.
+    WGPUTexture     _backdropTexture = nullptr;
+    WGPUTextureView _backdropView    = nullptr;
+    std::uint32_t   _backdropWidth   = 0;
+    std::uint32_t   _backdropHeight  = 0;
 
     BatchBuilder _batchBuilder;
 };
