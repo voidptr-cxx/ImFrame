@@ -806,3 +806,161 @@ TEST_CASE("NativeRendererVulkan rate-limits DrawBackdropBlur at MaxBackdropBlurP
 
     backend.Shutdown();
 }
+
+TEST_CASE("NativeRendererVulkan keeps a Shadow composite and two sibling opacity layers independent "
+          "within one Render() call (Phase 35.19)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+
+        CommandBuffer buffer;
+        // Three internal composite draws in one Render() call. If any two share a quad buffer or
+        // descriptor that is rewritten before the command buffer executes, the earlier one reads the
+        // later one's data: layer 1 takes layer 2's opacity, or the shadow composite samples a layer
+        // target instead of its own blurred silhouette. Ported from NativeRendererWebGPU_test.cpp's
+        // own Phase 35.17 regression test.
+        buffer.Push(DrawShadow{
+            .Position = {70.0f, 70.0f},
+            .Size = {30.0f, 30.0f},
+            .BlurRadius = 4.0f,
+            .Offset = {6.0f, 6.0f},
+            .ShadowColor = {0.0f, 0.0f, 0.0f, 1.0f},
+        });
+        buffer.Push(PushOpacityLayer{.Opacity = 0.5f});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {1.0f, 0.0f, 0.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PushOpacityLayer{.Opacity = 1.0f});
+        buffer.Push(DrawRect{
+            .Position = {50.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.0f, 0.0f, 1.0f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel halfRed   = Sample(pixels, 25, 25, WIDTH);
+        const Pixel fullBlue  = Sample(pixels, 65, 25, WIDTH);
+        const Pixel shadow    = Sample(pixels, 91, 91, WIDTH);
+        const Pixel untouched = Sample(pixels, 5, 120, WIDTH);
+
+        REQUIRE(halfRed.a > 100); // layer 1 kept its OWN opacity, not layer 2's 1.0
+        REQUIRE(halfRed.a < 150);
+        REQUIRE(halfRed.r > 100);
+        REQUIRE(halfRed.r < 150);
+        REQUIRE(fullBlue.b > 200);
+        REQUIRE(fullBlue.a > 200);
+        REQUIRE(shadow.a > 100); // the shadow's own composite survived, in its own place
+        REQUIRE(shadow.r < 50);
+        REQUIRE(untouched.a == 0);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan composites two sibling PushBlendLayers independently within one "
+          "Render() call (Phase 35.19)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop, then TWO sibling Multiply layers (mid-gray rects, left and
+        // right) in one Render() call. Each blend composite gets its own descriptors/slots, and the
+        // shared backdrop copy must not be overwritten by the second layer before the first
+        // composite has read it (Phase 35.19).
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {50.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel left         = Sample(pixels, 25, 25, WIDTH);
+        const Pixel right        = Sample(pixels, 65, 25, WIDTH);
+        const Pixel backdropOnly = Sample(pixels, 5, 90, WIDTH);
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255 inside each rect; backdrop-only stays ~204/255.
+        REQUIRE(left.r > 90);
+        REQUIRE(left.r < 115);
+        REQUIRE(right.r > 90);
+        REQUIRE(right.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererVulkan composites a PushBlendLayer nested inside an opacity layer against the "
+          "enclosing layer's own content (Phase 35.19)",
+          "[vulkan]") {
+    SDL3VulkanBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchImage image(handles.Device, handles.Allocator, handles.GraphicsQueue, handles.CommandPool, WIDTH,
+                          HEIGHT);
+
+        CommandBuffer buffer;
+        // A Multiply layer nested inside an opacity layer: its backdrop copy reads the ENCLOSING
+        // layer's own target (light gray, drawn inside the outer layer), not the real target, which
+        // stays transparent (Phase 35.19).
+        buffer.Push(PushOpacityLayer{.Opacity = 1.0f});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PopLayer{});
+
+        NativeRendererVulkan renderer(handles.Device, handles.Allocator, handles.GraphicsQueue,
+                                      handles.GraphicsQueueFamily, handles.CommandPool, kColorFormat);
+        renderer.SetTarget(image.Image(), image.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        auto pixels = image.ReadPixels();
+        const Pixel inside  = Sample(pixels, 25, 25, WIDTH);
+        const Pixel outside = Sample(pixels, 5, 90, WIDTH);
+
+        REQUIRE(inside.r > 90); // Multiply(0.8, 0.5) = 0.4 -> ~102/255
+        REQUIRE(inside.r < 115);
+        REQUIRE(inside.a > 240);
+        REQUIRE(outside.r > 190); // the enclosing layer's own 0.8 gray, composited at opacity 1.0
+        REQUIRE(outside.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}

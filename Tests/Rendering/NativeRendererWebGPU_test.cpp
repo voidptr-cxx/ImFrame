@@ -795,3 +795,97 @@ TEST_CASE("NativeRendererWebGPU blurs a pushed layer's own content for a DrawBac
 
     backend.Shutdown();
 }
+
+TEST_CASE("NativeRendererWebGPU composites two sibling PushBlendLayers independently within one "
+          "Render() call (Phase 35.19)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // Opaque light-gray backdrop, then TWO sibling Multiply layers (mid-gray rects, left and
+        // right) in one Render() call. Each blend composite gets its own descriptors/slots, and the
+        // shared backdrop copy must not be overwritten by the second layer before the first
+        // composite has read it (Phase 35.19).
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {50.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel left         = Sample(pixels, 25, 25, WIDTH);
+        const Pixel right        = Sample(pixels, 65, 25, WIDTH);
+        const Pixel backdropOnly = Sample(pixels, 5, 90, WIDTH);
+
+        // Multiply(0.8, 0.5) = 0.4 -> ~102/255 inside each rect; backdrop-only stays ~204/255.
+        REQUIRE(left.r > 90);
+        REQUIRE(left.r < 115);
+        REQUIRE(right.r > 90);
+        REQUIRE(right.r < 115);
+        REQUIRE(backdropOnly.r > 190);
+        REQUIRE(backdropOnly.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}
+
+TEST_CASE("NativeRendererWebGPU composites a PushBlendLayer nested inside an opacity layer against the "
+          "enclosing layer's own content (Phase 35.19)",
+          "[webgpu]") {
+    DawnWebGPUBackend backend;
+    REQUIRE(backend.Init(OffscreenWindowConfig()).has_value());
+
+    {
+        const auto handles = backend.GetRendererHandles();
+        ScratchTarget target(handles.Device, handles.Queue, handles.Instance, WIDTH, HEIGHT);
+
+        CommandBuffer buffer;
+        // A Multiply layer nested inside an opacity layer: its backdrop copy reads the ENCLOSING
+        // layer's own target (light gray, drawn inside the outer layer), not the real target, which
+        // stays transparent (Phase 35.19).
+        buffer.Push(PushOpacityLayer{.Opacity = 1.0f});
+        buffer.Push(DrawRect{
+            .Position = {0.0f, 0.0f}, .Size = {static_cast<float>(WIDTH), static_cast<float>(HEIGHT)},
+            .FillColor = {0.8f, 0.8f, 0.8f, 1.0f}});
+        buffer.Push(PushBlendLayer{.Mode = BlendMode::Multiply});
+        buffer.Push(DrawRect{
+            .Position = {10.0f, 10.0f}, .Size = {30.0f, 30.0f}, .FillColor = {0.5f, 0.5f, 0.5f, 1.0f}});
+        buffer.Push(PopLayer{});
+        buffer.Push(PopLayer{});
+
+        NativeRendererWebGPU renderer(handles.Device, handles.Queue, kColorFormat);
+        renderer.SetTarget(target.Texture(), target.View(), WIDTH, HEIGHT);
+        renderer.Render(buffer);
+
+        const auto pixels = target.ReadPixels();
+        const Pixel inside  = Sample(pixels, 25, 25, WIDTH);
+        const Pixel outside = Sample(pixels, 5, 90, WIDTH);
+
+        REQUIRE(inside.r > 90); // Multiply(0.8, 0.5) = 0.4 -> ~102/255
+        REQUIRE(inside.r < 115);
+        REQUIRE(inside.a > 240);
+        REQUIRE(outside.r > 190); // the enclosing layer's own 0.8 gray, composited at opacity 1.0
+        REQUIRE(outside.r < 215);
+
+        renderer.Shutdown();
+    }
+
+    backend.Shutdown();
+}

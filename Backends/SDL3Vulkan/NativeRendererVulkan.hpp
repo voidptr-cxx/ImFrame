@@ -62,6 +62,15 @@
  * — the first real consumer of that pipeline's SPIR-V output; `NativeRendererGL3`
  * only ever used the same generated header's raw-GLSL-source half.
  *
+ * Phase 35.19 fixes a race shared by every renderer-internal composite draw (shadow,
+ * opacity/blend layer, backdrop blur). Each wrote one shared quad buffer and rewrote one shared
+ * descriptor set in place, but a layer pop records its composite into the same still-recording
+ * command buffer as any earlier composite (only Shadow/BackdropBlur submit first). The quad data is
+ * read at execution time, so earlier draws read the last write, and updating a bound descriptor set
+ * invalidated the whole command buffer (a validation error). Every internal quad draw now gets its
+ * own `_internalQuadVertexBuffer` slot and every composite its own freshly allocated descriptor set,
+ * each written exactly once per `Render()` call.
+ *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-12
  * @version  3.0.1
@@ -191,6 +200,24 @@ private:
     void EnsureInitialized();
     void EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes);
     void EnsureImageDescriptorCapacity(std::size_t neededSets);
+
+    /// Grows `_internalQuadVertexBuffer` to hold `slots` quads (never shrinks) and resets its slot
+    /// cursor — called once per `Render()` call, before recording, while nothing is in flight
+    /// (Phase 35.19).
+    void EnsureInternalQuadCapacity(std::size_t slots);
+    /// Copies one quad's vertices into the next unused `_internalQuadVertexBuffer` slot this
+    /// `Render()` call and returns that slot's byte offset, for `vkCmdBindVertexBuffers()`.
+    VkDeviceSize WriteInternalQuad(const void* vertices, std::size_t bytes);
+
+    /// Resets both composite descriptor pools (growing them if needed) and allocates exactly
+    /// `compositeSets` image-layout sets (binding 0 pre-written with `_perFrameUbo`) and
+    /// `blendSets` blend-layout sets for this `Render()` call — called before recording, while
+    /// nothing is in flight (Phase 35.19).
+    void PrepareCompositeDescriptorSets(std::size_t compositeSets, std::size_t blendSets);
+    VkDescriptorSet NextCompositeDescriptorSet();
+    VkDescriptorSet NextBlendDescriptorSet();
+    /// Writes binding 1 (the `VK_IMAGE_LAYOUT_GENERAL` texture) of a freshly taken composite set.
+    void WriteCompositeTexture(VkDescriptorSet set, VkImageView view);
     void RenderRectBatch(VkCommandBuffer cmd, const Batch& batch, std::size_t& vertexByteOffset,
                         std::size_t& indexByteOffset);
 
@@ -377,32 +404,38 @@ private:
     std::uint32_t _shadowSilhouetteWidth           = 0;
     std::uint32_t _shadowSilhouetteHeight          = 0;
 
-    /// A small, dedicated one-quad vertex/index buffer pair for `RenderShadowBatch()`'s own two
-    /// internal draws (the silhouette rect, then the blurred composite image) — kept separate
-    /// from `_vertexBuffer`/`_indexBuffer` (the main per-`Render()`-call streaming buffers) because
-    /// a shadow's silhouette render happens in its *own* one-shot command buffer, temporally
-    /// disjoint from the main command buffer's own offset bookkeeping; reusing the shared buffer
-    /// would mean growing its upfront size computation to account for `Shadow` batches too, for no
-    /// real benefit given how small one quad is. Sized for the larger of `RectVertex`/`ImageVertex`
-    /// (`RectVertex`) x 4 so either draw fits; reused sequentially, never simultaneously.
-    VkBuffer      _shadowQuadVertexBuffer       = VK_NULL_HANDLE;
-    VmaAllocation _shadowQuadVertexAllocation   = VK_NULL_HANDLE;
-    void*         _shadowQuadVertexMapped       = nullptr;
-    VkBuffer      _shadowQuadIndexBuffer        = VK_NULL_HANDLE;
-    VmaAllocation _shadowQuadIndexAllocation    = VK_NULL_HANDLE;
-    void*         _shadowQuadIndexMapped        = nullptr;
+    /// Dedicated buffers for every renderer-internal one-quad draw (shadow silhouette and composite,
+    /// opacity-layer composite, backdrop-blur composite) — kept separate from `_vertexBuffer`/
+    /// `_indexBuffer`. **One slot per quad draw per `Render()` call** (Phase 35.19), each sized for
+    /// the larger of `RectVertex`/`ImageVertex` x 4, grown (never shrunk) by
+    /// `EnsureInternalQuadCapacity()` and handed out in order by `WriteInternalQuad()`. The
+    /// original single reused quad (Phase 35.4) was only safe when a submission separated every
+    /// write from the draw that last read it — true for Shadow, not for a layer pop, which records
+    /// into the same still-open command buffer as any earlier composite; this host-visible memory
+    /// is read at *execution* time, so every such draw read the last write. The index buffer holds
+    /// one constant quad, written once, shared by every slot.
+    VkBuffer      _internalQuadVertexBuffer     = VK_NULL_HANDLE;
+    VmaAllocation _internalQuadVertexAllocation = VK_NULL_HANDLE;
+    void*         _internalQuadVertexMapped     = nullptr;
+    std::size_t   _internalQuadCapacitySlots    = 0;
+    std::size_t   _nextInternalQuadSlot         = 0;
+    VkBuffer      _internalQuadIndexBuffer      = VK_NULL_HANDLE;
+    VmaAllocation _internalQuadIndexAllocation  = VK_NULL_HANDLE;
+    void*         _internalQuadIndexMapped      = nullptr;
 
-    /// A second, dedicated `_imagePipeline`-compatible descriptor set (reusing
-    /// `_imageDescriptorSetLayout`) for compositing a *renderer-owned* `VK_IMAGE_LAYOUT_GENERAL`
-    /// texture (`_blurPass`'s own blurred output, or — Phase 35.5 — a popped opacity layer's own
-    /// target) — unlike every real `DrawImage` texture (always
-    /// `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`, see `Render()`'s per-batch Image descriptor
-    /// writes), these renderer-owned sources never leave `GENERAL`. Rewritten before every such
-    /// composite draw — cheap, and always correct regardless of whether the bound view actually
-    /// changed since the last write. Never used by two composites at once (`RenderShadowBatch()`
-    /// and `CompositeOpacityLayer()` are never active simultaneously), so one shared set suffices.
-    VkDescriptorPool _compositeDescriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet  _compositeDescriptorSet  = VK_NULL_HANDLE;
+    /// `_imagePipeline`-compatible descriptor sets (reusing `_imageDescriptorSetLayout`) for
+    /// compositing a *renderer-owned* `VK_IMAGE_LAYOUT_GENERAL` texture (`_blurPass`'s blurred
+    /// output, or a popped opacity layer's target) — unlike every real `DrawImage` texture (always
+    /// `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`), these never leave `GENERAL`. **One set per
+    /// composite draw per `Render()` call** (Phase 35.19), allocated fresh by
+    /// `PrepareCompositeDescriptorSets()` and written exactly once by whichever composite takes it
+    /// via `NextCompositeDescriptorSet()`. The original single set, rewritten before each
+    /// composite, was invalid: updating a descriptor set that a recording command buffer has bound
+    /// (without `UPDATE_AFTER_BIND`) invalidates that command buffer outright.
+    VkDescriptorPool             _compositeDescriptorPool         = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> _compositeDescriptorSets;
+    std::size_t                  _compositeDescriptorCapacitySets = 0;
+    std::size_t                  _nextCompositeDescriptorSet      = 0;
 
     // ─── BatchKind::Layer (Phase 35.5) ──────────────────────────────────────────
     std::vector<LayerFrame>  _layerStack;
@@ -419,11 +452,13 @@ private:
     VkPipelineLayout      _blendPipelineLayout      = VK_NULL_HANDLE;
     VkPipeline            _blendPipeline            = VK_NULL_HANDLE;
 
-    /// One descriptor set (two combined-image-sampler bindings: the popped layer's own texture,
-    /// and `_backdropImage`) — rewritten before every `CompositeBlendLayer()` call, the same
-    /// "cheap, always correct" convention `_compositeDescriptorSet` uses.
-    VkDescriptorPool _blendDescriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet  _blendDescriptorSet  = VK_NULL_HANDLE;
+    /// `Blend.glsl` descriptor sets (two combined-image-sampler bindings: the popped layer's own
+    /// texture, and `_backdropImage`) — one per `CompositeBlendLayer()` call per `Render()` call,
+    /// for the same reason as `_compositeDescriptorSets` (Phase 35.19).
+    VkDescriptorPool             _blendDescriptorPool         = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> _blendDescriptorSets;
+    std::size_t                  _blendDescriptorCapacitySets = 0;
+    std::size_t                  _nextBlendDescriptorSet      = 0;
 
     /// A copy of the parent target's current content at `PopLayer()` time (a fragment shader has
     /// no other way to read a colour attachment's own existing pixel value) — `COLOR_ATTACHMENT_BIT`

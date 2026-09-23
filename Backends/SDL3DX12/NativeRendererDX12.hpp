@@ -92,11 +92,18 @@
  * D3D12-specific coordinate-flip reasoning the way `NativeRendererGL3::RenderBackdropBlurBatch()`'s
  * own window-coordinate `glY` conversion does — this class's pixel space is already top-down,
  * matching `vkCmdCopyImage`'s own identical offset convention (Phase 35.6's own finding). The
- * composite draw's SRV reuses `_compositeSrvCpuBase`/`_compositeSrvGpuBase` slot +0 — the same single-
- * texture slot `RenderShadowBatch()`/`CompositeOpacityLayer()` already share, reused sequentially,
- * never concurrently — and uses the standard (non-premultiplied) `_imagePipelineState`, not
+ * composite draw uses the standard (non-premultiplied) `_imagePipelineState`, not
  * `_premultipliedImagePipelineState`, matching `RenderShadowBatch()`'s own identical choice (a
  * backdrop blur's own content isn't scaled by any additional factor the way an opacity layer's is).
+ *
+ * Phase 35.19 fixes a data race shared by every renderer-internal composite draw (shadow,
+ * opacity/blend layer, backdrop blur): each previously wrote a single shared quad-buffer slot and a
+ * single shared SRV slot, but both are read by the GPU at command-list *execution* time. A layer pop
+ * records its composite into the same still-open command list as any earlier composite (only
+ * Shadow/BackdropBlur submit first), so two sibling layers — or a shadow followed by a layer pop —
+ * all read the last write: layer 1 rendered at layer 2's opacity, and the shadow's composite sampled
+ * a layer target. Now every internal quad draw gets its own slot in `_internalQuadVertexBuffer` and
+ * every composite its own `_srvHeap` slot(s), each written exactly once per `Render()` call.
  *
  * @author   voidptr-cxx (https://github.com/voidptr-cxx)
  * @date     2026-09-13
@@ -246,9 +253,8 @@ private:
     /**
      * @brief    Renders one `BatchKind::Shadow` batch: silhouette, blur, composite (Phase 35.12).
      *
-     * Writes its own composite SRV at `_compositeSrvCpuBase`/`_compositeSrvGpuBase` (slot +0) —
-     * shared with `CompositeOpacityLayer()`, reused sequentially, never concurrently (Phase 35.13's
-     * own file comment).
+     * Writes its composite SRV into its own `AllocateCompositeSrvSlots()` slot and its two quads
+     * into their own `WriteInternalQuad()` slots (Phase 35.19).
      *
      * Mirrors `NativeRendererVulkan::RenderShadowBatch()`'s own structure: (1) ends and submits the
      * main command list as accumulated so far (`_blurPass.Apply()` is its own separate submission,
@@ -283,12 +289,35 @@ private:
 
     void EnsureBackdropBlurCopyTarget(std::uint32_t width, std::uint32_t height);
 
+    /// A contiguous run of `_srvHeap` slots handed to exactly one internal composite draw (Phase 35.19).
+    struct CompositeSrvSlots {
+        D3D12_CPU_DESCRIPTOR_HANDLE Cpu = {};
+        D3D12_GPU_DESCRIPTOR_HANDLE Gpu = {};
+    };
+
+    /// Hands out the next `count` never-before-used composite SRV slots this `Render()` call
+    /// (Phase 35.19) -- see this class's own file comment on why no two internal composite draws
+    /// in one `Render()` call may share a slot.
+    CompositeSrvSlots AllocateCompositeSrvSlots(std::size_t count);
+
+    /// Grows `_internalQuadVertexBuffer` to hold `slots` quads (never shrinks) — called once per
+    /// `Render()` call before any recording, while nothing is in flight (Phase 35.19).
+    void EnsureInternalQuadCapacity(std::size_t slots);
+
+    /// Copies one quad's vertices into the next never-before-used slot of
+    /// `_internalQuadVertexBuffer` this `Render()` call and returns a view of that slot alone
+    /// (Phase 35.19).
+    D3D12_VERTEX_BUFFER_VIEW WriteInternalQuad(const void* vertices, std::size_t bytes, UINT stride);
+
+    /// `_internalQuadIndexBuffer`'s one constant `{0,1,2,0,2,3}` quad, shared by every internal quad.
+    [[nodiscard]] D3D12_INDEX_BUFFER_VIEW InternalQuadIndexView() const;
+
     /**
      * @brief    Renders one `BatchKind::BackdropBlur` batch: copy, blur, cropped composite (Phase 35.14).
      *
-     * Writes its own composite SRV at `_compositeSrvCpuBase`/`_compositeSrvGpuBase` (slot +0) —
-     * shared with `RenderShadowBatch()`/`CompositeOpacityLayer()`, reused sequentially, never
-     * concurrently. Subject to `_maxBackdropBlurPerFrame`'s own rate limit, checked and incremented
+     * Writes its composite SRV into its own `AllocateCompositeSrvSlots()` slot and its quad into its
+     * own `WriteInternalQuad()` slot (Phase 35.19). Subject to `_maxBackdropBlurPerFrame`'s own rate
+     * limit, checked and incremented
      * first, matching `NativeRendererVulkan`'s/`NativeRendererGL3`'s own identical placement.
      */
     void RenderBackdropBlurBatch(const Batch& batch);
@@ -365,16 +394,22 @@ private:
     std::uint32_t                                _shadowSilhouetteWidth  = 0;
     std::uint32_t                                _shadowSilhouetteHeight = 0;
 
-    /// Small, fixed-size, dedicated buffers for `RenderShadowBatch()`'s own two one-quad draws
-    /// (silhouette rect, composite image) — kept separate from `_vertexBuffer`/`_indexBuffer` so
-    /// this internal, always-6-index draw never competes with the main streaming buffers' own
-    /// growth, mirroring `NativeRendererVulkan`'s own `_shadowQuadVertexBuffer`/
-    /// `_shadowQuadIndexBuffer` (Phase 35.4). Sized for the *larger* of `RectVertex`/`ImageVertex`
-    /// (4 vertices) since both draws reuse the same buffer, sequentially, never concurrently.
-    Microsoft::WRL::ComPtr<ID3D12Resource> _shadowQuadVertexBuffer;
-    void*                                  _shadowQuadVertexMapped = nullptr;
-    Microsoft::WRL::ComPtr<ID3D12Resource> _shadowQuadIndexBuffer;
-    void*                                  _shadowQuadIndexMapped  = nullptr;
+    /// Dedicated buffers for every renderer-internal one-quad draw (shadow silhouette and composite,
+    /// layer composite, backdrop-blur composite) — kept separate from `_vertexBuffer`/`_indexBuffer`.
+    /// **One slot per quad draw per `Render()` call** (Phase 35.19), each slot sized for the larger
+    /// of `RectVertex`/`ImageVertex` (4 vertices), grown (never shrunk) by
+    /// `EnsureInternalQuadCapacity()` and handed out in order by `WriteInternalQuad()`. A single
+    /// reused slot (Phase 35.12's original design) is only safe when a submission separates every
+    /// write from the previous draw that read it — true for Shadow, but not for a layer pop, which
+    /// records its composite into the same still-open command list as any earlier composite; the
+    /// GPU reads this upload-heap memory at *execution* time, so every draw in that list would read
+    /// the last write. The index buffer holds one constant quad, shared by every slot.
+    Microsoft::WRL::ComPtr<ID3D12Resource> _internalQuadVertexBuffer;
+    void*                                  _internalQuadVertexMapped   = nullptr;
+    std::size_t                            _internalQuadCapacitySlots  = 0;
+    std::size_t                            _nextInternalQuadSlot       = 0;
+    Microsoft::WRL::ComPtr<ID3D12Resource> _internalQuadIndexBuffer;
+    void*                                  _internalQuadIndexMapped    = nullptr;
 
     // ─── Phase 35.13: BatchKind::Layer support ──────────────────────────────────
     /// Second PSO sharing `_imageRootSignature`/`Image.hlsl`'s own shaders, only its blend factors
@@ -402,17 +437,18 @@ private:
     std::uint32_t                          _backdropWidth  = 0;
     std::uint32_t                          _backdropHeight = 0;
 
-    /// Base CPU/GPU handles into `_srvHeap` reserved for every renderer-internal composite draw
-    /// this `Render()` call might need — set once per call, right after `EnsureImageDescriptorCapacity()`.
-    /// Slot +0: the single-texture composite shared by `RenderShadowBatch()` and
-    /// `CompositeOpacityLayer()` (reused sequentially, never concurrently, mirroring
-    /// `NativeRendererVulkan`'s own `_compositeDescriptorSet`). Slots +1/+2: `CompositeBlendLayer()`'s
-    /// own two textures (popped layer, backdrop), mirroring Vulkan's separate `_blendDescriptorSet`
-    /// — kept in the *same* heap as slot +0 rather than a second heap, since D3D12 allows only one
-    /// `CBV_SRV_UAV` heap bound via `SetDescriptorHeaps()` at a time per command list (Phase 35.12's
-    /// own finding).
-    D3D12_CPU_DESCRIPTOR_HANDLE _compositeSrvCpuBase = {};
-    D3D12_GPU_DESCRIPTOR_HANDLE _compositeSrvGpuBase = {};
+    /// Base CPU/GPU handles of the `_srvHeap` range reserved for renderer-internal composite draws
+    /// this `Render()` call — right after the per-`Image`-batch slots, in the *same* heap (D3D12
+    /// allows only one bound `CBV_SRV_UAV` heap per command list, Phase 35.12). Since Phase 35.19
+    /// every composite draw takes its **own** never-reused slot(s) via `AllocateCompositeSrvSlots()`
+    /// (1 for shadow/opacity-layer/backdrop-blur, 2 for a blend layer's source+backdrop): a descriptor
+    /// heap's content resolves at execution time, so the previous design's shared slot +0 let a
+    /// layer pop overwrite the SRV an earlier, still-unexecuted composite draw in the same command
+    /// list would sample.
+    D3D12_CPU_DESCRIPTOR_HANDLE _compositeSrvCpuBase   = {};
+    D3D12_GPU_DESCRIPTOR_HANDLE _compositeSrvGpuBase   = {};
+    std::size_t                 _compositeSrvSlotCount = 0;
+    std::size_t                 _nextCompositeSrvSlot  = 0;
 
     // ─── Phase 35.14: BatchKind::BackdropBlur support ───────────────────────────
     /// A copy of the padded region `RenderBackdropBlurBatch()` is about to blur — kept separate from

@@ -41,6 +41,10 @@ namespace {
 /// just documents the guarantee rather than working around a real constraint.
 constexpr std::size_t kConstantBufferAlignment = 256;
 
+/// One internal-quad slot: 4 vertices of the larger of the two vertex kinds an internal quad draw
+/// uses (RectVertex for a shadow silhouette, ImageVertex for every composite).
+constexpr std::size_t kInternalQuadSlotBytes = 4 * std::max(sizeof(RectVertex), sizeof(ImageVertex));
+
 [[nodiscard]] std::size_t AlignUp(std::size_t size, std::size_t alignment) {
     return (size + alignment - 1) & ~(alignment - 1);
 }
@@ -412,15 +416,58 @@ void NativeRendererDX12::EnsureInitialized() {
     _perFrameCb = CreateUploadBuffer(_device, AlignUp(sizeof(float) * 2, kConstantBufferAlignment),
                                      &_perFrameCbMapped);
 
-    // ─── Phase 35.12: BatchKind::Shadow's own small, dedicated quad buffers ───────────────────
-    // Sized for the larger of RectVertex/ImageVertex (4 vertices) -- reused sequentially (never
-    // concurrently) by the silhouette draw (RectVertex) and the composite draw (ImageVertex),
-    // mirroring NativeRendererVulkan's own _shadowQuadVertexBuffer/_shadowQuadIndexBuffer.
-    const std::size_t shadowQuadVertexBytes = 4 * std::max(sizeof(RectVertex), sizeof(ImageVertex));
-    _shadowQuadVertexBuffer = CreateUploadBuffer(_device, shadowQuadVertexBytes, &_shadowQuadVertexMapped);
-    _shadowQuadIndexBuffer  = CreateUploadBuffer(_device, 6 * sizeof(std::uint32_t), &_shadowQuadIndexMapped);
+    // ─── Internal-quad index buffer: one constant quad, shared by every internal quad slot. The
+    // vertex buffer itself is sized per Render() call by EnsureInternalQuadCapacity() ─────────────
+    _internalQuadIndexBuffer = CreateUploadBuffer(_device, 6 * sizeof(std::uint32_t), &_internalQuadIndexMapped);
+    constexpr std::array<std::uint32_t, 6> kQuadIndices{0, 1, 2, 0, 2, 3};
+    std::memcpy(_internalQuadIndexMapped, kQuadIndices.data(), kQuadIndices.size() * sizeof(std::uint32_t));
 
     _initialized = true;
+}
+
+void NativeRendererDX12::EnsureInternalQuadCapacity(std::size_t slots) {
+    _nextInternalQuadSlot = 0;
+    if (slots <= _internalQuadCapacitySlots) { return; }
+    // Safe to replace: Render() waits for its own last submission before returning, so nothing
+    // from a previous call can still be reading the old buffer.
+    _internalQuadVertexBuffer  = CreateUploadBuffer(_device, slots * kInternalQuadSlotBytes, &_internalQuadVertexMapped);
+    _internalQuadCapacitySlots = slots;
+}
+
+D3D12_VERTEX_BUFFER_VIEW NativeRendererDX12::WriteInternalQuad(const void* vertices, std::size_t bytes, UINT stride) {
+    // Render() reserves one slot per possible internal quad draw before recording starts -- running
+    // out means that count is wrong, a renderer bug rather than a runtime condition.
+    IMF_ASSERT(_nextInternalQuadSlot < _internalQuadCapacitySlots);
+    IMF_ASSERT(bytes <= kInternalQuadSlotBytes);
+
+    const std::size_t offset = _nextInternalQuadSlot++ * kInternalQuadSlotBytes;
+    std::memcpy(static_cast<std::byte*>(_internalQuadVertexMapped) + offset, vertices, bytes);
+
+    D3D12_VERTEX_BUFFER_VIEW view{};
+    view.BufferLocation = _internalQuadVertexBuffer->GetGPUVirtualAddress() + offset;
+    view.SizeInBytes    = static_cast<UINT>(bytes);
+    view.StrideInBytes  = stride;
+    return view;
+}
+
+D3D12_INDEX_BUFFER_VIEW NativeRendererDX12::InternalQuadIndexView() const {
+    D3D12_INDEX_BUFFER_VIEW view{};
+    view.BufferLocation = _internalQuadIndexBuffer->GetGPUVirtualAddress();
+    view.SizeInBytes    = static_cast<UINT>(6 * sizeof(std::uint32_t));
+    view.Format         = DXGI_FORMAT_R32_UINT;
+    return view;
+}
+
+NativeRendererDX12::CompositeSrvSlots NativeRendererDX12::AllocateCompositeSrvSlots(std::size_t count) {
+    // Render() reserves enough composite slots for every possible composite draw before recording
+    // starts -- running out means that count is wrong, a renderer bug.
+    IMF_ASSERT(_nextCompositeSrvSlot + count <= _compositeSrvSlotCount);
+
+    CompositeSrvSlots slots{_compositeSrvCpuBase, _compositeSrvGpuBase};
+    slots.Cpu.ptr += static_cast<SIZE_T>(_nextCompositeSrvSlot) * _srvDescriptorSize;
+    slots.Gpu.ptr += static_cast<UINT64>(_nextCompositeSrvSlot) * _srvDescriptorSize;
+    _nextCompositeSrvSlot += count;
+    return slots;
 }
 
 void NativeRendererDX12::EnsureVertexIndexCapacity(std::size_t vertexBytes, std::size_t indexBytes) {
@@ -717,7 +764,8 @@ void NativeRendererDX12::RenderBackdropBlurBatch(const Batch& batch) {
     srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels     = 1;
-    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, _compositeSrvCpuBase);
+    const CompositeSrvSlots srvSlot = AllocateCompositeSrvSlots(1);
+    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, srvSlot.Cpu);
 
     // ─── Composite: resume the main command list, restore its own PerFrame CB, draw the cropped
     // sub-rectangle of the padded, blurred copy that corresponds to blur.Position/blur.Size ────────
@@ -733,9 +781,9 @@ void NativeRendererDX12::RenderBackdropBlurBatch(const Batch& batch) {
                               (blur.Position.y + blur.Size.y - top) / static_cast<float>(copyHeight)};
     const std::vector<ImageVertex> vertices =
         BuildImageQuadVertices(blur.Position, blur.Size, blur.TintColor, uvMin, uvMax, blur.Radii);
-    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+    const D3D12_VERTEX_BUFFER_VIEW vbView =
+        WriteInternalQuad(vertices.data(), vertices.size() * sizeof(ImageVertex), sizeof(ImageVertex));
+    const D3D12_INDEX_BUFFER_VIEW ibView = InternalQuadIndexView();
 
     // Standard (non-premultiplied) blend, not _premultipliedImagePipelineState -- matches
     // RenderShadowBatch()'s own identical choice (this content isn't scaled by any additional
@@ -743,20 +791,9 @@ void NativeRendererDX12::RenderBackdropBlurBatch(const Batch& batch) {
     _commandList->SetPipelineState(_imagePipelineState.Get());
     _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
     _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
-    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
-
-    D3D12_VERTEX_BUFFER_VIEW vbView{};
-    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
-    vbView.SizeInBytes    = static_cast<UINT>(vertices.size() * sizeof(ImageVertex));
-    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->SetGraphicsRootDescriptorTable(1, srvSlot.Gpu);
     _commandList->IASetVertexBuffers(0, 1, &vbView);
-
-    D3D12_INDEX_BUFFER_VIEW ibView{};
-    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
-    ibView.SizeInBytes    = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
-    ibView.Format         = DXGI_FORMAT_R32_UINT;
     _commandList->IASetIndexBuffer(&ibView);
-
     _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 
     // Restore BlurPassDX12's own "always UNORDERED_ACCESS at rest" invariant for its next Apply()
@@ -836,7 +873,8 @@ void NativeRendererDX12::CompositeOpacityLayer(const LayerFrame& frame) {
     srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels     = 1;
-    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, _compositeSrvCpuBase);
+    const CompositeSrvSlots srvSlot = AllocateCompositeSrvSlots(1);
+    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, srvSlot.Cpu);
 
     // TintColor = (Opacity,Opacity,Opacity,Opacity) scales every channel of the already-
     // premultiplied source texture uniformly by Opacity -- matches
@@ -844,27 +882,16 @@ void NativeRendererDX12::CompositeOpacityLayer(const LayerFrame& frame) {
     const std::vector<ImageVertex> vertices = BuildImageQuadVertices(
         {0.0f, 0.0f}, {static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)},
         {frame.Opacity, frame.Opacity, frame.Opacity, frame.Opacity});
-    constexpr std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, vertices.data(), vertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, indices.data(), indices.size() * sizeof(std::uint32_t));
+    const D3D12_VERTEX_BUFFER_VIEW vbView =
+        WriteInternalQuad(vertices.data(), vertices.size() * sizeof(ImageVertex), sizeof(ImageVertex));
+    const D3D12_INDEX_BUFFER_VIEW ibView = InternalQuadIndexView();
 
     _commandList->SetPipelineState(_premultipliedImagePipelineState.Get());
     _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
     _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
-    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
-
-    D3D12_VERTEX_BUFFER_VIEW vbView{};
-    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
-    vbView.SizeInBytes    = static_cast<UINT>(vertices.size() * sizeof(ImageVertex));
-    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->SetGraphicsRootDescriptorTable(1, srvSlot.Gpu);
     _commandList->IASetVertexBuffers(0, 1, &vbView);
-
-    D3D12_INDEX_BUFFER_VIEW ibView{};
-    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
-    ibView.SizeInBytes    = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
-    ibView.Format         = DXGI_FORMAT_R32_UINT;
     _commandList->IASetIndexBuffer(&ibView);
-
     _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 }
 
@@ -926,15 +953,14 @@ void NativeRendererDX12::CompositeBlendLayer(const LayerFrame& frame) {
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels     = 1;
 
-    D3D12_CPU_DESCRIPTOR_HANDLE sourceSlot = _compositeSrvCpuBase;
-    sourceSlot.ptr += static_cast<SIZE_T>(1) * _srvDescriptorSize;
-    D3D12_CPU_DESCRIPTOR_HANDLE backdropSlot = _compositeSrvCpuBase;
-    backdropSlot.ptr += static_cast<SIZE_T>(2) * _srvDescriptorSize;
-    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, sourceSlot);
+    // Two contiguous slots -- Blend.hlsl's one descriptor table covers t0 (source) and t1 (backdrop).
+    const CompositeSrvSlots srvSlots = AllocateCompositeSrvSlots(2);
+    D3D12_CPU_DESCRIPTOR_HANDLE backdropSlot = srvSlots.Cpu;
+    backdropSlot.ptr += _srvDescriptorSize;
+    _device->CreateShaderResourceView(target.Resource.Get(), &srvDesc, srvSlots.Cpu);
     _device->CreateShaderResourceView(_backdropResource.Get(), &srvDesc, backdropSlot);
 
-    D3D12_GPU_DESCRIPTOR_HANDLE tableBase = _compositeSrvGpuBase;
-    tableBase.ptr += static_cast<UINT64>(1) * _srvDescriptorSize; // covers slots +1 (source) and +2 (backdrop)
+    const D3D12_GPU_DESCRIPTOR_HANDLE tableBase = srvSlots.Gpu;
 
     const auto mode = static_cast<std::int32_t>(frame.Mode);
     _commandList->SetPipelineState(_blendPipelineState.Get());
@@ -1067,9 +1093,9 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch) {
         const std::vector<RectVertex> silhouetteVertices =
             BuildRectQuadVertices({static_cast<float>(pad), static_cast<float>(pad)}, {spreadWidth, spreadHeight},
                                  shadow.Radii, {1.0f, 1.0f, 1.0f, 1.0f});
-        constexpr std::array<std::uint32_t, 6> silhouetteIndices{0, 1, 2, 0, 2, 3};
-        std::memcpy(_shadowQuadVertexMapped, silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex));
-        std::memcpy(_shadowQuadIndexMapped, silhouetteIndices.data(), silhouetteIndices.size() * sizeof(std::uint32_t));
+        const D3D12_VERTEX_BUFFER_VIEW vbView = WriteInternalQuad(
+            silhouetteVertices.data(), silhouetteVertices.size() * sizeof(RectVertex), sizeof(RectVertex));
+        const D3D12_INDEX_BUFFER_VIEW ibView = InternalQuadIndexView();
 
         _commandAllocator->Reset();
         _commandList->Reset(_commandAllocator.Get(), nullptr);
@@ -1096,19 +1122,8 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch) {
         _commandList->SetPipelineState(_rectPipelineState.Get());
         _commandList->SetGraphicsRootSignature(_rootSignature.Get());
         _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
-
-        D3D12_VERTEX_BUFFER_VIEW vbView{};
-        vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
-        vbView.SizeInBytes    = static_cast<UINT>(silhouetteVertices.size() * sizeof(RectVertex));
-        vbView.StrideInBytes  = sizeof(RectVertex);
         _commandList->IASetVertexBuffers(0, 1, &vbView);
-
-        D3D12_INDEX_BUFFER_VIEW ibView{};
-        ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
-        ibView.SizeInBytes    = static_cast<UINT>(silhouetteIndices.size() * sizeof(std::uint32_t));
-        ibView.Format         = DXGI_FORMAT_R32_UINT;
         _commandList->IASetIndexBuffer(&ibView);
-
         _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 
         D3D12_RESOURCE_BARRIER toUav{};
@@ -1165,7 +1180,8 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch) {
     srvDesc.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Texture2D.MipLevels     = 1;
-    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, _compositeSrvCpuBase);
+    const CompositeSrvSlots srvSlot = AllocateCompositeSrvSlots(1);
+    _device->CreateShaderResourceView(blurred.Resource, &srvDesc, srvSlot.Cpu);
 
     // ─── Composite: resume the main command list, restore its own PerFrame CB, draw ───────────
     BeginMainCommandList();
@@ -1184,27 +1200,16 @@ void NativeRendererDX12::RenderShadowBatch(const Batch& batch) {
     const Widgets::Vec2 compositeSize{static_cast<float>(texWidth), static_cast<float>(texHeight)};
     const std::vector<ImageVertex> compositeVertices =
         BuildImageQuadVertices(compositePosition, compositeSize, shadow.ShadowColor);
-    constexpr std::array<std::uint32_t, 6> compositeIndices{0, 1, 2, 0, 2, 3};
-    std::memcpy(_shadowQuadVertexMapped, compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex));
-    std::memcpy(_shadowQuadIndexMapped, compositeIndices.data(), compositeIndices.size() * sizeof(std::uint32_t));
+    const D3D12_VERTEX_BUFFER_VIEW vbView = WriteInternalQuad(
+        compositeVertices.data(), compositeVertices.size() * sizeof(ImageVertex), sizeof(ImageVertex));
+    const D3D12_INDEX_BUFFER_VIEW ibView = InternalQuadIndexView();
 
     _commandList->SetPipelineState(_imagePipelineState.Get());
     _commandList->SetGraphicsRootSignature(_imageRootSignature.Get());
     _commandList->SetGraphicsRootConstantBufferView(0, _perFrameCb->GetGPUVirtualAddress());
-    _commandList->SetGraphicsRootDescriptorTable(1, _compositeSrvGpuBase);
-
-    D3D12_VERTEX_BUFFER_VIEW vbView{};
-    vbView.BufferLocation = _shadowQuadVertexBuffer->GetGPUVirtualAddress();
-    vbView.SizeInBytes    = static_cast<UINT>(compositeVertices.size() * sizeof(ImageVertex));
-    vbView.StrideInBytes  = sizeof(ImageVertex);
+    _commandList->SetGraphicsRootDescriptorTable(1, srvSlot.Gpu);
     _commandList->IASetVertexBuffers(0, 1, &vbView);
-
-    D3D12_INDEX_BUFFER_VIEW ibView{};
-    ibView.BufferLocation = _shadowQuadIndexBuffer->GetGPUVirtualAddress();
-    ibView.SizeInBytes    = static_cast<UINT>(compositeIndices.size() * sizeof(std::uint32_t));
-    ibView.Format         = DXGI_FORMAT_R32_UINT;
     _commandList->IASetIndexBuffer(&ibView);
-
     _commandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
 
     // Restore BlurPassDX12's own "always UNORDERED_ACCESS at rest" invariant for its next Apply()
@@ -1340,26 +1345,25 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
     const PerFrameCb perFrame{static_cast<float>(_targetWidth), static_cast<float>(_targetHeight)};
     std::memcpy(_perFrameCbMapped, &perFrame, sizeof(perFrame));
 
-    // 3 extra, reserved slots (beyond one per Image batch) for every renderer-internal composite
-    // draw this call might need: slot +0 shared by RenderShadowBatch()/CompositeOpacityLayer()
-    // (one texture each), slots +1/+2 by CompositeBlendLayer() (two textures) -- see this class's
-    // own file comment on why this shares _srvHeap rather than using a second heap (D3D12 only
-    // allows one CBV_SRV_UAV heap bound via SetDescriptorHeaps() at a time per command list).
-    // Reserved whenever any of Shadow/Layer/BackdropBlur batches exist, regardless of which specific
-    // ops are used this frame -- a small, constant amount of heap-slot overhead, not worth scanning
-    // LayerVertex ops during this counting pass just to avoid. BackdropBlur reuses slot +0 too (a
-    // single-texture composite, same footprint as Shadow's/CompositeOpacityLayer's own).
-    const bool needsCompositeSlots =
-        shadowBatchCount > 0 || layerBatchCount > 0 || backdropBlurBatchCount > 0;
-    const std::size_t compositeSrvSlot = imageBatchCount; // valid only when needsCompositeSlots
-    const std::size_t neededSrvSlots   = imageBatchCount + (needsCompositeSlots ? 3 : 0);
+    // Every renderer-internal composite draw this call gets its own SRV slot(s) and its own quad
+    // slot(s), never reused within the call -- see this class's own file comment (Phase 35.19) on
+    // the execution-time race a shared slot caused. Upper bounds, counted without scanning
+    // LayerVertex ops: each Layer marker is counted as if it were a blend pop (2 SRVs, 1 quad),
+    // each Shadow as a silhouette + composite (1 SRV, 2 quads), each BackdropBlur as 1 SRV + 1 quad.
+    // The composite SRV range sits right after the per-Image-batch slots, in the same _srvHeap
+    // (D3D12 allows only one bound CBV_SRV_UAV heap per command list, Phase 35.12).
+    _compositeSrvSlotCount = shadowBatchCount + backdropBlurBatchCount + 2 * layerBatchCount;
+    _nextCompositeSrvSlot  = 0;
+    const std::size_t compositeSrvSlot = imageBatchCount;
+    const std::size_t neededSrvSlots   = imageBatchCount + _compositeSrvSlotCount;
+
+    EnsureInternalQuadCapacity(2 * shadowBatchCount + backdropBlurBatchCount + layerBatchCount);
 
     // Write every Image batch's SRV into _srvHeap entirely before command-list recording begins --
     // see RenderImageBatch()'s own comment, and NativeRendererVulkan::Render()'s identical Phase
     // 35.2 reasoning, for why this can't happen per-batch inside the recording loop below. The
-    // composite slots (if reserved) are written later, by RenderShadowBatch()/CompositeOpacityLayer()/
-    // CompositeBlendLayer() themselves, once whatever they each depend on has actually completed --
-    // see those methods' own comments for why that's safe.
+    // composite slots are written later, each exactly once, by whichever composite draw
+    // AllocateCompositeSrvSlots() hands them to.
     if (neededSrvSlots > 0) {
         EnsureImageDescriptorCapacity(neededSrvSlots);
 
@@ -1388,7 +1392,7 @@ void NativeRendererDX12::Render(const Rendering::CommandBuffer& buffer) {
 
     _compositeSrvCpuBase = {};
     _compositeSrvGpuBase = {};
-    if (needsCompositeSlots) {
+    if (_compositeSrvSlotCount > 0) {
         _compositeSrvCpuBase = _srvHeap->GetCPUDescriptorHandleForHeapStart();
         _compositeSrvCpuBase.ptr += static_cast<SIZE_T>(compositeSrvSlot) * _srvDescriptorSize;
         _compositeSrvGpuBase = _srvHeap->GetGPUDescriptorHandleForHeapStart();
@@ -1451,10 +1455,12 @@ void NativeRendererDX12::Shutdown() {
     if (_perFrameCb) { _perFrameCb->Unmap(0, nullptr); _perFrameCb.Reset(); }
     _perFrameCbMapped = nullptr;
 
-    if (_shadowQuadVertexBuffer) { _shadowQuadVertexBuffer->Unmap(0, nullptr); _shadowQuadVertexBuffer.Reset(); }
-    _shadowQuadVertexMapped = nullptr;
-    if (_shadowQuadIndexBuffer) { _shadowQuadIndexBuffer->Unmap(0, nullptr); _shadowQuadIndexBuffer.Reset(); }
-    _shadowQuadIndexMapped = nullptr;
+    if (_internalQuadVertexBuffer) { _internalQuadVertexBuffer->Unmap(0, nullptr); _internalQuadVertexBuffer.Reset(); }
+    _internalQuadVertexMapped  = nullptr;
+    _internalQuadCapacitySlots = 0;
+    _nextInternalQuadSlot      = 0;
+    if (_internalQuadIndexBuffer) { _internalQuadIndexBuffer->Unmap(0, nullptr); _internalQuadIndexBuffer.Reset(); }
+    _internalQuadIndexMapped = nullptr;
 
     _shadowSilhouetteResource.Reset();
     _shadowRtvHeap.Reset();
@@ -1468,8 +1474,10 @@ void NativeRendererDX12::Shutdown() {
     _backdropResource.Reset();
     _backdropWidth  = 0;
     _backdropHeight = 0;
-    _compositeSrvCpuBase = {};
-    _compositeSrvGpuBase = {};
+    _compositeSrvCpuBase   = {};
+    _compositeSrvGpuBase   = {};
+    _compositeSrvSlotCount = 0;
+    _nextCompositeSrvSlot  = 0;
 
     _backdropBlurCopyResource.Reset();
     _backdropBlurCopyWidth      = 0;
